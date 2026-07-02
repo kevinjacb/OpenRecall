@@ -38,9 +38,12 @@ import java.util.LinkedHashSet
 import java.util.UUID
 
 class SetupActivity : ComponentActivity() {
+
+    private lateinit var scanner: RealDeviceScanner
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val scanner = RealDeviceScanner(this)
+        scanner = RealDeviceScanner(this)
         val vm = SetupViewModel(
             serverApi = RealServerApi,
             scanner = scanner,
@@ -58,6 +61,11 @@ class SetupActivity : ComponentActivity() {
                 SetupScreen(step) { u, t -> lifecycleScope.launch { vm.submitServer(u, t) } }
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (this::scanner.isInitialized) scanner.close()
     }
 }
 
