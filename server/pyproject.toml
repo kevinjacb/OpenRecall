@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.9",
     "websockets>=13",
+    "aiohttp>=3.10",
     "cryptography>=43",  # Ed25519 signing of device commands (§D)
 ]
 
@@ -41,6 +42,11 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
 addopts = "-ra --strict-markers"
+filterwarnings = [
+    # Brief uses string app/request keys; advisory only from aiohttp.
+    "ignore:It is recommended to use web.AppKey instances for keys:UserWarning",
+    "ignore:It is recommended to use web.RequestKey instances for keys:UserWarning",
+]
 
 [tool.ruff]
 line-length = 100
