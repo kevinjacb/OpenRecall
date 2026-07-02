@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit
  * audio (binary) up; receives §E control (text) down. A thin transport around the
  * relay brain — no protocol logic here.
  */
-class ServerSocket(private val url: String, private val listener: Listener) {
+class ServerSocket(private val url: String, private val token: String, private val listener: Listener) {
 
     interface Listener {
         fun onOpen()
@@ -32,7 +32,9 @@ class ServerSocket(private val url: String, private val listener: Listener) {
 
     fun connect() {
         socket = client.newWebSocket(
-            Request.Builder().url(url).build(),
+            Request.Builder().url(url)
+                .addHeader("Authorization", "Bearer $token")
+                .build(),
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) = listener.onOpen()
                 override fun onMessage(webSocket: WebSocket, text: String) = listener.onText(text)

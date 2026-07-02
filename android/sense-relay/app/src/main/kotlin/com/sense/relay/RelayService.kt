@@ -10,6 +10,8 @@ import android.os.IBinder
 import android.util.Log
 import com.sense.relay.ble.SensorLink
 import com.sense.relay.net.ServerSocket
+import com.sense.relay.store.ServerConfig
+import kotlinx.coroutines.runBlocking
 import java.util.UUID
 
 /**
@@ -30,9 +32,14 @@ class RelayService : Service() {
     private lateinit var sensor: SensorLink
     private var socket: ServerSocket? = null
     private var serverUrl: String = "ws://10.0.2.2:8765"  // host loopback from emulator
+    private var token: String = ""
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         intent?.getStringExtra("server_url")?.let { serverUrl = it }
+        intent?.getStringExtra("token")?.let { token = it }
+        if (token.isEmpty()) {
+            token = runBlocking { ServerConfig(filesDir).read().token }
+        }
         startForeground(1, buildNotification())
 
         session = RelaySession(sessionId = UUID.randomUUID().toString())
@@ -44,8 +51,10 @@ class RelayService : Service() {
     // --- device (BLE) events ---
     private val sensorListener = object : SensorLink.Listener {
         override fun onConnected() {
-            Log.i(TAG, "device connected; opening socket to $serverUrl")
-            socket = ServerSocket(serverUrl, socketListener).also { it.connect() }
+            val wsUrl = serverUrl.replaceFirst(Regex("^https?://"),
+                if (serverUrl.startsWith("https")) "wss://" else "ws://")
+            Log.i(TAG, "device connected; opening socket to $wsUrl")
+            socket = ServerSocket(wsUrl, token, socketListener).also { it.connect() }
         }
         override fun onAudio(packet: ByteArray) = execute(session.onDeviceAudio(packet))
         override fun onCommandAck(payload: ByteArray) = execute(session.onDeviceCommandAck(payload))
