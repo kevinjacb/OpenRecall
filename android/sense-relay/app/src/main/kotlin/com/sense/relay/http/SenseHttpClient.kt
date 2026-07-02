@@ -2,12 +2,12 @@ package com.sense.relay.http
 
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.io.ByteArrayInputStream
 import java.io.IOException
-import java.security.cert.CertificateException
+import java.security.KeyStore
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -35,23 +35,18 @@ class SenseHttpClient(
 
     private fun pinnedTrustManager(caPem: String): X509TrustManager {
         val pinnedCert = parsePem(caPem)
-        return object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<out X509Certificate>, authType: String) {
-                throw CertificateException("client auth not supported")
-            }
-
-            override fun checkServerTrusted(chain: Array<out X509Certificate>, authType: String) {
-                // Accept only chains that anchor on the pinned CA: either the pinned
-                // cert is present in the chain, or the chain's root equals the pinned cert.
-                val anchored = chain.any { it == pinnedCert } ||
-                    chain.lastOrNull() == pinnedCert
-                if (!anchored) {
-                    throw CertificateException("chain does not anchor on pinned CA")
-                }
-            }
-
-            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf(pinnedCert)
+        // Use the pinned CA as the sole trust anchor in a KeyStore, then let the
+        // platform's TrustManagerFactory perform full PKIX path validation against
+        // that anchor. This accepts chains whose root is issued by the pinned CA
+        // (even when the root itself isn't sent) and rejects everything else.
+        val keyStore = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
+            load(null)
+            setCertificateEntry("sense-ca", pinnedCert)
         }
+        val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply {
+            init(keyStore)
+        }
+        return tmf.trustManagers.first { it is X509TrustManager } as X509TrustManager
     }
 
     private fun buildPinnedSslContext(caPem: String, tm: X509TrustManager): SSLContext {
@@ -62,8 +57,7 @@ class SenseHttpClient(
 
     private fun parsePem(caPem: String): X509Certificate {
         val cf = CertificateFactory.getInstance("X.509")
-        return cf.generateCertificate(ByteArrayInputStream(caPem.toByteArray(Charsets.US_ASCII)))
-            as X509Certificate
+        return cf.generateCertificate(caPem.byteInputStream()) as X509Certificate
     }
 
     private fun req(path: String) = Request.Builder()
@@ -83,6 +77,7 @@ class SenseHttpClient(
             // body is {"pubkey":"<hex>",...}; parse hex. No JSON dep yet — minimal parse:
             val hex = Regex("\"pubkey\"\\s*:\\s*\"([0-9a-fA-F]+)\"").find(body)?.groupValues?.get(1)
                 ?: throw IOException("no pubkey in response")
+            require(hex.length == 64) { "pubkey hex not 64 chars" }
             hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray().also {
                 require(it.size == 32) { "pubkey not 32 bytes" }
             }
