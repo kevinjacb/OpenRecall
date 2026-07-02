@@ -30,6 +30,10 @@ int commands_init(const uint8_t server_pubkey[32], command_ack_fn ack) {
   return 0;
 }
 
+void commands_set_pubkey(const uint8_t server_pubkey[32]) {
+  memcpy(s_pubkey, server_pubkey, sizeof s_pubkey);
+}
+
 static bool already_seen(const char *id) {
   for (int i = 0; i < CMD_DEDUPE_N; i++) {
     if (strncmp(s_seen[i], id, CMD_ID_MAX) == 0) {

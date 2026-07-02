@@ -26,6 +26,9 @@ typedef int (*command_ack_fn)(const uint8_t *data, size_t len);
 // Returns 0 on success, <0 if libsodium fails to init.
 int commands_init(const uint8_t server_pubkey[32], command_ack_fn ack);
 
+/* Update the trusted server public key at runtime (after provisioning). */
+void commands_set_pubkey(const uint8_t server_pubkey[32]);
+
 // Handle one BLE command write: sig(64) || payload JSON. Verifies, dedupes,
 // executes, and acks. Drops (no ack) anything that fails verification or parsing.
 void commands_handle(const uint8_t *data, size_t len);
