@@ -63,20 +63,31 @@ async def serve(
     port: int = 8765,
     event_store: "EventStore | None" = None,
     dispatcher: "CommandDispatcher | None" = None,
+    token: str | None = None,
 ) -> None:
     """Run the gateway WebSocket server until cancelled.
 
     A single ``event_store`` and ``dispatcher`` are shared by every connection's core
-    (one durable log; one command registry).
+    (one durable log; one command registry). When ``token`` is not ``None``, each
+    inbound connection must present an ``Authorization: Bearer <token>`` header or
+    it is closed with a 1008 "unauthorized" policy error before any §E processing.
+    A ``None`` token disables auth (local dev / existing tests).
     """
     import asyncio
 
     import websockets
     from websockets.exceptions import ConnectionClosed
 
+    from ..http.token import constant_time_eq
     from .core import GatewayError
 
     async def handler(ws: "websockets.ServerConnection") -> None:
+        # --- bearer-token check (skip when token is None: local dev) ---
+        if token is not None:
+            auth = ws.request.headers.get("Authorization", "")
+            if not auth.startswith("Bearer ") or not constant_time_eq(auth[7:], token):
+                await ws.close(code=1008, reason="unauthorized")
+                return
         core = GatewayCore(
             pipeline_factory=pipeline_factory,
             event_store=event_store,
