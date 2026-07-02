@@ -5,7 +5,6 @@ import com.sense.relay.setup.ProvFrames
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProvisioningClientTest {

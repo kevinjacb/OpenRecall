@@ -50,7 +50,7 @@ class SetupActivity : ComponentActivity() {
             onDone = { c ->
                 ServerConfig(filesDir).write(c)
                 val i = Intent(this, RelayService::class.java)
-                    .putExtra("server_url", c.serverUrl.replaceFirst("https", "wss"))
+                    .putExtra("server_url", c.serverUrl)
                     .putExtra("token", c.token)
                 startForegroundService(i)
             },

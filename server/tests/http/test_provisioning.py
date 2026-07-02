@@ -1,4 +1,3 @@
-import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from sense_server.http.app import build_app
 from sense_server.auth import load_or_create_token

@@ -66,16 +66,16 @@ def main() -> None:
 
     async def main_loop() -> None:
         http_runner = aiohttp.web.AppRunner(app)
-        await http_runner.setup()
-        site = aiohttp.web.TCPSite(http_runner, args.host, args.http_port)
-        await site.start()
-        print(f"http control API on http://{args.host}:{args.http_port}")
-        print(f"gateway listening on ws://{args.host}:{args.port}  "
-              f"(window={args.window_ms} ms, events -> {args.db})")
-        print(f"bearer token (copy to phone): {token}")
-        print(f"server command public key (provision on device): "
-              f"{signer.public_key_bytes.hex()}")
         try:
+            await http_runner.setup()
+            site = aiohttp.web.TCPSite(http_runner, args.host, args.http_port)
+            await site.start()
+            print(f"http control API on http://{args.host}:{args.http_port}")
+            print(f"gateway listening on ws://{args.host}:{args.port}  "
+                  f"(window={args.window_ms} ms, events -> {args.db})")
+            print(f"bearer token (copy to phone): {token}")
+            print(f"server command public key (provision on device): "
+                  f"{signer.public_key_bytes.hex()}")
             await serve(factory, host=args.host, port=args.port,
                         event_store=store, dispatcher=dispatcher, token=token)
         finally:

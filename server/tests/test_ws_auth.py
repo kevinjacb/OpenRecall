@@ -2,6 +2,7 @@
 import asyncio
 import pytest
 from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosedError
 from sense_server.gateway.adapter import serve
 from sense_server.auth import load_or_create_token
 
@@ -18,7 +19,7 @@ async def test_ws_rejects_missing_token(unused_tcp_port, tmp_path):
         # The server closes with 1008 "unauthorized" during/after the handshake,
         # before any §E processing. The close may surface on send, recv, or context
         # exit — any of them raising proves auth rejected the connection.
-        with pytest.raises(Exception):
+        with pytest.raises(ConnectionClosedError):
             async with connect(f"ws://127.0.0.1:{unused_tcp_port}") as ws:
                 await ws.send('{"type":"hello","session_id":"s","start_seq":0}')
                 await asyncio.wait_for(ws.recv(), timeout=1.0)

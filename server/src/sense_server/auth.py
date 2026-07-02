@@ -1,6 +1,5 @@
 # server/src/sense_server/auth.py
 from __future__ import annotations
-import os
 import secrets
 from pathlib import Path
 

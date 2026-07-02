@@ -35,10 +35,17 @@ class RelayService : Service() {
     private var token: String = ""
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        intent?.getStringExtra("server_url")?.let { serverUrl = it }
-        intent?.getStringExtra("token")?.let { token = it }
-        if (token.isEmpty()) {
-            token = runBlocking { ServerConfig(filesDir).read().token }
+        val urlExtra = intent?.getStringExtra("server_url")
+        val tokenExtra = intent?.getStringExtra("token")
+        if (urlExtra != null) serverUrl = urlExtra
+        if (tokenExtra != null) token = tokenExtra
+        // START_STICKY redelivery: intent extras are null — restore both from the persisted
+        // config (mirroring the token fallback). Only adopt a non-empty persisted value so we
+        // never overwrite a valid default with an empty one.
+        if (urlExtra == null || tokenExtra == null) {
+            val cfg = runBlocking { ServerConfig(filesDir).read() }
+            if (urlExtra == null) cfg.serverUrl.ifEmpty { null }?.let { serverUrl = it }
+            if (tokenExtra == null) cfg.token.ifEmpty { null }?.let { token = it }
         }
         startForeground(1, buildNotification())
 
