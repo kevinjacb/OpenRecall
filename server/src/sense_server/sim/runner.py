@@ -19,12 +19,21 @@ async def run_session(
     audio_frames: Iterable[list[bytes]],
     *,
     idle_timeout: float = 0.3,
+    token: str | None = None,
 ) -> None:
+    """Drive one session over a real WebSocket.
+
+    When ``token`` is provided it is sent as an ``Authorization: Bearer <token>``
+    header on the WS handshake, matching the gateway's optional bearer check.
+    """
     import asyncio
 
     import websockets
 
-    async with websockets.connect(uri) as ws:
+    headers = {}
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
+    async with websockets.connect(uri, additional_headers=headers) as ws:
         await ws.send(client.hello())
         for frames in audio_frames:
             await ws.send(client.next_audio_packet(frames))

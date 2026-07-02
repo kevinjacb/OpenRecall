@@ -60,6 +60,8 @@ def main() -> None:
     ap.add_argument("--frames-per-packet", type=int, default=50, help="20 ms frames per §C.6 packet")
     ap.add_argument("--idle-timeout", type=float, default=30.0,
                     help="seconds to wait for server messages before finishing")
+    ap.add_argument("--token", default=None,
+                    help="bearer token to send on the WS handshake (gateway auth)")
     args = ap.parse_args()
 
     frames = synth_opus_frames(args.seconds)
@@ -73,7 +75,8 @@ def main() -> None:
     # Generous idle timeout so we wait out the first window's MLX model warm-up
     # (cold start can be many seconds); after that, transcripts return quickly.
     print("waiting for transcripts (first one is slow — MLX model warm-up)…")
-    asyncio.run(run_session(args.uri, client, packets, idle_timeout=args.idle_timeout))
+    asyncio.run(run_session(args.uri, client, packets,
+                            idle_timeout=args.idle_timeout, token=args.token))
 
     print(f"\ntranscripts ({len(client.transcripts)}):")
     for text in client.transcripts:
