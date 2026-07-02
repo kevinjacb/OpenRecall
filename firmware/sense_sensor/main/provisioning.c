@@ -36,8 +36,8 @@ static int nvs_set(const uint8_t key[32]) {
   nvs_handle_t h;
   if (nvs_open(PROV_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return -1;
   if (nvs_set_blob(h, PROV_NVS_KEY, key, 32) != ESP_OK) { nvs_close(h); return -1; }
-  nvs_set_u8(h, PROV_NVS_PROVISIONED, 1);
-  nvs_commit(h);
+  nvs_set_u8(h, PROV_NVS_PROVISIONED, 1);   /* best-effort flag */
+  if (nvs_commit(h) != ESP_OK) { nvs_close(h); return -1; }
   nvs_close(h);
   return 0;
 }
@@ -45,9 +45,10 @@ static int nvs_set(const uint8_t key[32]) {
 static int nvs_clear(void) {
   nvs_handle_t h;
   if (nvs_open(PROV_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return -1;
-  nvs_erase_key(h, PROV_NVS_KEY);
+  esp_err_t e = nvs_erase_key(h, PROV_NVS_KEY);
+  if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND) { nvs_close(h); return -1; }
   nvs_set_u8(h, PROV_NVS_PROVISIONED, 0);
-  nvs_commit(h);
+  if (nvs_commit(h) != ESP_OK) { nvs_close(h); return -1; }
   nvs_close(h);
   return 0;
 }
@@ -119,7 +120,7 @@ int prov_reset_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt 
   if (len != sizeof magic) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
   if (ble_hs_mbuf_to_flat(ctxt->om, &magic, sizeof magic, NULL) != 0) return BLE_ATT_ERR_UNLIKELY;
   if (magic != PROV_FACTORY_RESET_MAGIC) return BLE_ATT_ERR_UNLIKELY;
-  provisioning_core_factory_reset();
+  if (provisioning_core_factory_reset() != 0) return BLE_ATT_ERR_UNLIKELY;
   uint8_t zero[32] = {0};
   commands_set_pubkey(zero);
   provisioning_notify_state();
