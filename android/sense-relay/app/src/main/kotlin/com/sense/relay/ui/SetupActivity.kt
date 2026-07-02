@@ -108,7 +108,7 @@ class RealDeviceScanner(private val context: Context) : DeviceScanner {
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
-        runCatching { scanner.startScan(listOf(filter), settings, callback) }
+        runCatching { scanner.startScan(null, settings, callback) }
         try {
             delay(SCAN_WINDOW_MS)
         } finally {
@@ -143,7 +143,7 @@ class RealDeviceScanner(private val context: Context) : DeviceScanner {
         val SERVER_KEY: UUID = UUID.fromString("6e9d0012-b5a3-4f6e-9b1a-7c2d5e8f0a10")
         val FACTORY_RESET: UUID = UUID.fromString("6e9d0013-b5a3-4f6e-9b1a-7c2d5e8f0a10")
 
-        private const val SCAN_WINDOW_MS = 4000L
+        private const val SCAN_WINDOW_MS = 10000L
         private const val CONNECT_TIMEOUT_MS = 10_000L
         private const val OP_TIMEOUT_MS = 5_000L
     }
