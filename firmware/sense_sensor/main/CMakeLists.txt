@@ -10,6 +10,8 @@ idf_component_register(
         "ring_buffer.c"
         "ble_link.c"
         "commands.c"
+        "provisioning.c"
+        "provisioning_core.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_timer

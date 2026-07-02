@@ -53,6 +53,16 @@ enum c6_vad_state   { C6_GAP_MARKER = 0, C6_SPEECH = 1, C6_PREROLL = 2, C6_HANGO
 #define SENSE_COMMAND_CHAR_UUID "6e9d0003-b5a3-4f6e-9b1a-7c2d5e8f0a10"  /* write: signed §D in */
 #define SENSE_ACK_CHAR_UUID     "6e9d0004-b5a3-4f6e-9b1a-7c2d5e8f0a10"  /* notify: command acks/status */
 
+/* ---- Provisioning service (separate GATT service; Android pairing flow) ---- */
+#define PROV_SERVICE_UUID      "6e9d0010-b5a3-4f6e-9b1a-7c2d5e8f0a10"
+#define PROV_STATE_CHAR_UUID   "6e9d0011-b5a3-4f6e-9b1a-7c2d5e8f0a10"  /* read+notify: 0=unprov,1=prov */
+#define PROV_KEY_CHAR_UUID     "6e9d0012-b5a3-4f6e-9b1a-7c2d5e8f0a10"  /* write: 32B server pubkey */
+#define PROV_RESET_CHAR_UUID   "6e9d0013-b5a3-4f6e-9b1a-7c2d5e8f0a10"  /* write: factory-reset magic */
+#define PROV_NVS_NAMESPACE     "sense_prov"
+#define PROV_NVS_KEY           "srvkey"
+#define PROV_NVS_PROVISIONED   "provd"
+#define PROV_FACTORY_RESET_MAGIC 0xA5A5A5A5u
+
 /* ---- microSD over SPI ([Spike 2] pins verified; throughput plateaus at 20 MHz) ---- */
 #define SD_PIN_SCK   7
 #define SD_PIN_MISO  8

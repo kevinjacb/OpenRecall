@@ -1,6 +1,7 @@
 #include "ble_link.h"
 
 #include "config.h"
+#include "provisioning.h"
 #include "esp_log.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
@@ -24,11 +25,19 @@ static const ble_uuid128_t s_audio_uuid = SENSE_UUID128(0x02);
 static const ble_uuid128_t s_command_uuid = SENSE_UUID128(0x03);
 static const ble_uuid128_t s_ack_uuid = SENSE_UUID128(0x04);
 
+// Provisioning service (UUID 0x10) + its three characteristics (0x11..0x13).
+static const ble_uuid128_t s_prov_svc_uuid   = SENSE_UUID128(0x10);
+static const ble_uuid128_t s_prov_state_uuid = SENSE_UUID128(0x11);
+static const ble_uuid128_t s_prov_key_uuid   = SENSE_UUID128(0x12);
+static const ble_uuid128_t s_prov_reset_uuid = SENSE_UUID128(0x13);
+
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_audio_handle;  // value handle for the audio notify char
 static uint16_t s_ack_handle;    // value handle for the ack notify char
+static uint16_t s_prov_state_handle;  // value handle for the provisioning STATE char
 static bool s_audio_subscribed;
 static bool s_ack_subscribed;
+static bool s_prov_state_subscribed;
 static uint8_t s_addr_type;
 static ble_command_handler_t s_on_command;
 
@@ -88,6 +97,29 @@ static const struct ble_gatt_svc_def s_gatt_svcs[] = {
             {0},
         },
     },
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = &s_prov_svc_uuid.u,
+        .characteristics = (struct ble_gatt_chr_def[]){
+            {
+                .uuid = &s_prov_state_uuid.u,
+                .access_cb = prov_state_access,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+                .val_handle = &s_prov_state_handle,
+            },
+            {
+                .uuid = &s_prov_key_uuid.u,
+                .access_cb = prov_key_access,
+                .flags = BLE_GATT_CHR_F_WRITE,
+            },
+            {
+                .uuid = &s_prov_reset_uuid.u,
+                .access_cb = prov_reset_access,
+                .flags = BLE_GATT_CHR_F_WRITE,
+            },
+            {0},
+        },
+    },
     {0},
 };
 
@@ -107,6 +139,7 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
       s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
       s_audio_subscribed = false;
       s_ack_subscribed = false;
+      s_prov_state_subscribed = false;
       start_advertising();
       return 0;
     case BLE_GAP_EVENT_SUBSCRIBE:
@@ -114,6 +147,8 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
         s_audio_subscribed = event->subscribe.cur_notify;
       } else if (event->subscribe.attr_handle == s_ack_handle) {
         s_ack_subscribed = event->subscribe.cur_notify;
+      } else if (event->subscribe.attr_handle == s_prov_state_handle) {
+        s_prov_state_subscribed = event->subscribe.cur_notify;
       }
       return 0;
     default:
@@ -174,6 +209,13 @@ int ble_link_notify_audio(const uint8_t *data, size_t len) {
 
 int ble_link_notify_ack(const uint8_t *data, size_t len) {
   return notify(s_ack_handle, s_ack_subscribed, data, len);
+}
+
+/* Push the current provisioning state (1 byte) to subscribed STATE clients.
+ * Used by provisioning.c after a key write or factory reset. */
+void provisioning_notify_state(void) {
+  uint8_t v = provisioning_state_byte();
+  notify(s_prov_state_handle, s_prov_state_subscribed, &v, 1);
 }
 
 bool ble_link_connected(void) {
