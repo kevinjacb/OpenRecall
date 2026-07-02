@@ -23,6 +23,8 @@
 #include "ble_link.h"
 #include "commands.h"
 #include "config.h"
+#include "provisioning.h"
+#include "provisioning_core.h"
 #include "ring_buffer.h"
 #include "vad.h"
 
@@ -76,9 +78,16 @@ void app_main(void) {
   ESP_ERROR_CHECK(ring_buffer_init());
   ESP_ERROR_CHECK(audio_capture_init());
 
-  // §D commands: verify signatures against the provisioned server key, ack via BLE.
+  if (provisioning_init() != 0) {
+    ESP_LOGE(TAG, "provisioning_init failed");
+  }
+  /* commands_init seeds the verifier; if provisioned, provisioning_init already
+   * installed the real key via commands_set_pubkey. The fallback is all-zeros. */
   if (commands_init(SERVER_ED25519_PUBKEY, ble_link_notify_ack) != 0) {
     ESP_LOGE(TAG, "commands_init failed");
+  }
+  if (provisioning_state_byte() == 1) {
+    commands_set_pubkey(provisioning_core_server_key());  /* belt-and-suspenders: ensure live key */
   }
 
   // Audio pinned to core 1; NimBLE host task runs on core 0.
