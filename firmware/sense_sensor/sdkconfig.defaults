@@ -1,0 +1,33 @@
+# Sense AI Sensor — IDF defaults tuned for the XIAO ESP32S3 Sense.
+# These are starting points; run `idf.py menuconfig` to confirm exact keys for your
+# IDF version. Rationale in comments.
+
+# --- Flash + PSRAM (8 MB flash; 8 MB Octal PSRAM on the Sense) ---
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+# Let the audio ring buffer (~3000 * ~80 B) and BLE live in PSRAM-backed allocations.
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# --- CPU / scheduler ---
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+# Opus encode is the hot path; optimise for speed (Spike 1 budget assumed -O2).
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# --- Bluetooth: NimBLE peripheral (much lighter RAM/flash than Bluedroid) ---
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+# Big ATT MTU so a 1 s §C.6 chunk needs few notifications; pair with 2M PHY + DLE
+# (negotiated at runtime) for the ~300-700 kbps sustained audio path.
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247
+
+# --- Logging ---
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y

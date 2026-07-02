@@ -1,0 +1,43 @@
+# --- Secrets / runtime data (NEVER commit) ---
+server/data/*.key
+server/data/*.db
+server/data/*.db-*
+server/data/server_token
+**/server_ed25519.key
+
+# --- Python ---
+server/.venv/
+**/__pycache__/
+**/*.pyc
+server/.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# --- ESP-IDF / firmware ---
+firmware/sense_sensor/build/
+firmware/sense_sensor/managed_components/
+firmware/sense_sensor/.cache/
+firmware/sense_sensor/sdkconfig
+firmware/sense_sensor/sdkconfig.old
+**/dependencies.lock
+!firmware/sense_sensor/dependencies.lock
+
+# --- Android / Gradle ---
+android/**/.gradle/
+android/**/.kotlin/
+android/**/build/
+android/**/local.properties
+android/local.properties
+*.apk
+*.aab
+
+# --- macOS ---
+.DS_Store
+
+# --- SDD scratch (progress ledger is git-ignored scratch) ---
+.superpowers/sdd/
+
+# --- Editor ---
+.idea/
+.vscode/

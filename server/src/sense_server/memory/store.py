@@ -1,0 +1,149 @@
+"""Idempotent memory-atom stores with a per-session extraction cursor.
+
+Mirrors the event store: one :class:`AtomStore` protocol, an in-memory impl, and a
+durable stdlib SQLite impl. Beyond storing atoms (idempotent by ``atom_id``), the
+store tracks a per-session **extraction cursor** — the seq of the last capture event
+already turned into atoms — so the extraction pass is resumable and exactly-once
+even when an event produces no atoms.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+from typing import Protocol, runtime_checkable
+
+from .atom import MemoryAtom
+
+_NO_CURSOR = -1  # nothing extracted yet (capture event seqs start at 0)
+
+
+@runtime_checkable
+class AtomStore(Protocol):
+    def append(self, atom: MemoryAtom) -> bool:
+        """Append an atom; return True if newly stored, False if a duplicate."""
+        ...
+
+    def has(self, atom_id: str) -> bool:
+        """Whether an atom with this id is already stored."""
+        ...
+
+    def atoms(self, session_id: str) -> list[MemoryAtom]:
+        """All atoms for a session, ordered by start_ms."""
+        ...
+
+    def get_cursor(self, session_id: str) -> int:
+        """Seq of the last capture event extracted for this session (-1 if none)."""
+        ...
+
+    def set_cursor(self, session_id: str, seq: int) -> None:
+        """Record extraction progress for this session."""
+        ...
+
+
+class InMemoryAtomStore:
+    def __init__(self) -> None:
+        self._seen: set[str] = set()
+        self._by_session: dict[str, list[MemoryAtom]] = {}
+        self._cursor: dict[str, int] = {}
+
+    def append(self, atom: MemoryAtom) -> bool:
+        if atom.atom_id in self._seen:
+            return False
+        self._seen.add(atom.atom_id)
+        self._by_session.setdefault(atom.session_id, []).append(atom)
+        return True
+
+    def has(self, atom_id: str) -> bool:
+        return atom_id in self._seen
+
+    def atoms(self, session_id: str) -> list[MemoryAtom]:
+        return sorted(self._by_session.get(session_id, []), key=lambda a: a.start_ms)
+
+    def get_cursor(self, session_id: str) -> int:
+        return self._cursor.get(session_id, _NO_CURSOR)
+
+    def set_cursor(self, session_id: str, seq: int) -> None:
+        self._cursor[session_id] = seq
+
+
+class SqliteAtomStore:
+    def __init__(self, path: str | Path) -> None:
+        self._conn = sqlite3.connect(str(path))
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS memory_atoms (
+                atom_id         TEXT PRIMARY KEY,
+                session_id      TEXT NOT NULL,
+                source_event_id TEXT NOT NULL,
+                kind            TEXT NOT NULL,
+                text            TEXT NOT NULL,
+                created_at      TEXT NOT NULL,
+                start_ms        INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_atoms_session_start
+                ON memory_atoms (session_id, start_ms);
+            CREATE TABLE IF NOT EXISTS extraction_cursor (
+                session_id TEXT PRIMARY KEY,
+                last_seq   INTEGER NOT NULL
+            );
+            """
+        )
+        self._conn.commit()
+
+    def append(self, atom: MemoryAtom) -> bool:
+        cur = self._conn.execute(
+            "INSERT OR IGNORE INTO memory_atoms "
+            "(atom_id, session_id, source_event_id, kind, text, created_at, start_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                atom.atom_id,
+                atom.session_id,
+                atom.source_event_id,
+                atom.kind,
+                atom.text,
+                atom.created_at.isoformat(),
+                atom.start_ms,
+            ),
+        )
+        self._conn.commit()
+        return cur.rowcount == 1
+
+    def has(self, atom_id: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM memory_atoms WHERE atom_id = ?", (atom_id,)
+        ).fetchone()
+        return row is not None
+
+    def atoms(self, session_id: str) -> list[MemoryAtom]:
+        rows = self._conn.execute(
+            "SELECT atom_id, session_id, source_event_id, kind, text, created_at, start_ms "
+            "FROM memory_atoms WHERE session_id = ? ORDER BY start_ms",
+            (session_id,),
+        ).fetchall()
+        return [
+            MemoryAtom(
+                atom_id=r[0],
+                session_id=r[1],
+                source_event_id=r[2],
+                kind=r[3],
+                text=r[4],
+                created_at=r[5],
+                start_ms=r[6],
+            )
+            for r in rows
+        ]
+
+    def get_cursor(self, session_id: str) -> int:
+        row = self._conn.execute(
+            "SELECT last_seq FROM extraction_cursor WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return row[0] if row is not None else _NO_CURSOR
+
+    def set_cursor(self, session_id: str, seq: int) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO extraction_cursor (session_id, last_seq) VALUES (?, ?)",
+            (session_id, seq),
+        )
+        self._conn.commit()
