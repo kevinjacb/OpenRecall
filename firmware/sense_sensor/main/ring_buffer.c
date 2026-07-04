@@ -4,6 +4,7 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"  // taskENTER_CRITICAL / taskEXIT_CRITICAL macros
 
 #include <string.h>
 

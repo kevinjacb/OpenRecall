@@ -25,12 +25,18 @@ interface DeviceScanner {
 class SetupViewModel(
     private val serverApi: ServerApi,
     private val scanner: DeviceScanner,
+    private val onAttempt: suspend (String, String) -> Unit = { _, _ -> },
+    initialUrl: String = "",
+    initialToken: String = "",
     private val onDone: suspend (Config) -> Unit,
 ) {
-    private val _step = MutableStateFlow<SetupStep>(SetupStep.EnterServer())
+    private val _step = MutableStateFlow<SetupStep>(SetupStep.EnterServer(initialUrl, initialToken))
     val step: StateFlow<SetupStep> = _step.asStateFlow()
 
     suspend fun submitServer(url: String, token: String) {
+        // Persist the entered credentials immediately so a failed attempt (or an app
+        // restart mid-setup) pre-fills the form next time instead of forcing a retype.
+        runCatching { onAttempt(url, token) }
         _step.value = SetupStep.Connecting("testing connection")
         try {
             if (!serverApi.health(url, token)) {

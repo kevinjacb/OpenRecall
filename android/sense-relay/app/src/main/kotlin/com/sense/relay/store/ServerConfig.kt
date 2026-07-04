@@ -22,13 +22,25 @@ private val KEY_TOKEN = stringPreferencesKey("token")
 private val KEY_DEV = stringPreferencesKey("device")
 private val KEY_PROV = booleanPreferencesKey("prov")
 
+/**
+ * Persisted server config (URL, token, device address, provisioned flag).
+ *
+ * DataStore is a process-wide singleton per file — creating more than one
+ * DataStore pointing at the same `.preferences_pb` throws
+ * `IllegalStateException: There are multiple DataStores active for the same file`.
+ * This class is constructed three times per session (SetupActivity.onCreate's
+ * prefilled-form read, SetupActivity.onDone's write after provisioning,
+ * RelayService.onStartCommand's read on start, and again on every
+ * SetupViewModel.onAttempt), so we MUST share a single DataStore instance.
+ *
+ * `StoreHolder` keys the singleton by the absolute file path so the same
+ * ServerConfig(dir) call (from any Activity, Service, or coroutine) returns
+ * a wrapper around the same underlying DataStore. DataStore's own internal
+ * single-writer queue handles concurrent read/write from different call sites.
+ */
 class ServerConfig(dir: File) {
-    // Mirrors the path produced by androidx.datastore.preferences.PreferenceDataStoreFile's
-    // Context.preferencesDataStoreFile(name): <dir>/datastore/<name>.preferences_pb
-    private val store: DataStore<Preferences> =
-        PreferenceDataStoreFactory.create(produceFile = {
-            File(dir, "datastore/sense_config.preferences_pb")
-        })
+
+    private val store: DataStore<Preferences> = StoreHolder.get(File(dir, DATASTORE_FILE))
 
     suspend fun read(): Config = store.data.map { p ->
         Config(
@@ -48,5 +60,33 @@ class ServerConfig(dir: File) {
         }
     }
 
+    /** Persist just the server URL + token entered in the setup form, so a failed attempt
+     *  (or app restart) pre-fills the form next time. Preserves device address + provisioned. */
+    suspend fun saveCredentials(url: String, token: String) {
+        store.edit { p ->
+            p[KEY_URL] = url
+            p[KEY_TOKEN] = token
+        }
+    }
+
     suspend fun clear() { store.edit { it.clear() } }
+
+    companion object {
+        // Mirrors the path produced by androidx.datastore.preferences.PreferenceDataStoreFile's
+        // Context.preferencesDataStoreFile(name): <dir>/datastore/<name>.preferences_pb
+        private const val DATASTORE_FILE = "datastore/sense_config.preferences_pb"
+    }
+}
+
+/** Process-wide map of absolute file path → DataStore. Keying by path means the
+ *  same ServerConfig(dir) call (from SetupActivity, RelayService, etc.) gets the
+ *  same DataStore instance, which is what DataStore requires. */
+private object StoreHolder {
+    private val stores = mutableMapOf<String, DataStore<Preferences>>()
+
+    @Synchronized
+    fun get(file: File): DataStore<Preferences> =
+        stores.getOrPut(file.absolutePath) {
+            PreferenceDataStoreFactory.create(produceFile = { file })
+        }
 }

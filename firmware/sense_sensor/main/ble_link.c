@@ -10,6 +10,8 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
+#include <inttypes.h>  // PRIu16 — for uint16_t (BLE connection handle)
+
 static const char *TAG = "ble";
 
 #define BLE_CMD_MAX 512  // a signed §D command envelope is well under this
@@ -129,7 +131,7 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
     case BLE_GAP_EVENT_CONNECT:
       if (event->connect.status == 0) {
         s_conn_handle = event->connect.conn_handle;
-        ESP_LOGI(TAG, "phone connected (handle %u)", s_conn_handle);
+        ESP_LOGI(TAG, "phone connected (handle %" PRIu16 ")", s_conn_handle);
       } else {
         start_advertising();  // failed; advertise again
       }

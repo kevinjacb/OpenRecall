@@ -1,6 +1,8 @@
 package com.sense.relay.ui
 
+import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
@@ -12,14 +14,21 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.ParcelUuid
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.sense.relay.RelayService
+import com.sense.relay.ble.SensorLink
 import com.sense.relay.http.SenseHttpClient
 import com.sense.relay.setup.BleProvisioning
 import com.sense.relay.setup.DeviceScanner
@@ -31,6 +40,7 @@ import com.sense.relay.store.ServerConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.util.Collections
@@ -40,11 +50,53 @@ import java.util.UUID
 class SetupActivity : ComponentActivity() {
 
     private lateinit var scanner: RealDeviceScanner
+    private lateinit var vm: SetupViewModel
+
+    // The BLE scan needs a runtime permission grant: BLUETOOTH_SCAN/BLUETOOTH_CONNECT on
+    // Android 12+, or ACCESS_FINE_LOCATION below. The manifest declaration alone grants
+    // nothing — without the runtime grant the scanner throws SecurityException (12+) or
+    // returns no results (<=11), so the wizard never finds the device even though other BLE
+    // apps can. We gate the wizard's "Connect" action on the grant.
+    private var pendingConnect: Pair<String, String>? = null
+
+    private val blePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val pending = pendingConnect
+        pendingConnect = null
+        if (grants.values.all { it }) {
+            pending?.let { (u, t) -> lifecycleScope.launch { vm.submitServer(u, t) } }
+        } else {
+            Toast.makeText(this, "Bluetooth permission is required to find the Sense device", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun requiredBlePermissions(): Array<String> =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        else
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+
+    private fun hasBlePermission(): Boolean = requiredBlePermissions().all {
+        ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun beginConnect(url: String, token: String) {
+        if (hasBlePermission()) {
+            lifecycleScope.launch { vm.submitServer(url, token) }
+        } else {
+            pendingConnect = url to token
+            blePermissionLauncher.launch(requiredBlePermissions())
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         scanner = RealDeviceScanner(this)
-        val vm = SetupViewModel(
+        // Pre-fill the form with the last-entered server URL + token (persisted on each
+        // attempt) so the user doesn't retype them across retries or app restarts.
+        val saved = runBlocking { runCatching { ServerConfig(filesDir).read() }.getOrDefault(Config()) }
+        vm = SetupViewModel(
             serverApi = RealServerApi,
             scanner = scanner,
             onDone = { c ->
@@ -54,11 +106,14 @@ class SetupActivity : ComponentActivity() {
                     .putExtra("token", c.token)
                 startForegroundService(i)
             },
+            onAttempt = { u, t -> ServerConfig(filesDir).saveCredentials(u, t) },
+            initialUrl = saved.serverUrl,
+            initialToken = saved.token,
         )
         setContent {
             SenseTheme {
                 val step by vm.step.collectAsState()
-                SetupScreen(step) { u, t -> lifecycleScope.launch { vm.submitServer(u, t) } }
+                SetupScreen(step) { u, t -> beginConnect(u, t) }
             }
         }
     }
@@ -103,12 +158,21 @@ class RealDeviceScanner(private val context: Context) : DeviceScanner {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 found.add(result.device.address)
             }
+
+            override fun onScanFailed(errorCode: Int) {
+                // Surface scan failures instead of failing silently to an empty result.
+                Log.w(TAG, "BLE scan failed (errorCode=$errorCode); no devices will be found")
+            }
         }
-        val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(PROV_SERVICE)).build()
+        // The firmware advertises the AUDIO service UUID (6e9d0001) + name "Sense" in its
+        // primary advertisement; the provisioning service (6e9d0010) lives in the GATT table
+        // only and is discovered after connect. So a UUID-filtered scan must target the
+        // *advertised* service — filtering on 6e9d0010 (the old filter) matches nothing.
+        val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SENSE_SERVICE)).build()
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
-        runCatching { scanner.startScan(null, settings, callback) }
+        runCatching { scanner.startScan(listOf(filter), settings, callback) }
         try {
             delay(SCAN_WINDOW_MS)
         } finally {
@@ -121,7 +185,11 @@ class RealDeviceScanner(private val context: Context) : DeviceScanner {
         val device = adapter.getRemoteDevice(address)
             ?: throw IOException("unknown device $address")
         val cb = ProvGattCallback()
-        val gatt = device.connectGatt(context, false, cb, BluetoothProfile.GATT)
+        // Transport must be a BluetoothDevice.TRANSPORT_* constant. BluetoothProfile.GATT
+        // is a profile id (value 7), not a transport — passing it is a known cause of
+        // "registerApp OK, onConnectionStateChange never fires" on Android 10. Use
+        // TRANSPORT_LE for a single-mode BLE device like the ESP32.
+        val gatt = device.connectGatt(context, false, cb, BluetoothDevice.TRANSPORT_LE)
             ?: throw IOException("connectGatt failed")
         currentGatt = gatt
         withTimeoutOrNull(CONNECT_TIMEOUT_MS) { cb.servicesReady.await() }
@@ -137,7 +205,14 @@ class RealDeviceScanner(private val context: Context) : DeviceScanner {
     }
 
     companion object {
-        // Provisioning service + characteristics (firmware config.h)
+        private const val TAG = "RealDeviceScanner"
+
+        // The service UUID the firmware actually advertises (audio service 6e9d0001).
+        // Single source of truth: SensorLink.SERVICE. The setup scan finds the device by this
+        // advertised UUID; the provisioning service (PROV_SERVICE) is resolved post-connect.
+        private val SENSE_SERVICE: UUID = SensorLink.SERVICE
+
+        // Provisioning service + characteristics (firmware config.h); used post-connect only.
         val PROV_SERVICE: UUID = UUID.fromString("6e9d0010-b5a3-4f6e-9b1a-7c2d5e8f0a10")
         val STATE: UUID = UUID.fromString("6e9d0011-b5a3-4f6e-9b1a-7c2d5e8f0a10")
         val SERVER_KEY: UUID = UUID.fromString("6e9d0012-b5a3-4f6e-9b1a-7c2d5e8f0a10")
@@ -145,6 +220,7 @@ class RealDeviceScanner(private val context: Context) : DeviceScanner {
 
         private const val SCAN_WINDOW_MS = 10000L
         private const val CONNECT_TIMEOUT_MS = 10_000L
+        private const val MTU_TIMEOUT_MS = 3_000L
         private const val OP_TIMEOUT_MS = 5_000L
     }
 
@@ -152,13 +228,23 @@ class RealDeviceScanner(private val context: Context) : DeviceScanner {
     @SuppressLint("MissingPermission")
     private class ProvGattCallback : BluetoothGattCallback() {
         val servicesReady = CompletableDeferred<Unit>()
+        val mtuReady = CompletableDeferred<Unit>()
         var pendingRead: CompletableDeferred<ByteArray?>? = null
         var pendingWrite: CompletableDeferred<Int>? = null
         var impl: BleProvImpl? = null
 
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            // Always log status + newState: cheap when working, essential when not.
+            // status != 0 indicates a GATT-layer error (0x85=GATT_FAILURE, 0x3E=
+            // CONN_FAIL_ESTABLISH, 0x87=NOT_CONNECTED, etc.) and explains a connect
+            // that never reaches STATE_CONNECTED.
+            Log.i(TAG, "onConnectionStateChange status=$status newState=$newState")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                g.requestMtu(247)  // 32-byte server-key write needs >20-byte payload
+                // Discover services directly on connect. Do NOT gate discovery on the MTU
+                // exchange: requestMtu() right after connect can fail to fire onMtuChanged on
+                // some stacks, which would leave discoverServices() never called — the
+                // "connect/service-discovery timeout" failure. MTU is enlarged after discovery.
+                g.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 // Fail any in-flight op so suspenders resume instead of hanging.
                 pendingRead?.complete(null)
@@ -166,18 +252,32 @@ class RealDeviceScanner(private val context: Context) : DeviceScanner {
                 if (!servicesReady.isCompleted) {
                     servicesReady.completeExceptionally(IOException("disconnected (status=$status)"))
                 }
+                if (!mtuReady.isCompleted) mtuReady.completeExceptionally(IOException("disconnected"))
                 impl?.close()
             }
         }
 
-        override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
-            // Proceed regardless of MTU status; writes will surface failure if too large.
-            g.discoverServices()
+        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            Log.i(TAG, "onServicesDiscovered status=$status")
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                // Release the connect-time await immediately. Do NOT also call
+                // requestMtu(247) here: the MTU exchange would be in-flight when
+                // the caller immediately issues the first read, and on some Android
+                // stacks a second GATT op issued before the first completes is
+                // rejected (gatt.readCharacteristic returns false, and no
+                // onCharacteristicRead callback ever fires — a silent 5s timeout).
+                // MTU enlargement is requested later, just before the 32-byte
+                // server-key write that actually needs it.
+                servicesReady.complete(Unit)
+            } else {
+                servicesReady.completeExceptionally(IOException("service discovery status=$status"))
+            }
         }
 
-        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            if (status == BluetoothGatt.GATT_SUCCESS) servicesReady.complete(Unit)
-            else servicesReady.completeExceptionally(IOException("service discovery status=$status"))
+        override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+            // Proceed regardless of the negotiated size; an oversized write surfaces a clear
+            // length-status error rather than a silent discovery hang.
+            mtuReady.complete(Unit)
         }
 
         @Deprecated("Deprecated in Java")
@@ -187,6 +287,7 @@ class RealDeviceScanner(private val context: Context) : DeviceScanner {
         ) {
             @Suppress("DEPRECATION") val value =
                 if (status == BluetoothGatt.GATT_SUCCESS) c.value else null
+            Log.i(TAG, "onCharacteristicRead uuid=${c.uuid} status=$status len=${value?.size}")
             pendingRead?.complete(value)
             pendingRead = null
         }
@@ -194,6 +295,7 @@ class RealDeviceScanner(private val context: Context) : DeviceScanner {
         override fun onCharacteristicWrite(
             g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int,
         ) {
+            Log.i(TAG, "onCharacteristicWrite uuid=${c.uuid} status=$status")
             pendingWrite?.complete(status)
             pendingWrite = null
         }
@@ -218,15 +320,24 @@ class RealDeviceScanner(private val context: Context) : DeviceScanner {
         override suspend fun readState(): Int {
             val deferred = CompletableDeferred<ByteArray?>()
             cb.pendingRead = deferred
-            @Suppress("DEPRECATION") run { gatt.readCharacteristic(stateChar) }
+            val accepted = @Suppress("DEPRECATION") run { gatt.readCharacteristic(stateChar) }
+            Log.i(TAG, "readCharacteristic(STATE) accepted=$accepted")
             val value = withTimeoutOrNull(OP_TIMEOUT_MS) { deferred.await() }
                 ?: throw IOException("read STATE timeout")
+            Log.i(TAG, "read STATE value=${value?.joinToString(" ") { "%02x".format(it) }}")
             val b = value?.firstOrNull() ?: return ProvFrames.STATE_UNPROVISIONED
             return b.toInt() and 0xFF
         }
 
         override suspend fun writeServerKey(key: ByteArray) {
             require(key.size == ProvFrames.KEY_LEN) { "server key must be ${ProvFrames.KEY_LEN} bytes" }
+            // Enlarge the MTU now (just before the 32-byte write that needs it).
+            // Wait up to MTU_TIMEOUT_MS for the exchange. If it never fires (some
+            // vendor stacks don't fire onMtuChanged), proceed anyway — the write
+            // then fails with a clear length-status error instead of hanging.
+            if (gatt.requestMtu(247)) {
+                withTimeoutOrNull(MTU_TIMEOUT_MS) { cb.mtuReady.await() }
+            }
             val deferred = CompletableDeferred<Int>()
             cb.pendingWrite = deferred
             keyChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT

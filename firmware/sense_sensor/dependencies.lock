@@ -10,7 +10,7 @@ dependencies:
       type: service
     version: 1.7.19~2
   espressif/libsodium:
-    component_hash: 39c9dc77d81804d54a539c8f076faed165152be7720ddd0e721acb9daf4aa5af
+    component_hash: d4066b373fc6d4c5196db42aeea7faef4ac7f3080af96c2b74e2476c08b78dc1
     dependencies:
     - name: idf
       require: private
@@ -18,15 +18,15 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.0.22
+    version: 1.0.22~1
   idf:
     source:
       type: idf
-    version: 6.0.1
+    version: 5.1.6
 direct_dependencies:
 - espressif/cjson
 - espressif/libsodium
 - idf
 manifest_hash: db545a465b6551e00233d849c08d13e93221ea696a735bd9d31f2a39c3be084c
 target: esp32s3
-version: 3.0.0
+version: 2.0.0

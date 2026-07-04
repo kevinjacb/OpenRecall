@@ -487,21 +487,46 @@ checklist, restated as outcomes of the architecture above.
 - **Push notifications.** Today the only notifiable state is relay; the
   existing foreground service notification suffices.
 
-## Open questions for reviewer
+## Resolved decisions (post-review)
 
-1. **Status refresh cadence.** `StatusRepository` polls. What interval? (1s
-   feels live; 5s is battery-friendly. The state-derived connection indicator
-   on Home is the most visible.)
-2. **Token rotation flow.** The bearer token is currently set once during
-   setup. Settings exposes the token as a read-only field today. Should
-   re-provisioning be reachable from Settings in this slice, or only via
-   SetupActivity re-entry?
-3. **Session detail backfill.** The server stores events append-only. If a
-   session was open yesterday and the phone just opened Recordings today, do
-   we show what we have (current behavior) or do we backfill from the gateway?
-   Current behavior is the answer for this slice; flagging as future work.
+1. **Status refresh cadence.** `StatusRepository.observeStatus()` is a Flow
+   the UI never queries directly. Initial implementation polls `GET /status`
+   every **2 seconds** while the application is in the foreground, suspends
+   polling while backgrounded, and resumes on return. On subscribe, the
+   repository immediately emits the most recent cached value (if any), then
+   the next poll. The repository's interface is a Flow so that polling can be
+   swapped for WebSockets or Server-Sent Events without changing ViewModels
+   or UI. The abstraction is `PollingStatusRepository` (impl) implementing
+   `StatusRepository` (interface) — the swap is one wiring line in
+   `RepositoryModule`.
+2. **Re-provisioning from Settings.** Settings exposes a "Reconfigure device"
+   action. It launches the existing `SetupActivity` (re-used, not duplicated).
+   On success, `SetupActivity` returns to `MainActivity`. On its return, all
+   repositories re-read from their sources and the relay state is refreshed
+   via `RelayController.requestRefresh()` (the service re-binds, the
+   `MutableStateFlow` re-emits current state). No provisioning logic is
+   re-implemented; the `SetupViewModel` is the single owner.
+3. **Session detail progressive loading.** `SessionDetail` renders the
+   `SessionSummary` immediately and shows the events timeline as a
+   `LazyColumn` over `SessionRepository.observeSessionEvents(id): Flow<Outcome<List<CaptureEvent>>>`.
+   The first emission paints the empty timeline; subsequent emissions append
+   chunks without blocking. The ViewModel exposes a sealed `SessionDetailUiState`
+   (Loading, LoadedSummary, LoadedSummaryAndEvents(summary, events), Failed).
+   The same screen supports a future live-session use case because the
+   `Flow` is the source of truth — when a session is in progress, the
+   repository's tail of the flow continues to deliver new events as the
+   server emits them; the UI does not need to know whether the session is
+   "live" or "historical."
+
+## Navigation (confirmed)
+
+Four primary destinations in the bottom bar: **Home, Recordings, Device,
+Settings**. The Live tab is intentionally deferred. The `Destination` sealed
+class is designed so a fifth entry can be added with a one-line change in
+`Destination`, a one-line `composable<Destination.X>` in `AppNavigation`, and
+a one-line `NavigationBarItem` in `BottomBar`. No refactor.
 
 ---
 
-**Status:** Awaiting user review. Once approved, the next step is the
-`writing-plans` skill to produce the implementation plan.
+**Status:** Approved as implementation baseline. Next step: the
+`writing-plans` skill produces the implementation plan.

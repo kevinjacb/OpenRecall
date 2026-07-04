@@ -1,6 +1,7 @@
 package com.sense.relay.ble
 
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
@@ -82,17 +83,24 @@ class SensorLink(private val context: Context, private val listener: Listener) {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             adapter.bluetoothLeScanner.stopScan(this)
             Log.i(TAG, "found ${result.device.address}, connecting")
-            gatt = result.device.connectGatt(context, false, gattCallback,
-                BluetoothProfile.GATT)
+            // Transport must be BluetoothDevice.TRANSPORT_* (LE for a single-mode
+            // BLE device). BluetoothProfile.GATT is a profile id, not a transport;
+            // passing it causes the link-layer connect to be silently dropped on
+            // many Android 10 vendor stacks.
+            gatt = result.device.connectGatt(
+                context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         }
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            // Log status + newState so a stack-rejected connect (status != 0) is
+            // diagnosable from logcat.
+            Log.i(TAG, "onConnectionStateChange status=$status newState=$newState")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 g.requestMtu(247)  // DLE-friendly; larger §C.6 chunks per notification
             } else {
-                listener.onDisconnected("gatt state $newState")
+                listener.onDisconnected("gatt state $newState (status=$status)")
             }
         }
 
