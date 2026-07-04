@@ -20,6 +20,7 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
     <application
+        android:name=".SenseApplication"
         android:allowBackup="false"
         android:label="Sense Relay"
         android:supportsRtl="true"
@@ -33,6 +34,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Post-setup single-Activity host. Not the launcher (SetupActivity
+             stays the launcher per the spec); reached by an explicit Intent
+             from SetupActivity's success path (wired in Phase 7). -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="false" />
 
         <service
             android:name=".RelayService"
