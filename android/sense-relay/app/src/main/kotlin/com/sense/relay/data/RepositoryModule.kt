@@ -14,14 +14,13 @@ package com.sense.relay.data
 object RepositoryModule {
 
     /**
-     * The aggregated repository surface. The dummy `unit` field exists
-     * so the data class has a primary constructor parameter (Kotlin
-     * requirement); when Phase 2 adds the first real repository, it
-     * replaces the `unit` and the rest cascade in. The "marker
-     * sentinel" pattern keeps the type valid without resorting to a
-     * regular class.
+     * The aggregated repository surface. Empty in Phase 1 by design;
+     * Phase 2 promotes this to a `data class` with the real repository
+     * fields (ConfigurationRepository, SessionRepository,
+     * DeviceRepository, StatusRepository, DashboardRepository) and
+     * ViewModels/screens start consuming `repos.foo`.
      */
-    data class Repositories(val unit: Unit = Unit)
+    class Repositories
 
     lateinit var repos: Repositories
         private set
