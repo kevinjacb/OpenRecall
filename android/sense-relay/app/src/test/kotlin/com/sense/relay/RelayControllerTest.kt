@@ -1,11 +1,16 @@
 package com.sense.relay.relay
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNotSame
+import kotlin.test.assertTrue
 
 /**
  * Pins the contract of [RelayController]:
@@ -13,9 +18,10 @@ import kotlin.test.assertNotSame
  *   - Every `updateX` produces a new [RelayState] with the new field;
  *     the other fields are preserved.
  *   - [setError] updates the `lastError` slot; passing null clears it.
- *   - [requestRefresh] preserves the state value (the *content* of
- *     `state.value` is unchanged; Phase 7's re-provisioning flow
- *     uses a separate tick channel for wakeups).
+ *   - [requestRefresh] bumps [RelayState.revision] and re-emits the
+ *     state — collectors observe a new value even when the headline
+ *     fields are unchanged. This is the "wakeup" mechanism Phase 7's
+ *     re-provisioning flow depends on.
  *   - [state] is read-only outside the controller: a caller cannot
  *     cast it back to a MutableStateFlow and mutate it.
  *
@@ -26,14 +32,14 @@ import kotlin.test.assertNotSame
  */
 class RelayControllerTest {
 
-    // Each test resets the controller to Initial. A beforeEach
-    // would be cleaner but a Kotlin `object` has no constructor to
-    // hook, so we restore the state inline at the top of each test.
+    // Each test resets the controller to Initial. The
+    // `RelayController.reset()` method restores both the headline
+    // fields AND the revision counter (the per-field `updateX`
+    // methods don't touch revision, so a test that calls them to
+    // "reset" would leave the revision at whatever value the
+    // previous test bumped it to).
     private fun reset() {
-        RelayController.updateDevice(DeviceState.Unknown)
-        RelayController.updateConnection(RelayConnectionState.Idle)
-        RelayController.updateServer(ServerState.Unknown)
-        RelayController.setError(null)
+        RelayController.reset()
     }
 
     @Test fun initialStateIsRelayStateInitial() {
@@ -90,17 +96,99 @@ class RelayControllerTest {
         assertEquals(null, RelayController.state.value.lastError)
     }
 
-    @Test fun requestRefreshLeavesStateValueUnchanged() {
-        // requestRefresh's job is to wake collectors that may have
-        // stopped seeing new values; the *content* of `state.value`
-        // is preserved. Collectors use a separate tick channel
-        // (Phase 7) to re-evaluate. Pin the simple invariant here:
-        // the state value is unchanged.
+    @Test fun requestRefreshReEmitsCurrentState() = runBlocking {
+        // requestRefresh is the controller's "wakeup" mechanism. It
+        // must produce a fresh emission on the public `state` flow
+        // even when the headline fields (device / connection /
+        // server / lastError) are unchanged, so that a StateFlow
+        // collector downstream sees the new value. The
+        // implementation does this by bumping `revision`.
+        //
+        // We exercise the actual contract: a StateFlow collector
+        // must receive a new value after requestRefresh() is called.
+        // We also assert the headline fields are preserved (this
+        // is a *re-emit*, not a state change) and that `revision`
+        // is monotonic.
         reset()
-        val before = RelayController.state.value
-        RelayController.requestRefresh()
-        val after = RelayController.state.value
-        assertEquals(before, after)
+
+        // Set a non-default state so we can verify the headline
+        // fields survive the refresh.
+        RelayController.updateDevice(DeviceState.Connected("AA:BB", "sense-1"))
+        RelayController.updateConnection(RelayConnectionState.Live("sess-1", 0L))
+        RelayController.updateServer(ServerState.Authenticated)
+        RelayController.setError("keep")
+
+        // Only `requestRefresh` bumps the revision; the per-field
+        // `updateX` calls don't. After 4 updateX calls + a
+        // starting revision of 0, we expect revision == 0.
+        val beforeRevision = RelayController.state.value.revision
+        assertEquals(0, beforeRevision)
+
+        // Drive a collector on a real dispatcher. `StateFlow.collect`
+        // uses an internal `select` clause that does not cooperate
+        // with `TestDispatcher` in every coroutines version, so we
+        // run the collector on `Dispatchers.Default` and use a
+        // small real-time wait for propagation.
+        val emissions = mutableListOf<RelayState>()
+        val collectorJob = launch(Dispatchers.Default) {
+            RelayController.state.collect { emissions.add(it) }
+        }
+        try {
+            // Give the collector a moment to subscribe and receive
+            // the current value.
+            delay(50)
+            val beforeRefreshEmissionCount = emissions.size
+            assertTrue(
+                beforeRefreshEmissionCount >= 1,
+                "expected the collector to have received at least the initial value; got $beforeRefreshEmissionCount"
+            )
+
+            // Trigger the refresh. This must produce a new emission
+            // because the revision changes.
+            RelayController.requestRefresh()
+
+            // Wait for the new emission to propagate (real-time).
+            val deadline = System.currentTimeMillis() + 2000
+            while (emissions.size == beforeRefreshEmissionCount && System.currentTimeMillis() < deadline) {
+                delay(10)
+            }
+            assertTrue(
+                emissions.size > beforeRefreshEmissionCount,
+                "expected a new emission after requestRefresh; size still $beforeRefreshEmissionCount"
+            )
+
+            // The direct value check: revision was bumped.
+            val after = RelayController.state.value
+            assertEquals(beforeRevision + 1, after.revision)
+            // The headline fields are unchanged.
+            assertEquals(DeviceState.Connected("AA:BB", "sense-1"), after.device)
+            assertEquals(RelayConnectionState.Live("sess-1", 0L), after.connection)
+            assertEquals(ServerState.Authenticated, after.server)
+            assertEquals("keep", after.lastError)
+
+            // The collector must have seen a new emission whose
+            // revision is exactly one more than the pre-refresh
+            // emission. `emissions.last()` is the most recent, and
+            // its revision is `beforeRevision + 1`.
+            val post = emissions.last()
+            assertEquals(beforeRevision + 1, post.revision)
+            assertEquals(DeviceState.Connected("AA:BB", "sense-1"), post.device)
+            assertEquals(RelayConnectionState.Live("sess-1", 0L), post.connection)
+            assertEquals(ServerState.Authenticated, post.server)
+            assertEquals("keep", post.lastError)
+
+            // A second refresh bumps again.
+            val beforeSecond = emissions.size
+            RelayController.requestRefresh()
+            val deadline2 = System.currentTimeMillis() + 2000
+            while (emissions.size == beforeSecond && System.currentTimeMillis() < deadline2) {
+                delay(10)
+            }
+            assertEquals(beforeRevision + 2, RelayController.state.value.revision)
+            assertEquals(beforeRevision + 2, emissions.last().revision)
+        } finally {
+            collectorJob.cancel()
+        }
     }
 
     @Test fun publicStateIsAStateFlowNotAMutableStateFlow() {

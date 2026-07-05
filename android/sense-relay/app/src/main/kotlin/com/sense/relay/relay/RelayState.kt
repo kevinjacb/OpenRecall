@@ -11,8 +11,16 @@ package com.sense.relay.relay
  * hard failure encoded in [RelayConnectionState.Failed] /
  * [ServerState.Unreachable], which is the headline state.
  *
+ * `revision` is a monotonically increasing counter that bumps on
+ * every [RelayController.requestRefresh] call. It exists so that
+ * `data class`-equal re-emits (e.g. the controller's content is
+ * unchanged but a re-evaluation is requested) still cross the
+ * `MutableStateFlow.value` equality check. Consumers that want
+ * to react to a refresh should key on `revision`; consumers that
+ * only care about the headline state should ignore it.
+ *
  * Mutability: this is a `data class` because consumers destructure
- * the four fields. Field updates happen in one place (the
+ * the fields. Field updates happen in one place (the
  * controller) by `copy`-ing the current state. There is no
  * `MutableRelayState` type — that would invite parallel writers,
  * which is exactly what the singleton is preventing.
@@ -22,6 +30,7 @@ data class RelayState(
     val connection: RelayConnectionState,
     val server: ServerState,
     val lastError: String?,
+    val revision: Int = 0,
 ) {
     companion object {
         /** The starting point — everything unknown, no error. */

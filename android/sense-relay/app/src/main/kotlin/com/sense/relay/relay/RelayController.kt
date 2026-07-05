@@ -59,15 +59,42 @@ object RelayController {
     }
 
     /**
-     * Force a re-emission of the current state. Phase 7's
-     * re-provisioning flow uses this to wake collectors that may
-     * have stopped seeing new values because the `updateX` calls
-     * settled on an equivalent instance (e.g. a no-op transition).
-     * The new instance is `data class`-equal to the old one but
-     * is a fresh `RelayState` object, so `StateFlow`'s
-     * "value-changed" filter re-fires.
+     * Force a re-emission of the current state by bumping
+     * [RelayState.revision]. The other fields are preserved.
+     *
+     * Phase 7's re-provisioning flow uses this to wake collectors
+     * that may have stopped seeing new values because the `updateX`
+     * calls settled on an equivalent instance (e.g. a no-op
+     * transition or a "user just pulled to refresh" gesture that
+     * doesn't change the headline state).
+     *
+     * Note on the mechanism: a naive `_state.value = _state.value.copy()`
+     * does NOT re-emit, because `MutableStateFlow.value` setter
+     * drops values that are `equals`-equal to the current value
+     * (and `data class.copy()` with no args produces an equals-equal
+     * instance). To force the re-emission, this method bumps the
+     * [RelayState.revision] counter; the new `RelayState` is
+     * `!=` the old one (revision differs), so the `StateFlow`
+     * emits. Consumers that care about the headline state should
+     * compare the data fields; consumers that want to react to
+     * the refresh itself should key on `revision`.
      */
     fun requestRefresh() {
-        _state.value = _state.value.copy()
+        _state.value = _state.value.copy(revision = _state.value.revision + 1)
+    }
+
+    /**
+     * Reset the controller to [RelayState.Initial]. Intended for
+     * tests (the controller is a process-singleton; tests need a
+     * way to clear state between runs). The headline fields are
+     * restored AND the `revision` counter is zeroed.
+     *
+     * Production callers should never invoke this — the controller
+     * is meant to be written only through `updateX`/`requestRefresh`.
+     * The method is intentionally public so test code in any
+     * package can call it.
+     */
+    fun reset() {
+        _state.value = RelayState.Initial
     }
 }
