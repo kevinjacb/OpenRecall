@@ -26,6 +26,7 @@ Design notes:
 from __future__ import annotations
 
 import base64
+import collections
 import json
 import threading
 from dataclasses import dataclass, field
@@ -94,18 +95,24 @@ def _preview_of(text: str) -> str | None:
     stripped = text.strip()
     if not stripped:
         return None
-    return _truncate(text)
+    return _truncate(stripped)
 
 
 def _encode_cursor(*, before: datetime, last_id: str) -> str:
     payload = json.dumps({"before": before.isoformat(), "last_id": last_id})
-    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+    # Strip trailing `=` padding: `=` is URL-special per RFC 3986 and the
+    # brief treats the cursor as opaque. A future client URL-encoding the
+    # cursor into a query string would otherwise risk a 1-char DoS on `=`.
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).rstrip(b"=").decode("ascii")
 
 
 def _decode_cursor(cursor: str) -> tuple[datetime, str]:
     """Decode a base64 JSON cursor. Raises :class:`ValueError` on malformed input."""
     try:
-        raw = base64.urlsafe_b64decode(cursor.encode("ascii"))
+        # Re-pad to a multiple of 4 — Python's b64 decoder is strict about
+        # padding and the encoder strips it.
+        padded = cursor + "=" * (-len(cursor) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
         payload = json.loads(raw.decode("utf-8"))
         before = datetime.fromisoformat(payload["before"])
         last_id = str(payload["last_id"])
@@ -128,6 +135,9 @@ class SessionIndex:
     def __init__(self, *, clock: Clock | None = None) -> None:
         self._summaries: dict[str, SessionSummary] = {}
         self._event_count: int = 0
+        # Per-event timestamp deque for the rolling 24h counter. Append-only
+        # under the lock; pruned on read against the injected clock.
+        self._recent_event_timestamps: collections.deque[datetime] = collections.deque()
         self._lock = threading.Lock()
         self._clock: Clock = clock or _default_clock
 
@@ -142,6 +152,7 @@ class SessionIndex:
         """
         with self._lock:
             self._event_count += 1
+            self._recent_event_timestamps.append(event.created_at)
             existing = self._summaries.get(event.session_id)
             if existing is None:
                 self._summaries[event.session_id] = SessionSummary(
@@ -175,21 +186,24 @@ class SessionIndex:
         """Count events whose ``created_at`` is strictly within the last 24h.
 
         "Strictly within 24h" means *newer than* the (now - 24h) timestamp:
-        an event exactly 24h old is **not** included. The wire contract is
-        a coarse status counter; callers that need exact per-event timing
-        should query the EventStore directly. The index only retains the
-        session's first event time (``started_at``), so a session's full
-        ``event_count`` is attributed to the 24h bucket iff that session
-        *started* within 24h — a deliberate approximation, documented in
-        the brief.
+        an event exactly 24h old is **not** included. The counter is
+        per-event (not per-session) — a session that started 25h ago with a
+        fresh event 1h ago counts as 1, and a session that started 1h ago
+        with 100 events counts as 100. The buffer holds event timestamps
+        in append-order; pruning at read time is a full O(K) scan that
+        drops out-of-window entries, so the buffer doesn't grow
+        unboundedly across long-running sessions.
         """
         cutoff = self._clock() - _ONE_DAY
         with self._lock:
-            n = 0
-            for s in self._summaries.values():
-                if s.started_at > cutoff:
-                    n += s.event_count
-            return n
+            timestamps = self._recent_event_timestamps
+            # Filter in place: keep only entries strictly newer than cutoff.
+            # The buffer is bounded by the rolling 24h window in practice,
+            # so the scan is cheap.
+            kept = [ts for ts in timestamps if ts > cutoff]
+            timestamps.clear()
+            timestamps.extend(kept)
+            return len(kept)
 
     def preview_text(self, session_id: str) -> str | None:
         s = self.summary(session_id)

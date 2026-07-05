@@ -234,3 +234,106 @@ def test_preview_text_returns_first_non_empty_or_none():
 
     assert idx.preview_text("s1") == "real"
     assert idx.preview_text("unknown") is None
+
+
+# ---- recent_events_24h event-level (per-event 24h bucket) --------------------
+
+
+def test_recent_events_24h_counts_per_event_not_per_session():
+    """Per the brief: count of *events* whose created_at is within the last 24h.
+
+    A session that started >24h ago but had a fresh event should still be counted.
+    A session that started within 24h but had >1 event should count as >1.
+    """
+    fixed_now = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    def clock() -> datetime:
+        return fixed_now
+
+    idx = SessionIndex(clock=clock)
+    # Session started 25h ago, but had a fresh event 1h ago -> 1 event counted
+    idx.record(_ce("old", 0, created_at=fixed_now - timedelta(hours=25)))
+    idx.record(_ce("old", 1, created_at=fixed_now - timedelta(hours=1)))
+    # Session started 1h ago, 3 events in the last hour -> 3 events counted
+    idx.record(_ce("new", 0, created_at=fixed_now - timedelta(minutes=50)))
+    idx.record(_ce("new", 1, created_at=fixed_now - timedelta(minutes=40)))
+    idx.record(_ce("new", 2, created_at=fixed_now - timedelta(minutes=30)))
+
+    assert idx.recent_events_24h() == 4
+
+
+def test_recent_events_24h_drops_out_of_window_on_subsequent_reads():
+    """The rolling-window deque is pruned at read time against the injected clock.
+
+    Advancing the clock past 24h must drop the prior events from the bucket.
+    """
+    t0 = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+    # Mutable clock we can advance from the test.
+    now = [t0]
+
+    def clock() -> datetime:
+        return now[0]
+
+    idx = SessionIndex(clock=clock)
+    idx.record(_ce("s1", 0, created_at=t0))
+    idx.record(_ce("s1", 1, created_at=t0))
+
+    assert idx.recent_events_24h() == 2
+
+    # Move the clock past 24h: both events should drop out of the window.
+    now[0] = t0 + timedelta(hours=25)
+    assert idx.recent_events_24h() == 0
+
+    # A fresh event after the advance IS counted.
+    idx.record(_ce("s2", 0, created_at=now[0]))
+    assert idx.recent_events_24h() == 1
+
+
+# ---- cursor: unpadded base64 (Finding 2) -------------------------------------
+
+
+def test_cursor_encoded_is_unpadded_base64():
+    """The encoded cursor must not contain `=` padding — `=` is URL-special."""
+    base = datetime(2026, 7, 1, 8, 0, 0, tzinfo=timezone.utc)
+    idx = SessionIndex()
+    _record_sessions(idx, 5, base)
+
+    # Force a non-None cursor (limit=2 with 5 sessions -> pagination cursor).
+    _, cursor = idx.list(limit=2)
+    assert cursor is not None
+    assert "=" not in cursor
+
+
+def test_cursor_round_trip_preserves_payload():
+    """An unpadded encoded cursor must still decode to its (before, last_id) payload."""
+    base = datetime(2026, 7, 1, 8, 0, 0, tzinfo=timezone.utc)
+    idx = SessionIndex()
+    _record_sessions(idx, 25, base)
+
+    page1, cursor1 = idx.list(limit=10)
+    assert cursor1 is not None
+    # The unpadded cursor must still drive the second page correctly.
+    page2, cursor2 = idx.list(limit=10, before=cursor1)
+    assert [s.id for s in page1] == [f"s{i:03d}" for i in range(24, 14, -1)]
+    assert [s.id for s in page2] == [f"s{i:03d}" for i in range(14, 4, -1)]
+
+
+# ---- preview: strip leading/trailing whitespace (Finding 5) -----------------
+
+
+def test_preview_strips_leading_and_trailing_whitespace():
+    """`_preview_of` should return the stripped text, not the raw text."""
+    idx = SessionIndex()
+    idx.record(_ce("s1", 0, text="  hello world  "))
+
+    preview = idx.summary("s1").preview
+    assert preview == "hello world"
+
+
+def test_preview_strips_whitespace_before_truncation():
+    """A padded-but-otherwise-short text should not include the padding in the preview."""
+    idx = SessionIndex()
+    idx.record(_ce("s1", 0, text="   short   "))
+
+    preview = idx.summary("s1").preview
+    assert preview == "short"
