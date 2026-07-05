@@ -50,10 +50,19 @@ class SensorLink(private val context: Context, private val listener: Listener) {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
     private var gatt: BluetoothGatt? = null
     private var commandChar: BluetoothGattCharacteristic? = null
+    private var deviceAddress: String? = null
 
     // Serial GATT op queue: each op runs, its callback dequeues + runs the next.
     private val opQueue = ArrayDeque<() -> Unit>()
     private var opInFlight = false
+
+    /**
+     * The BLE address of the connected device, or null until the
+     * scan callback sees one. Exposed so [com.sense.relay.RelayService]
+     * can publish it to [com.sense.relay.relay.RelayController] on
+     * every state transition.
+     */
+    fun deviceAddress(): String? = deviceAddress
 
     fun start() {
         val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE)).build()
@@ -83,6 +92,11 @@ class SensorLink(private val context: Context, private val listener: Listener) {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             adapter.bluetoothLeScanner.stopScan(this)
             Log.i(TAG, "found ${result.device.address}, connecting")
+            // Capture the address for [RelayController] to surface
+            // to the UI. The scan result is the only point at which
+            // we know it; the gatt callback hands us the same device
+            // object but we save the indirection.
+            deviceAddress = result.device.address
             // Transport must be BluetoothDevice.TRANSPORT_* (LE for a single-mode
             // BLE device). BluetoothProfile.GATT is a profile id, not a transport;
             // passing it causes the link-layer connect to be silently dropped on

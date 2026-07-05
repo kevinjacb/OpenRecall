@@ -10,6 +10,10 @@ import android.os.IBinder
 import android.util.Log
 import com.sense.relay.ble.SensorLink
 import com.sense.relay.net.ServerSocket
+import com.sense.relay.relay.DeviceState
+import com.sense.relay.relay.RelayConnectionState
+import com.sense.relay.relay.RelayController
+import com.sense.relay.relay.ServerState
 import com.sense.relay.store.ServerConfig
 import kotlinx.coroutines.runBlocking
 import java.util.UUID
@@ -51,6 +55,12 @@ class RelayService : Service() {
 
         session = RelaySession(sessionId = UUID.randomUUID().toString())
         sensor = SensorLink(this, sensorListener)
+        // Publish to RelayController: scanning for the device. The
+        // device state machine in DeviceState captures this; the
+        // next update is onConnected (Connected) or onDisconnected
+        // (Disconnected) below.
+        RelayController.updateDevice(DeviceState.Scanning)
+        RelayController.updateConnection(RelayConnectionState.BleScanning)
         sensor.start()
         return START_STICKY
     }
@@ -61,12 +71,21 @@ class RelayService : Service() {
             val wsUrl = serverUrl.replaceFirst(Regex("^https?://"),
                 if (serverUrl.startsWith("https")) "wss://" else "ws://")
             Log.i(TAG, "device connected; opening socket to $wsUrl")
+            // Publish to RelayController: device up + BLE link up.
+            // Name is null until Phase 4 reads the device's advertised
+            // name from a separate characteristic read.
+            val addr = sensor.deviceAddress()
+            RelayController.updateDevice(DeviceState.Connected(addr ?: "", name = null))
+            RelayController.updateConnection(RelayConnectionState.BleConnected(addr ?: ""))
             socket = ServerSocket(wsUrl, token, socketListener).also { it.connect() }
         }
         override fun onAudio(packet: ByteArray) = execute(session.onDeviceAudio(packet))
         override fun onCommandAck(payload: ByteArray) = execute(session.onDeviceCommandAck(payload))
         override fun onDisconnected(reason: String) {
             Log.w(TAG, "device disconnected: $reason"); teardown()
+            // Publish to RelayController: device down + connection idle.
+            RelayController.updateDevice(DeviceState.Disconnected(reason))
+            RelayController.updateConnection(RelayConnectionState.Idle)
         }
     }
 
@@ -74,11 +93,21 @@ class RelayService : Service() {
     private val socketListener = object : ServerSocket.Listener {
         override fun onOpen() {
             Log.i(TAG, "socket open; sending hello")
+            // Publish to RelayController: server authenticated + relay
+            // is Live. `sinceMs` is 0 on first connect; later phases
+            // will track elapsed time and re-publish.
+            RelayController.updateServer(ServerState.Authenticated)
+            RelayController.updateConnection(
+                RelayConnectionState.Live(sessionId = session.sessionId, sinceMs = 0L)
+            )
             session.start().forEach(::execute)
         }
         override fun onText(text: String) = session.onServerMessage(text).forEach(::execute)
         override fun onClosed(reason: String) {
             Log.w(TAG, "socket closed: $reason"); teardown()
+            // Publish to RelayController: socket failed + server unreachable.
+            RelayController.updateConnection(RelayConnectionState.Failed(reason))
+            RelayController.updateServer(ServerState.Unreachable(reason))
         }
     }
 
