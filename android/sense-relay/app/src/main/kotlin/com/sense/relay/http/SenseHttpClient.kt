@@ -2,6 +2,7 @@ package com.sense.relay.http
 
 import com.sense.relay.domain.model.SessionId
 import com.sense.relay.http.dto.CaptureEventDto
+import com.sense.relay.http.dto.DtoJson
 import com.sense.relay.http.dto.ServerStatusDto
 import com.sense.relay.http.dto.SessionDetailsDto
 import com.sense.relay.http.dto.SessionsPageDto
@@ -89,11 +90,11 @@ class SenseHttpClient(
         }
     }
 
-    // ---- Phase 2 stubs: real implementations land in Phase 3. Each stub
-    // throws an IOException whose message names the method and the phase, so
-    // a missing-wiring logcat line is greppable. The stubs keep the rest of
-    // Phase 2 (repositories, ViewModels) compiling against the real types
-    // without doing I/O.
+    // ---- Phase 3+ server-touching calls. `getStatus` is wired to the real
+    // `GET /status` in Phase 4 (the first call the main-app UI needs); the
+    // session-listing/detail calls land in Phase 5. The still-stubbed methods
+    // throw an IOException whose message names the method and the phase, so a
+    // missing-wiring logcat line is greppable.
 
     suspend fun listSessions(limit: Int = 20, cursor: String? = null): SessionsPageDto =
         stub("listSessions")
@@ -104,9 +105,23 @@ class SenseHttpClient(
     suspend fun getSessionEvents(id: SessionId): List<CaptureEventDto> =
         stub("getSessionEvents(${id.value})")
 
-    suspend fun getStatus(): ServerStatusDto =
-        stub("getStatus")
+    /**
+     * `GET /status`. Mirrors [serverPubkey]'s shape: a 401/403 is a
+     * [SecurityException] (the "go to Settings" signal), any other non-2xx
+     * is an [IOException], and the body is parsed with the shared lenient
+     * [DtoJson] so a future server field addition doesn't hard-fail. The
+     * caller ([PollingStatusRepository] via [statusApiError]) classifies the
+     * thrown error into an [com.sense.relay.core.model.ApiError].
+     */
+    suspend fun getStatus(): ServerStatusDto = withContext(Dispatchers.IO) {
+        client.newCall(req("/status")).execute().use { resp ->
+            if (resp.code == 401 || resp.code == 403) throw SecurityException("unauthorized")
+            if (resp.code !in 200..299) throw IOException("status http ${resp.code}")
+            val body = resp.body?.string().orEmpty()
+            DtoJson.decodeFromString(ServerStatusDto.serializer(), body)
+        }
+    }
 
     private fun stub(method: String): Nothing =
-        throw IOException("$method: not yet wired (Phase 3 server endpoint)")
+        throw IOException("$method: not yet wired (Phase 5 server endpoint)")
 }

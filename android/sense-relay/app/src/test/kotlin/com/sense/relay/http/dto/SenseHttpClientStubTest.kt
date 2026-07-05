@@ -8,9 +8,11 @@ import kotlin.test.Test
 import kotlin.test.assertFailsWith
 
 /**
- * Phase 2 stubs: every server-touching method on [SenseHttpClient]
- * throws a stable `IOException("not yet wired (Phase 3 server
- * endpoint)")`. Phase 3 lands the real OkHttp calls; the existing
+ * Session-listing stubs on [SenseHttpClient] throw a stable
+ * `IOException` naming the method + the phase that wires it (Phase 5).
+ * `getStatus()` is no longer a stub — Phase 4 wired the real
+ * `GET /status` call, so it's exercised through
+ * [com.sense.relay.data.PollingStatusRepository] instead of here.
  * `health()` and `serverPubkey()` keep working unchanged.
  *
  * The test instantiates the client directly. Its constructor builds
@@ -42,17 +44,12 @@ class SenseHttpClientStubTest {
         assertMessage(ex, "getSessionEvents")
     }
 
-    @Test fun getStatusThrowsIoException() = runTest {
-        val ex = assertFailsWith<IOException> { client().getStatus() }
-        assertMessage(ex, "getStatus")
-    }
-
     private fun assertMessage(ex: IOException, method: String) {
-        // The stub message is allowed to drift slightly (Phase 3 may
-        // add the URL), but it MUST mention the method and the phase
-        // so logcat greppers can find it.
+        // The stub message is allowed to drift slightly (a later phase may
+        // add the URL), but it MUST mention the method and the phase that
+        // wires it so logcat greppers can find it.
         val msg = ex.message ?: ""
         check(method in msg) { "expected method '$method' in '$msg'" }
-        check("Phase 3" in msg) { "expected 'Phase 3' in '$msg'" }
+        check("Phase 5" in msg) { "expected 'Phase 5' in '$msg'" }
     }
 }

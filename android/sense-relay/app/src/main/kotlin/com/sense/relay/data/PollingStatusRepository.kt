@@ -1,0 +1,104 @@
+package com.sense.relay.data
+
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import com.sense.relay.core.model.ApiError
+import com.sense.relay.core.result.Outcome
+import com.sense.relay.domain.model.ServerStatus
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.io.IOException
+
+/**
+ * Foreground-only poller for `GET /status`. The real [StatusRepository]:
+ * on every `ON_START` of the observed [Lifecycle] it launches a loop that
+ * fetches the status, caches the [Outcome], waits [intervalMs], and
+ * repeats; on `ON_STOP` it cancels the loop. Production observes
+ * `ProcessLifecycleOwner.get().lifecycle`, so polling runs only while the
+ * app is in the foreground and stops automatically when it's backgrounded.
+ *
+ * **Test seams (all constructor params have production defaults):**
+ *  - [fetch]: the one thing that touches the network. Tests inject a fake
+ *    that returns a controllable [Outcome] without any I/O. Production wires
+ *    it to a `SenseHttpClient.getStatus()` call (see [RepositoryModule]).
+ *  - [intervalMs] / [delayFn]: the cadence. Tests inject a [delayFn] that
+ *    records the requested durations (and/or short-circuits the wait) so a
+ *    unit test can assert the 2s cadence without wall-clock waiting.
+ *  - [scope]: the coroutine scope the loop runs in. Tests pass a
+ *    test scope so the loop advances on virtual time.
+ *
+ * The cached value is exposed via [observeStatus] as a `filterNotNull`
+ * over the internal [MutableStateFlow], so a subscriber gets the latest
+ * poll result immediately on subscribe and the loop is independent of
+ * whether anyone is subscribed.
+ */
+class PollingStatusRepository(
+    private val fetch: suspend () -> Outcome<ServerStatus>,
+    lifecycle: Lifecycle,
+    private val intervalMs: Long = DEFAULT_INTERVAL_MS,
+    private val delayFn: suspend (Long) -> Unit = { delay(it) },
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+) : StatusRepository {
+
+    private val cached = MutableStateFlow<Outcome<ServerStatus>?>(null)
+    private var job: Job? = null
+
+    init {
+        lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) = start()
+            override fun onStop(owner: LifecycleOwner) = stop()
+        })
+    }
+
+    /** Test-only: the latest cached poll result (null before the first
+     *  poll completes). Reading this avoids the `StateFlow.collect` /
+     *  `TestDispatcher` friction in unit tests. */
+    internal val latest: Outcome<ServerStatus>?
+        get() = cached.value
+
+    private fun start() {
+        if (job?.isActive == true) return
+        job = scope.launch {
+            while (isActive) {
+                cached.value = fetch()
+                delayFn(intervalMs)
+            }
+        }
+    }
+
+    private fun stop() {
+        job?.cancel()
+        job = null
+    }
+
+    override fun observeStatus(): Flow<Outcome<ServerStatus>> = cached.filterNotNull()
+
+    companion object {
+        /** The spec's status cadence: poll every 2 seconds while foregrounded. */
+        const val DEFAULT_INTERVAL_MS: Long = 2_000L
+    }
+}
+
+/**
+ * Classify a thrown fetch error into the small [ApiError] set the UI cares
+ * about. Pure (no I/O, no Android) so it is unit-testable in isolation:
+ *  - [SecurityException] → [ApiError.Unauthorized] (the client throws this
+ *    on a 401/403 — see `SenseHttpClient.getStatus`).
+ *  - [IOException] → [ApiError.Unreachable] (DNS/TCP/TLS/timeout, or a
+ *    non-auth non-2xx HTTP status, both surfaced by the client as IOException).
+ *  - anything else → [ApiError.Unknown] (carries the throwable for logging).
+ */
+fun statusApiError(e: Throwable): ApiError = when (e) {
+    is SecurityException -> ApiError.Unauthorized
+    is IOException -> ApiError.Unreachable(e.message ?: "unreachable")
+    else -> ApiError.Unknown(e)
+}
