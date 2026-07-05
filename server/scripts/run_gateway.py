@@ -38,6 +38,8 @@ from sense_server.commands.signing import load_or_create_signer
 from sense_server.events.store import SqliteEventStore
 from sense_server.gateway.adapter import build_pipeline_factory, serve
 from sense_server.http.app import build_app
+from sense_server.sessions.index import SessionIndex
+from sense_server.sessions.lifecycle import SessionLifecycle
 
 
 def main() -> None:
@@ -61,8 +63,20 @@ def main() -> None:
     dispatcher = CommandDispatcher(signer)
     factory = build_pipeline_factory(window_ms=args.window_ms, model=args.model)
 
+    # Phase 3 dependencies: the index backs `/sessions`, the lifecycle backs
+    # `/status`'s active_sessions counter. Both are process-wide and in-memory;
+    # a restart rebuilds the index from the durable store on demand.
+    session_index = SessionIndex()
+    session_lifecycle = SessionLifecycle()
+
     token = load_or_create_token(args.token_file)
-    app = build_app(token=token, get_pubkey=lambda: signer.public_key_bytes)
+    app = build_app(
+        token=token,
+        get_pubkey=lambda: signer.public_key_bytes,
+        event_store=store,
+        session_index=session_index,
+        session_lifecycle=session_lifecycle,
+    )
 
     async def main_loop() -> None:
         http_runner = aiohttp.web.AppRunner(app)
@@ -76,8 +90,16 @@ def main() -> None:
             print(f"bearer token (copy to phone): {token}")
             print(f"server command public key (provision on device): "
                   f"{signer.public_key_bytes.hex()}")
-            await serve(factory, host=args.host, port=args.port,
-                        event_store=store, dispatcher=dispatcher, token=token)
+            await serve(
+                factory,
+                host=args.host,
+                port=args.port,
+                event_store=store,
+                dispatcher=dispatcher,
+                token=token,
+                session_index=session_index,
+                session_lifecycle=session_lifecycle,
+            )
         finally:
             await http_runner.cleanup()
 

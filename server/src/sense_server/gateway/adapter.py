@@ -23,6 +23,8 @@ from .core import GatewayCore, PipelineFactory
 if TYPE_CHECKING:
     from ..commands.dispatcher import CommandDispatcher
     from ..events.store import EventStore
+    from ..sessions.index import SessionIndex
+    from ..sessions.lifecycle import SessionLifecycle
 
 
 def handle_message(core: GatewayCore, message: str | bytes) -> list[str]:
@@ -64,6 +66,8 @@ async def serve(
     event_store: "EventStore | None" = None,
     dispatcher: "CommandDispatcher | None" = None,
     token: str | None = None,
+    session_index: "SessionIndex | None" = None,
+    session_lifecycle: "SessionLifecycle | None" = None,
 ) -> None:
     """Run the gateway WebSocket server until cancelled.
 
@@ -72,6 +76,12 @@ async def serve(
     inbound connection must present an ``Authorization: Bearer <token>`` header or
     it is closed with a 1008 "unauthorized" policy error before any §E processing.
     A ``None`` token disables auth (local dev / existing tests).
+
+    ``session_index`` and ``session_lifecycle`` are the Phase 3 dependencies
+    that back the HTTP ``/sessions`` and ``/status`` routes: the index is fed
+    by every successfully-stored capture event, and the lifecycle tracks
+    currently-open connections. Both are optional for back-compat with the
+    existing test suite.
     """
     import asyncio
 
@@ -92,6 +102,8 @@ async def serve(
             pipeline_factory=pipeline_factory,
             event_store=event_store,
             dispatcher=dispatcher,
+            session_index=session_index,
+            session_lifecycle=session_lifecycle,
         )
         try:
             async for message in ws:
