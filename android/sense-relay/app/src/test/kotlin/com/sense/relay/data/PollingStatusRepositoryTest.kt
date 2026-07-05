@@ -9,9 +9,11 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
+import java.io.IOException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -137,6 +139,35 @@ class PollingStatusRepositoryTest {
         // The failure did not tear down the loop: the next interval polls again.
         testScheduler.advanceTimeBy(PollingStatusRepository.DEFAULT_INTERVAL_MS + 1)
         testScheduler.runCurrent()
+        assertIs<Outcome.Success<ServerStatus>>(repo.latest)
+    }
+
+    @Test fun loopSurvivesAThrowingFetch() = runTest {
+        // A `fetch` is contracted to return an Outcome, not throw — but if
+        // one ever does (e.g. the production fetch's DataStore read blew up
+        // before its own guard), the poll loop must NOT die (that would
+        // crash the app under the SupervisorJob). The first poll throws; the
+        // loop swallows it, keeps the cache untouched, and the next tick
+        // polls again successfully.
+        val owner = FakeOwner()
+        var count = 0
+        val repo = PollingStatusRepository(
+            fetch = {
+                count++
+                if (count == 1) throw IOException("boom") else Outcome.Success(status(count))
+            },
+            lifecycle = owner.lifecycle,
+            delayFn = { delay(it) },
+            scope = backgroundScope,
+        )
+        owner.registry.currentState = Lifecycle.State.STARTED
+        testScheduler.runCurrent()
+        assertEquals(1, count, "first poll ran and threw")
+        assertNull(repo.latest, "a thrown fetch leaves the cache untouched")
+
+        testScheduler.advanceTimeBy(PollingStatusRepository.DEFAULT_INTERVAL_MS + 1)
+        testScheduler.runCurrent()
+        assertEquals(2, count, "loop survived the throw and polled again")
         assertIs<Outcome.Success<ServerStatus>>(repo.latest)
     }
 

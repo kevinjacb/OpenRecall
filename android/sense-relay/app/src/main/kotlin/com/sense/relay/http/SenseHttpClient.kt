@@ -106,12 +106,14 @@ class SenseHttpClient(
         stub("getSessionEvents(${id.value})")
 
     /**
-     * `GET /status`. Mirrors [serverPubkey]'s shape: a 401/403 is a
-     * [SecurityException] (the "go to Settings" signal), any other non-2xx
-     * is an [IOException], and the body is parsed with the shared lenient
-     * [DtoJson] so a future server field addition doesn't hard-fail. The
-     * caller ([PollingStatusRepository] via [statusApiError]) classifies the
-     * thrown error into an [com.sense.relay.core.model.ApiError].
+     * `GET /status`. Follows [serverPubkey]'s error shape, but treats both
+     * 401 AND 403 as a [SecurityException] (the "go to Settings" signal) —
+     * `serverPubkey` only maps 401, and a 403 is just as much an auth
+     * failure for a bearer-token API. Any other non-2xx is an [IOException],
+     * and the body is parsed with the shared lenient [DtoJson] so a future
+     * server field addition doesn't hard-fail. The caller
+     * ([PollingStatusRepository] via [statusApiError]) classifies the thrown
+     * error into an [com.sense.relay.core.model.ApiError].
      */
     suspend fun getStatus(): ServerStatusDto = withContext(Dispatchers.IO) {
         client.newCall(req("/status")).execute().use { resp ->

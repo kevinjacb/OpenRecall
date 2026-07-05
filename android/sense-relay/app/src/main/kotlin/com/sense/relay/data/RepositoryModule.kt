@@ -92,9 +92,22 @@ object RepositoryModule {
  * OkHttp stack every 2 seconds. Errors are classified by [statusApiError];
  * cancellation propagates.
  *
- * The captured `cached` client is safe without synchronization because the
- * poll loop invokes the returned lambda sequentially (one fetch completes
- * before the next begins).
+ * **The entire body — including the `config.observe().first()` read — sits
+ * inside the try.** `ServerConfig.observe()` is a raw DataStore `store.data`
+ * flow with no `.catch`, so a read failure (corrupt `.preferences_pb`, disk
+ * IO) throws; if that escaped this lambda it would reach the poll loop's
+ * `launch` and, under the `SupervisorJob`, crash the app. Guarding it here
+ * turns a config-read failure into an `Outcome.Failure` (offline card).
+ *
+ * **Client memoization notes (Minor, tracked for Phase 5):**
+ *  - The captured `cached` client is safe without synchronization because
+ *    the poll loop invokes this lambda sequentially. A future concurrent
+ *    caller (e.g. the pull-to-refresh `refresh()` the Phase-5 recordings
+ *    screen may want) MUST add synchronization before racing the loop.
+ *  - When (url, token) changes (a re-provision), the previous client is
+ *    dropped without an explicit OkHttp shutdown; its idle threads/sockets
+ *    are reaped by OkHttp's own idle timeout. Re-provision is infrequent,
+ *    so the bounded idle-out is accepted rather than adding a close path.
  */
 private fun statusFetch(config: ConfigurationRepository): suspend () -> Outcome<ServerStatus> {
     var cached: Pair<Pair<String, String>, SenseHttpClient>? = null
@@ -104,11 +117,11 @@ private fun statusFetch(config: ConfigurationRepository): suspend () -> Outcome<
         return SenseHttpClient(url, token).also { cached = key to it }
     }
     return fetch@{
-        val c = config.observe().first()
-        if (!c.provisioned || c.serverUrl.isBlank()) {
-            return@fetch Outcome.Failure(ApiError.Unreachable("not provisioned"))
-        }
         try {
+            val c = config.observe().first()
+            if (!c.provisioned || c.serverUrl.isBlank()) {
+                return@fetch Outcome.Failure(ApiError.Unreachable("not provisioned"))
+            }
             Outcome.Success(clientFor(c.serverUrl, c.token).getStatus().toDomain())
         } catch (e: CancellationException) {
             throw e

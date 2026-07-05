@@ -6,6 +6,7 @@ import androidx.lifecycle.LifecycleOwner
 import com.sense.relay.core.model.ApiError
 import com.sense.relay.core.result.Outcome
 import com.sense.relay.domain.model.ServerStatus
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -69,7 +70,21 @@ class PollingStatusRepository(
         if (job?.isActive == true) return
         job = scope.launch {
             while (isActive) {
-                cached.value = fetch()
+                // Defense in depth: `fetch` is contracted to return an
+                // Outcome (never throw), and the production fetch honors
+                // that. But a thrown exception here would escape the
+                // `launch` with no CoroutineExceptionHandler and — under a
+                // SupervisorJob — route to the process's default handler
+                // (an app crash), not merely stall this loop. So we swallow
+                // any non-cancellation throwable and keep polling; the
+                // cached value simply stays as-is for that cycle.
+                try {
+                    cached.value = fetch()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                    // Keep the loop alive; the next tick tries again.
+                }
                 delayFn(intervalMs)
             }
         }

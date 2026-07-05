@@ -88,6 +88,12 @@ private fun FailedContent(reason: String, modifier: Modifier = Modifier) {
         EmptyState(
             title = "Can't reach Sense",
             body = reason,
+            // The status poller re-polls on its own 2s cadence, so the
+            // retry is a no-op affordance for v1 (it reassures rather than
+            // triggers). A manual refresh() lands with Phase 5's pull-to-
+            // refresh.
+            ctaLabel = "Try again",
+            onCta = {},
         )
     }
 }
