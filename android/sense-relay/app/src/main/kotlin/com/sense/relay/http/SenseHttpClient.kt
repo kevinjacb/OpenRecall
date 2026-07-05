@@ -1,5 +1,10 @@
 package com.sense.relay.http
 
+import com.sense.relay.domain.model.SessionId
+import com.sense.relay.http.dto.CaptureEventDto
+import com.sense.relay.http.dto.ServerStatusDto
+import com.sense.relay.http.dto.SessionDetailsDto
+import com.sense.relay.http.dto.SessionsPageDto
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
@@ -83,4 +88,25 @@ class SenseHttpClient(
             }
         }
     }
+
+    // ---- Phase 2 stubs: real implementations land in Phase 3. Each stub
+    // throws an IOException whose message names the method and the phase, so
+    // a missing-wiring logcat line is greppable. The stubs keep the rest of
+    // Phase 2 (repositories, ViewModels) compiling against the real types
+    // without doing I/O.
+
+    suspend fun listSessions(limit: Int = 20, cursor: String? = null): SessionsPageDto =
+        stub("listSessions")
+
+    suspend fun getSession(id: SessionId): SessionDetailsDto =
+        stub("getSession(${id.value})")
+
+    suspend fun getSessionEvents(id: SessionId): List<CaptureEventDto> =
+        stub("getSessionEvents(${id.value})")
+
+    suspend fun getStatus(): ServerStatusDto =
+        stub("getStatus")
+
+    private fun stub(method: String): Nothing =
+        throw IOException("$method: not yet wired (Phase 3 server endpoint)")
 }

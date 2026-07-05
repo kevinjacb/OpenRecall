@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import java.io.File
@@ -50,6 +51,22 @@ class ServerConfig(dir: File) {
             provisioned = p[KEY_PROV] ?: false,
         )
     }.first()
+
+    /**
+     * Hot stream of the persisted [Config]. Emits the current value on
+     * subscribe and a fresh value on every write. Phase 2 introduces
+     * this so [com.sense.relay.data.ConfigurationRepository.observe]
+     * can be a thin wrapper; later phases (Settings auto-save, wizard
+     * re-entry) collect from this same flow instead of polling.
+     */
+    fun observe(): Flow<Config> = store.data.map { p ->
+        Config(
+            serverUrl = p[KEY_URL] ?: "",
+            token = p[KEY_TOKEN] ?: "",
+            deviceAddress = p[KEY_DEV],
+            provisioned = p[KEY_PROV] ?: false,
+        )
+    }
 
     suspend fun write(c: Config) {
         store.edit { p ->

@@ -1,0 +1,94 @@
+package com.sense.relay.http.dto
+
+import com.sense.relay.protocol.Wire
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
+
+/**
+ * Wire-format mirror of [com.sense.relay.domain.model.SessionSummary].
+ * Field names are the server's JSON keys; the mapper
+ * ([com.sense.relay.http.dto.toDomain]) is the ONLY path from this DTO
+ * to a domain type. Keep DTOs dumb (data + serializer) so the wire
+ * format can drift without bleeding into the UI.
+ *
+ * `startedAt` and `endedAt` are ISO-8601 strings; the mapper parses
+ * them into [java.time.Instant]. `preview` may be empty.
+ */
+@Serializable
+data class SessionSummaryDto(
+    val id: String,
+    val startedAt: String,
+    val endedAt: String? = null,
+    val durationMs: Long,
+    val transcriptCount: Int,
+    val preview: String,
+)
+
+@Serializable
+data class SessionDetailsDto(
+    val summary: SessionSummaryDto,
+    val events: List<CaptureEventDto>,
+)
+
+/**
+ * One event from the per-session timeline. The wire format carries
+ * `kind` (today: `"transcript"`; future: `"audio"`, …) and a body
+ * keyed by kind. The mapper dispatches on `kind` and ignores unknown
+ * kinds (calling the warning callback so a Phase 3 server can grow
+ * kinds without crashing the app).
+ */
+@Serializable
+data class CaptureEventDto(
+    val id: String,
+    val sessionId: String,
+    val seq: Int,
+    val startMs: Long,
+    val createdAt: String,
+    val kind: String,
+    // The body is open-ended per-kind: the mapper reads the keys it
+    // knows and ignores the rest. Wire.json has ignoreUnknownKeys=true
+    // so extra fields don't deserialization-fail.
+    val text: String = "",
+    val durationMs: Int = 0,
+    val codec: String = "",
+    val sampleRateHz: Int = 0,
+    val byteCount: Int = 0,
+)
+
+@Serializable
+data class ServerStatusDto(
+    val reachable: Boolean,
+    val authenticated: Boolean,
+    val version: String? = null,
+    val uptimeSeconds: Long = 0,
+    val activeSessions: Int = 0,
+    val totalSessions: Int = 0,
+    val recentEvents24h: Int = 0,
+)
+
+/**
+ * The `GET /sessions` response body. `nextCursor` is null when the
+ * server has no more pages — distinct from a non-null cursor with
+ * an empty list (which means "fetch the next page; it just happens
+ * to be empty").
+ */
+@Serializable
+data class SessionsPageDto(
+    val sessions: List<SessionSummaryDto>,
+    val nextCursor: String? = null,
+)
+
+/**
+ * Shared `Json` instance for DTO parsing/encoding. Matches the
+ * project's [com.sense.relay.protocol.Wire.json] settings (lenient
+ * + default encoding) so a server field addition never deserializes
+ * to a hard failure.
+ */
+internal val DtoJson: Json = Wire.json
+
+/** Read a string field from a [JsonObject] without crashing. */
+internal fun JsonObject.str(k: String): String? =
+    runCatching { (this[k] as? JsonElement)?.jsonPrimitive?.content }.getOrNull()
