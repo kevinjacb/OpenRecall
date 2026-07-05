@@ -15,6 +15,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.sense.relay.ui.home.HomeRoute
 
 /**
  * Single-Activity nav graph. The 4 main destinations are tied to the
@@ -61,7 +62,7 @@ fun AppNavigation(
             startDestination = Destination.Home.route,
             modifier = Modifier.padding(padding),
         ) {
-            composable(Destination.Home.route) { StubScreen("Home — coming soon") }
+            composable(Destination.Home.route) { HomeRoute() }
             composable(Destination.Recordings.route) { StubScreen("Recordings — coming soon") }
             composable(Destination.Device.route) { StubScreen("Device — coming soon") }
             composable(Destination.Settings.route) { StubScreen("Settings — coming soon") }
