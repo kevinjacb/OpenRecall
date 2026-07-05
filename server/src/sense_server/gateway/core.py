@@ -32,6 +32,8 @@ from ..protocol.messages import (
     RequestChunks,
     TranscriptMsg,
 )
+from ..sessions.index import SessionIndex
+from ..sessions.lifecycle import SessionLifecycle
 
 Outbound = Union[Ack, RequestChunks, TranscriptMsg, CommandMessage]
 PipelineFactory = Callable[[int], AudioIngestPipeline]
@@ -47,10 +49,14 @@ class GatewayCore:
         pipeline_factory: PipelineFactory,
         event_store: EventStore | None = None,
         dispatcher: CommandDispatcher | None = None,
+        session_index: SessionIndex | None = None,
+        session_lifecycle: SessionLifecycle | None = None,
     ) -> None:
         self._factory = pipeline_factory
         self._store = event_store
         self._dispatcher = dispatcher
+        self._session_index = session_index
+        self._session_lifecycle = session_lifecycle
         self._session_id: str | None = None
         self._pipeline: AudioIngestPipeline | None = None
         self._event_seq = 0  # per-session monotonic event index
@@ -82,6 +88,8 @@ class GatewayCore:
         self._pipeline = self._factory(msg.start_seq)
         self._event_seq = 0
         self._cum_ms = 0
+        if self._session_lifecycle is not None:
+            self._session_lifecycle.register(msg.session_id)
         # initial sync: ack the cursor, then hand over any commands awaiting this session
         return [Ack(session_id=msg.session_id, next_seq=msg.start_seq), *self._pending_commands()]
 
@@ -105,6 +113,9 @@ class GatewayCore:
         if self._pipeline is None or self._session_id is None:
             raise GatewayError("bye received before hello")
         flushed = list(self._emit(self._pipeline.flush()))
+        closing_session = self._session_id
+        if self._session_lifecycle is not None:
+            self._session_lifecycle.deregister(closing_session)
         self._session_id = None
         self._pipeline = None
         return flushed
@@ -115,23 +126,29 @@ class GatewayCore:
         Each event gets a per-session monotonic ``seq`` and a cumulative ``start_ms``
         offset; ``event_id`` is ``"{session}:{seq}"`` so an at-least-once session
         replay regenerates identical ids and the store dedupes them.
+
+        On a successful (non-duplicate) append, the event is also folded into the
+        :class:`SessionIndex` so the HTTP ``/sessions`` route sees a live view
+        of the session.
         """
         assert self._session_id is not None  # only called while bound
         msgs: list[TranscriptMsg] = []
         for t in transcripts:
+            event = CaptureEvent(
+                event_id=f"{self._session_id}:{self._event_seq}",
+                session_id=self._session_id,
+                seq=self._event_seq,
+                kind="transcript",
+                created_at=datetime.now(timezone.utc),
+                text=t.text,
+                duration_ms=t.duration_ms,
+                start_ms=self._cum_ms,
+            )
+            stored = True
             if self._store is not None:
-                self._store.append(
-                    CaptureEvent(
-                        event_id=f"{self._session_id}:{self._event_seq}",
-                        session_id=self._session_id,
-                        seq=self._event_seq,
-                        kind="transcript",
-                        created_at=datetime.now(timezone.utc),
-                        text=t.text,
-                        duration_ms=t.duration_ms,
-                        start_ms=self._cum_ms,
-                    )
-                )
+                stored = self._store.append(event)
+            if stored and self._session_index is not None:
+                self._session_index.record(event)
             self._event_seq += 1
             self._cum_ms += t.duration_ms
             msgs.append(
