@@ -40,6 +40,9 @@ class RecordingsViewModel(
         .map { it.toUiState() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RecordingsUiState.Loading)
 
+    // Read/written from viewModelScope (Main) and onLoadMore (Main). Main-
+    // only today, but @Volatile guards against a future dispatcher change.
+    @Volatile
     private var loading = false
 
     init {

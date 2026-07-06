@@ -30,9 +30,15 @@ import kotlin.test.assertIs
 
 /**
  * Pins [SessionDetailViewModel]'s progressive emission: the summary lands
- * first ([SessionDetailUiState.LoadedSummary]), then the event batches fill
- * in ([SessionDetailUiState.Loaded]); a summary failure is
+ * first ([SessionDetailUiState.LoadedSummary]), then the events fill in
+ * ([SessionDetailUiState.Loaded]); a summary failure is
  * [SessionDetailUiState.Failed], while an events failure keeps the summary.
+ *
+ * Note on the multi-batch fake: the production [SessionRepositoryImpl] emits
+ * events ONCE (a single `GET /sessions/{id}/events` fetch), so the two-batch
+ * sequence below is a defensive exercise of the reduce over multiple
+ * emissions — it pins that each emission REPLACES (not appends) and stays in
+ * seq order, not that the production repo streams batches.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class SessionDetailViewModelTest {

@@ -29,7 +29,12 @@ private const val PAGE_SIZE = 20
  *     and the next cursor; a null cursor marks the last page (data kept, the
  *     next call is a no-op).
  *   - An empty terminal page (empty list + null cursor) with nothing
- *     accumulated emits [PagedResult.Exhausted].
+ *     accumulated emits [PagedResult.Exhausted]; with accumulated pages it
+ *     re-emits the accumulated [PagedResult.Page] with a null cursor (the
+ *     list is complete, no data lost). This DELIBERATELY diverges from
+ *     [FakeSessionRepository], which always emits Exhausted here — emitting
+ *     Exhausted with accumulated data would make the UI map it to Empty and
+ *     discard the loaded sessions.
  *   - A fetch failure emits [PagedResult.Error] and does NOT exhaust the
  *     list, so a later [loadMoreSessions] retries the same page (recovery).
  *
@@ -65,7 +70,20 @@ class SessionRepositoryImpl(
             val items = page.sessions.map { it.toDomain() }
             if (items.isEmpty() && page.nextCursor == null) {
                 // The server's "nothing to return, end of list" signal.
-                if (accumulated.isEmpty()) pages.value = PagedResult.Exhausted
+                // Divergence from FakeSessionRepository (which always emits
+                // Exhausted here): when we already have accumulated pages,
+                // emitting Exhausted would make the UI map it to Empty and
+                // DISCARD the loaded sessions. Instead, re-emit the
+                // accumulated Page with a null cursor so the UI sees
+                // canLoadMore=false (the list is complete, no data lost).
+                // The cursor is cleared so `exhausted` and the emitted
+                // cursor stay consistent.
+                if (accumulated.isEmpty()) {
+                    pages.value = PagedResult.Exhausted
+                } else {
+                    cursor = null
+                    pages.value = PagedResult.Page(accumulated.toList(), null)
+                }
                 exhausted = true
                 return@withLock
             }

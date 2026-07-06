@@ -116,6 +116,30 @@ class SessionRepositoryImplTest {
         assertIs<PagedResult.Exhausted>(repo.current())
     }
 
+    @Test fun emptyTerminalPageAfterDataKeepsPageWithNullCursor() = runTest {
+        // Edge case the cross-review surfaced: page 1 has items + a cursor,
+        // page 2 is the server's "nothing more" signal (empty + null). The
+        // Impl must NOT leave the previous Page's cursor dangling (the UI
+        // would show canLoadMore=true while loadMore is a no-op), and must
+        // NOT emit Exhausted (that would discard the loaded sessions via
+        // RecordingsUiState.Empty). It re-emits the accumulated Page with a
+        // null cursor.
+        val api = FakeSessionApi().apply {
+            queued.add(page(listOf("a", "b"), "c1"))
+            queued.add(page(emptyList(), null))
+        }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+        repo.loadMoreSessions()
+        val p = assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+        assertEquals(listOf("a", "b"), p.items.map { it.id.value })
+        assertEquals(null, p.nextCursor, "cursor must be cleared so the UI sees canLoadMore=false")
+
+        // A further load is a no-op (exhausted).
+        repo.loadMoreSessions()
+        assertEquals(2, api.listCalls.size)
+    }
+
     @Test fun fetchFailureEmitsErrorThenRecovers() = runTest {
         val api = FakeSessionApi().apply { listError = IOException("down") }
         val repo = SessionRepositoryImpl(api)

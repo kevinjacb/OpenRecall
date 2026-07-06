@@ -118,7 +118,10 @@ private fun LoadedList(
         )
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize(),
+            // weight(1f) so the list takes the remaining height after the
+            // SectionHeader; without it, fillMaxSize measures the list at the
+            // full parent height and the header's height clips the last rows.
+            modifier = Modifier.weight(1f).fillMaxWidth(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(Spacing.md),
             verticalArrangement = Arrangement.spacedBy(Spacing.sm),
         ) {
