@@ -16,6 +16,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -29,6 +30,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.compose.runtime.collectAsState
 import com.sense.relay.core.ui.Spacing
+import com.sense.relay.core.ui.toDisplayMessage
 import com.sense.relay.core.util.formatRelative
 import com.sense.relay.data.RepositoryModule
 import com.sense.relay.domain.model.SessionId
@@ -128,7 +130,37 @@ private fun LoadedList(
             items(items, key = { it.id.value }) { session ->
                 SessionRow(session, onClick = { onOpen(session.id) })
             }
+            // Inline paging-error row: items are still shown, so the failure
+            // is a small "Retry" affordance at the list's end — not a
+            // full-screen error (which would discard the loaded sessions).
+            if (state.loadError != null) {
+                item(key = "load-error") {
+                    InlineErrorRow(
+                        message = state.loadError.toDisplayMessage(),
+                        onRetry = onLoadMore,
+                    )
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun InlineErrorRow(message: String, onRetry: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = Spacing.xs),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onRetry) { Text("Retry") }
     }
 }
 

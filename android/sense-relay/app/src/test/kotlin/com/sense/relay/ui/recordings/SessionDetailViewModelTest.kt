@@ -110,7 +110,9 @@ class SessionDetailViewModelTest {
         testScheduler.advanceUntilIdle()
 
         val failed = assertIs<SessionDetailUiState.Failed>(vm.state.value)
-        assertEquals("offline", failed.reason)
+        // The reason is the ErrorMapper's consumer-facing string, not the
+        // raw ApiError reason ("offline").
+        assertEquals("Can't reach the server", failed.reason)
     }
 
     @Test fun eventsFailureKeepsLoadedSummary() = runTest(dispatcher) {

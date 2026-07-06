@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sense.relay.core.model.ApiError
 import com.sense.relay.core.result.Outcome
+import com.sense.relay.core.ui.toDisplayMessage
 import com.sense.relay.data.SessionRepository
 import com.sense.relay.domain.model.CaptureEvent
 import com.sense.relay.domain.model.SessionDetails
@@ -76,10 +77,6 @@ private fun reduce(
     }
 }
 
-/** Map the small [ApiError] set to a one-line user-facing reason. */
-private fun ApiError.toReason(): String = when (this) {
-    ApiError.Unauthorized -> "Not authorized — check your token in Settings."
-    is ApiError.Unreachable -> reason
-    is ApiError.Http -> "Server error ($code)."
-    is ApiError.Unknown -> throwable.message ?: "Something went wrong."
-}
+/** Map the [ApiError] to a one-line user-facing reason via the shared
+ *  [ErrorMapper] (no raw exception text reaches the UI). */
+private fun ApiError.toReason(): String = toDisplayMessage()

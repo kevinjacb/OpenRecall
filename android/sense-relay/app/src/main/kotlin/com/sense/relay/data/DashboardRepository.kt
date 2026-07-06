@@ -1,6 +1,8 @@
 package com.sense.relay.data
 
 import com.sense.relay.core.model.PagedResult
+import com.sense.relay.core.ui.toDisplayMessage
+import com.sense.relay.data.httpApiError
 import com.sense.relay.domain.model.SessionSummary
 import com.sense.relay.relay.RelayController
 import kotlinx.coroutines.CoroutineScope
@@ -55,7 +57,7 @@ class DashboardRepositoryImpl(
             )
             loaded
         }
-            .catch { emit(DashboardState.Failed(it.message ?: "dashboard error")) }
+            .catch { emit(DashboardState.Failed(httpApiError(it).toDisplayMessage())) }
             .stateIn(scope, SharingStarted.WhileSubscribed(5_000), DashboardState.Loading)
 
     override fun observe(): StateFlow<DashboardState> = flow

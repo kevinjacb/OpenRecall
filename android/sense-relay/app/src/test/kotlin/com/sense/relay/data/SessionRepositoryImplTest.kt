@@ -156,6 +156,46 @@ class SessionRepositoryImplTest {
         assertEquals(listOf<Pair<Int, String?>>(20 to null, 20 to null), api.listCalls)
     }
 
+    @Test fun pagingFailureKeepsPageAndSurfacesInlineLoadError() = runTest {
+        // Items already loaded → a paging failure must NOT replace the list
+        // with a full-screen Error. The Page stays; the error is a side-channel
+        // via observeLoadErrors (inline "Retry" row, not full-screen).
+        val api = FakeSessionApi().apply {
+            queued.add(page(listOf("a", "b"), "c1"))
+        }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+        assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+
+        // Page 2 fetch fails (cursor "c1").
+        api.listError = IOException("down")
+        repo.loadMoreSessions()
+
+        val p = assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+        assertEquals(listOf("a", "b"), p.items.map { it.id.value }, "items stay")
+        assertEquals("c1", p.nextCursor, "cursor unchanged (failure didn't advance state)")
+        val err = assertIs<com.sense.relay.core.model.ApiError.Unreachable>(
+            repo.observeLoadErrors().first(),
+        )
+        assertEquals("down", err.reason)
+    }
+
+    @Test fun successfulRetryClearsTheLoadError() = runTest {
+        val api = FakeSessionApi().apply { queued.add(page(listOf("a"), "c1")) }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+
+        api.listError = IOException("down")
+        repo.loadMoreSessions()
+        assertIs<com.sense.relay.core.model.ApiError.Unreachable>(repo.observeLoadErrors().first())
+
+        // A successful load clears the inline error.
+        api.listError = null
+        api.queued.add(page(listOf("b"), null))
+        repo.loadMoreSessions()
+        assertEquals(null, repo.observeLoadErrors().first(), "success clears the error")
+    }
+
     @Test fun observeSessionMapsSummaryAndEventsSortedBySeq() = runTest {
         val api = FakeSessionApi().apply {
             detail = SessionDetailsDto(

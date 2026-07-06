@@ -44,6 +44,18 @@ interface SessionRepository {
     /** Per-session event timeline. Emits once on subscribe; Phase 5
      *  backs this with `GET /sessions/{id}/events`. */
     fun observeSessionEvents(id: SessionId): Flow<Outcome<List<CaptureEvent>>>
+
+    /**
+     * Transient paging errors that should NOT replace the list — when a
+     * `loadMoreSessions` fails AFTER items have loaded, the accumulated
+     * `Page` is kept and the error is surfaced here as a side-channel so
+     * the UI can show a small inline "Retry" row instead of a full-screen
+     * error. Emits `null` when there's no current error (e.g. after a
+     * successful retry clears it). The default emits a single `null` (no
+     * error) so `combine`-based consumers fire once on subscribe; the
+     * [FakeSessionRepository] and other test fakes inherit it unchanged.
+     */
+    fun observeLoadErrors(): Flow<ApiError?> = flowOf(null)
 }
 
 /**

@@ -122,12 +122,19 @@ private fun ServerRows(server: Outcome<ServerStatus>) {
  * TLS/timeout), "unauthorized" (401/403 — the "go to Settings" signal), a
  * non-auth HTTP error, and an unknown failure — instead of collapsing them
  * all to "unreachable".
+ *
+ * This INTENTIONALLY diverges from [com.sense.relay.core.ui.toDisplayMessage]
+ * (the consumer-facing `ErrorMapper`): the Device screen is diagnostic, so it
+ * shows the curated short reason (`Unreachable.reason`, `Http.code`) rather
+ * than the generic "Can't reach the server". The `Unknown` branch does NOT
+ * surface `throwable.message` (no raw exception text in the UI) — a stable
+ * "unknown error" label stands in.
  */
 private fun apiErrorLabel(error: ApiError): String = when (error) {
     ApiError.Unauthorized -> "unauthorized"
     is ApiError.Unreachable -> error.reason
     is ApiError.Http -> "server error (${error.code})"
-    is ApiError.Unknown -> error.throwable.message ?: "unknown error"
+    is ApiError.Unknown -> "unknown error"
 }
 
 private fun compositeLabel(relay: RelayState): String = when (relay.connection) {

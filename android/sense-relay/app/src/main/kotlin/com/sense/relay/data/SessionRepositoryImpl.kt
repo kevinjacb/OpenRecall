@@ -1,5 +1,6 @@
 package com.sense.relay.data
 
+import com.sense.relay.core.model.ApiError
 import com.sense.relay.core.model.PagedResult
 import com.sense.relay.core.result.Outcome
 import com.sense.relay.domain.model.CaptureEvent
@@ -54,6 +55,7 @@ class SessionRepositoryImpl(
 ) : SessionRepository {
 
     private val pages = MutableStateFlow<PagedResult<SessionSummary>>(PagedResult.Loading)
+    private val loadErrors = MutableStateFlow<ApiError?>(null)
     private val accumulated = mutableListOf<SessionSummary>()
     private var cursor: String? = null
     private var started = false
@@ -61,6 +63,8 @@ class SessionRepositoryImpl(
     private val loadMutex = Mutex()
 
     override fun observeSessions(): Flow<PagedResult<SessionSummary>> = pages.asStateFlow()
+
+    override fun observeLoadErrors(): Flow<ApiError?> = loadErrors.asStateFlow()
 
     override suspend fun loadMoreSessions() = loadMutex.withLock {
         if (exhausted) return@withLock
@@ -93,13 +97,25 @@ class SessionRepositoryImpl(
             // A null cursor means "this was the last page": keep the data,
             // future calls are no-ops.
             if (cursor == null) exhausted = true
+            loadErrors.value = null // a successful load clears any prior error
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
             // Surface the failure without exhausting: a later loadMore can
             // retry the same page (the cursor/started state is unchanged on
             // the failure path, since we only advance them after a success).
-            pages.value = PagedResult.Error(e)
+            // If we already have items, KEEP the Page (don't discard the list
+            // for a paging failure) and surface the error as a side-channel
+            // via `loadErrors` so the UI shows an inline "Retry" row. If the
+            // initial load failed (no items), emit a full-screen `Error`.
+            if (accumulated.isNotEmpty()) {
+                loadErrors.value = httpApiError(e)
+                // Re-assert the current Page so a prior Error (from the very
+                // first failed attempt) is replaced by the recovered list.
+                pages.value = PagedResult.Page(accumulated.toList(), cursor)
+            } else {
+                pages.value = PagedResult.Error(e)
+            }
         }
     }
 
