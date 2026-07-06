@@ -109,7 +109,7 @@ class SenseHttpClient(
             }
             client.newCall(req(path)).execute().use { resp ->
                 if (resp.code == 401 || resp.code == 403) throw SecurityException("unauthorized")
-                if (resp.code !in 200..299) throw IOException("listSessions http ${resp.code}")
+                if (resp.code !in 200..299) throw HttpStatusException(resp.code)
                 DtoJson.decodeFromString(SessionsPageDto.serializer(), resp.body?.string().orEmpty())
             }
         }
@@ -119,8 +119,8 @@ class SenseHttpClient(
         withContext(Dispatchers.IO) {
             client.newCall(req("/sessions/${id.value}")).execute().use { resp ->
                 if (resp.code == 401 || resp.code == 403) throw SecurityException("unauthorized")
-                if (resp.code == 404) throw IOException("session ${id.value} not found")
-                if (resp.code !in 200..299) throw IOException("getSession http ${resp.code}")
+                if (resp.code == 404) throw HttpStatusException(404, "session ${id.value} not found")
+                if (resp.code !in 200..299) throw HttpStatusException(resp.code)
                 DtoJson.decodeFromString(SessionDetailsDto.serializer(), resp.body?.string().orEmpty())
             }
         }
@@ -131,8 +131,8 @@ class SenseHttpClient(
         withContext(Dispatchers.IO) {
             client.newCall(req("/sessions/${id.value}/events")).execute().use { resp ->
                 if (resp.code == 401 || resp.code == 403) throw SecurityException("unauthorized")
-                if (resp.code == 404) throw IOException("session ${id.value} not found")
-                if (resp.code !in 200..299) throw IOException("getSessionEvents http ${resp.code}")
+                if (resp.code == 404) throw HttpStatusException(404, "session ${id.value} not found")
+                if (resp.code !in 200..299) throw HttpStatusException(resp.code)
                 DtoJson.decodeFromString(SessionEventsDto.serializer(), resp.body?.string().orEmpty()).events
             }
         }
@@ -150,9 +150,21 @@ class SenseHttpClient(
     suspend fun getStatus(): ServerStatusDto = withContext(Dispatchers.IO) {
         client.newCall(req("/status")).execute().use { resp ->
             if (resp.code == 401 || resp.code == 403) throw SecurityException("unauthorized")
-            if (resp.code !in 200..299) throw IOException("status http ${resp.code}")
+            if (resp.code !in 200..299) throw HttpStatusException(resp.code)
             val body = resp.body?.string().orEmpty()
             DtoJson.decodeFromString(ServerStatusDto.serializer(), body)
         }
     }
 }
+
+/**
+ * A non-auth, non-2xx HTTP response. Carries the status code so the error
+ * classifier ([httpApiError]) can surface it as [com.sense.relay.core.model.ApiError.Http],
+ * letting the UI distinguish a 503 ("Server is starting up") from a generic
+ * network failure ([com.sense.relay.core.model.ApiError.Unreachable]).
+ *
+ * Extends [IOException] so existing `catch (IOException)` callers (the
+ * repository error paths) keep working unchanged; the classifier matches
+ * this subtype before the generic `IOException` branch.
+ */
+class HttpStatusException(val code: Int, override val message: String = "http $code") : IOException(message)

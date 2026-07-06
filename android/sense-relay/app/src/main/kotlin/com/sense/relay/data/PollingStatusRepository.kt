@@ -6,6 +6,7 @@ import androidx.lifecycle.LifecycleOwner
 import com.sense.relay.core.model.ApiError
 import com.sense.relay.core.result.Outcome
 import com.sense.relay.domain.model.ServerStatus
+import com.sense.relay.http.HttpStatusException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -110,12 +111,17 @@ class PollingStatusRepository(
  * poller and the session repository):
  *  - [SecurityException] → [ApiError.Unauthorized] (the client throws this
  *    on a 401/403).
- *  - [IOException] → [ApiError.Unreachable] (DNS/TCP/TLS/timeout, a 404, or a
- *    non-auth non-2xx HTTP status, all surfaced by the client as IOException).
+ *  - [HttpStatusException] → [ApiError.Http]`code` (a non-auth non-2xx
+ *    response — e.g. 503, which the UI renders as "Server is starting up").
+ *    Matched BEFORE [IOException] because [HttpStatusException] is an
+ *    [IOException] subclass.
+ *  - [IOException] → [ApiError.Unreachable] (DNS/TCP/TLS/timeout — the
+ *    client never reaches the server, or the connection drops).
  *  - anything else → [ApiError.Unknown] (carries the throwable for logging).
  */
 fun httpApiError(e: Throwable): ApiError = when (e) {
     is SecurityException -> ApiError.Unauthorized
+    is HttpStatusException -> ApiError.Http(e.code)
     is IOException -> ApiError.Unreachable(e.message ?: "unreachable")
     else -> ApiError.Unknown(e)
 }

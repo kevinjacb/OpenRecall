@@ -196,6 +196,47 @@ class SessionRepositoryImplTest {
         assertEquals(null, repo.observeLoadErrors().first(), "success clears the error")
     }
 
+    @Test fun emptyTerminalSuccessClearsPriorLoadError() = runTest {
+        // Regression for the cross-review's Critical: a paging failure sets
+        // the inline error; a retry that lands on an empty terminal page must
+        // STILL clear the error (the empty-terminal branch returns early,
+        // before the clear, if the clear isn't placed at the top of the
+        // success path). Otherwise the error sticks AND exhausted=true makes
+        // Retry a no-op → unrecoverable dead-end.
+        val api = FakeSessionApi().apply { queued.add(page(listOf("a", "b"), "c1")) }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+
+        api.listError = IOException("down")
+        repo.loadMoreSessions()
+        assertIs<com.sense.relay.core.model.ApiError.Unreachable>(repo.observeLoadErrors().first())
+
+        // Retry returns the empty terminal page for cursor "c1".
+        api.listError = null
+        api.queued.add(page(emptyList(), null))
+        repo.loadMoreSessions()
+
+        assertEquals(null, repo.observeLoadErrors().first(), "empty-terminal success clears the error")
+        val p = assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+        assertEquals(listOf("a", "b"), p.items.map { it.id.value }, "items stay")
+        assertEquals(null, p.nextCursor, "cursor cleared (exhausted)")
+    }
+
+    @Test fun httpStatusExceptionMapsToApiErrorHttp() = runTest {
+        // The classifier surfaces the HTTP code so the UI can distinguish a
+        // 503 ("Server is starting up") from a generic network failure. A
+        // paging failure with a HttpStatusException surfaces ApiError.Http,
+        // not Unreachable, via the load-errors side-channel.
+        val api = FakeSessionApi().apply { queued.add(page(listOf("a"), "c1")) }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+
+        api.listError = com.sense.relay.http.HttpStatusException(503)
+        repo.loadMoreSessions()
+        val err = assertIs<com.sense.relay.core.model.ApiError.Http>(repo.observeLoadErrors().first())
+        assertEquals(503, err.code)
+    }
+
     @Test fun observeSessionMapsSummaryAndEventsSortedBySeq() = runTest {
         val api = FakeSessionApi().apply {
             detail = SessionDetailsDto(

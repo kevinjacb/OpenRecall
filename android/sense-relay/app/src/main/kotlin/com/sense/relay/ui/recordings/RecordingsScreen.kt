@@ -99,10 +99,13 @@ private fun LoadedList(
 ) {
     val listState = rememberLazyListState()
     val items = state.items
-    // Fire load-more when the last item scrolls into view and the list can grow.
-    val shouldLoadMore by remember(items.size, state.canLoadMore) {
+    // Fire load-more when the last item scrolls into view and the list can
+    // grow. Suppressed when there's an inline loadError — the error row's
+    // "Retry" button is the manual trigger then, so scrolling to read the
+    // error doesn't auto-fire a network retry the user didn't ask for.
+    val shouldLoadMore by remember(items.size, state.canLoadMore, state.loadError) {
         derivedStateOf {
-            if (!state.canLoadMore) false
+            if (!state.canLoadMore || state.loadError != null) false
             else {
                 val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
                 last >= items.size - 1

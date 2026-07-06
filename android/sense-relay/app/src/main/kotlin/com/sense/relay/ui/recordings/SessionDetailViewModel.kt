@@ -2,7 +2,6 @@ package com.sense.relay.ui.recordings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.sense.relay.core.model.ApiError
 import com.sense.relay.core.result.Outcome
 import com.sense.relay.core.ui.toDisplayMessage
 import com.sense.relay.data.SessionRepository
@@ -66,7 +65,7 @@ private fun reduce(
     summary: Outcome<SessionDetails>,
     events: Outcome<List<CaptureEvent>>?,
 ): SessionDetailUiState = when (summary) {
-    is Outcome.Failure -> SessionDetailUiState.Failed(summary.error.toReason())
+    is Outcome.Failure -> SessionDetailUiState.Failed(summary.error.toDisplayMessage())
     is Outcome.Success -> {
         val s = summary.value.summary
         when (events) {
@@ -76,7 +75,3 @@ private fun reduce(
         }
     }
 }
-
-/** Map the [ApiError] to a one-line user-facing reason via the shared
- *  [ErrorMapper] (no raw exception text reaches the UI). */
-private fun ApiError.toReason(): String = toDisplayMessage()

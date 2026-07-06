@@ -33,4 +33,13 @@ class HttpApiErrorTest {
         val err = assertIs<ApiError.Unknown>(httpApiError(cause))
         assertEquals(cause, err.throwable)
     }
+
+    @Test fun httpStatusExceptionMapsToApiErrorHttpWithCode() {
+        // A non-auth non-2xx response surfaces its code so the UI can show
+        // "Server is starting up" for a 503, not the generic "Can't reach
+        // the server". Matched before the IOException branch (HttpStatusException
+        // is an IOException subclass).
+        val err = assertIs<ApiError.Http>(httpApiError(com.sense.relay.http.HttpStatusException(503)))
+        assertEquals(503, err.code)
+    }
 }

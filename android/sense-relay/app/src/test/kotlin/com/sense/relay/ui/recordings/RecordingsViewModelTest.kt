@@ -134,7 +134,8 @@ class RecordingsViewModelTest {
 
 /**
  * Wrap a [FakeSessionRepository] so its [SessionRepository.observeLoadErrors]
- * returns a controllable flow (the Fake's default is `emptyFlow()`). Delegates
+ * returns a controllable flow (the Fake inherits the interface default
+ * `flowOf(null)`, which fires `combine` once but can't be toggled). Delegates
  * everything else to the Fake.
  */
 private fun repoWithLoadError(

@@ -71,6 +71,12 @@ class SessionRepositoryImpl(
         try {
             val page = api.listSessions(PAGE_SIZE, if (started) cursor else null)
             started = true
+            // Any successful fetch clears a prior inline error — placed
+            // here (before the empty-terminal early return) so the empty-
+            // terminal success branch also clears it. Otherwise a retry
+            // that lands on an empty terminal page would leave the error
+            // stuck AND set `exhausted`, making Retry a no-op (unrecoverable).
+            loadErrors.value = null
             val items = page.sessions.map { it.toDomain() }
             if (items.isEmpty() && page.nextCursor == null) {
                 // The server's "nothing to return, end of list" signal.
@@ -97,7 +103,6 @@ class SessionRepositoryImpl(
             // A null cursor means "this was the last page": keep the data,
             // future calls are no-ops.
             if (cursor == null) exhausted = true
-            loadErrors.value = null // a successful load clears any prior error
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
