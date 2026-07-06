@@ -2,7 +2,9 @@ package com.sense.relay.ui.device
 
 import com.sense.relay.core.model.ApiError
 import com.sense.relay.core.result.Outcome
+import com.sense.relay.data.DeviceRepository
 import com.sense.relay.data.StatusRepository
+import com.sense.relay.domain.model.DeviceSummary
 import com.sense.relay.domain.model.ServerStatus
 import com.sense.relay.relay.DeviceState
 import com.sense.relay.relay.RelayConnectionState
@@ -13,8 +15,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -26,15 +29,21 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 
 /**
- * Pins [DeviceViewModel]: it independently carries the relay state and the
- * polled server status. Both sources are StateFlow/MutableStateFlow (emit
- * immediately), so the test runs on virtual time with a collecting
- * subscriber (the Phase-4 `HomeViewModelTest` pattern — `stateIn`
- * `WhileSubscribed` only collects the upstream while someone is subscribed,
- * so the test holds a collector in `backgroundScope`). The controller is
- * reset between tests so the singleton doesn't bleed.
+ * Pins [DeviceViewModel]: it independently carries the relay state, the
+ * polled server status, and the device summary (for `lastSeen`).
+ *
+ * The non-seed tests use a [MutableStateFlow] for the status (it replays its
+ * value, so `combine` always sees it) and read `vm.state.value` after the
+ * scheduler advances — the Phase-4 `HomeViewModelTest` pattern. The seed
+ * test uses a COLD flow that never emits, so `combine` never fires and the
+ * state stays at the `stateIn` seed — the production window before the first
+ * poll (the production `PollingStatusRepository.observeStatus()` is a
+ * `filterNotNull()` that emits nothing until the first poll). A collecting
+ * subscriber is held in `backgroundScope` so `stateIn(WhileSubscribed)`
+ * actually collects the upstream. The controller is reset between tests.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class DeviceViewModelTest {
@@ -50,9 +59,21 @@ class DeviceViewModelTest {
     @AfterTest
     fun tearDown() = Dispatchers.resetMain()
 
-    private class FakeStatusRepository(initial: Outcome<ServerStatus>) : StatusRepository {
+    /** Status source backed by a StateFlow (replays its current value). */
+    private class StateStatusRepository(initial: Outcome<ServerStatus>) : StatusRepository {
         val flow = MutableStateFlow(initial)
         override fun observeStatus(): Flow<Outcome<ServerStatus>> = flow
+    }
+
+    /** Status source that NEVER emits (a cold flow that suspends forever) —
+     *  mirrors the production pre-first-poll silence so the seed is visible. */
+    private object SilentStatusRepository : StatusRepository {
+        override fun observeStatus(): Flow<Outcome<ServerStatus>> = flow { /* never emits */ }
+    }
+
+    private class FakeDeviceRepository(initial: DeviceSummary) : DeviceRepository {
+        val flow = MutableStateFlow(initial)
+        override fun observeDevice(): StateFlow<DeviceSummary> = flow.asStateFlow()
     }
 
     private fun status(active: Int) = ServerStatus(
@@ -65,44 +86,56 @@ class DeviceViewModelTest {
         scope.launch { vm.state.toList(mutableListOf()) }
     }
 
-    @Test fun initialStateCarriesRelayInitialAndLoadingServer() = runTest(dispatcher) {
+    @Test fun seedHoldsBeforeTheFirstStatusEmission() = runTest(dispatcher) {
+        // The status flow never emits, so `combine` never fires and the state
+        // stays at the `stateIn` seed — the production window before the
+        // first poll. This pins the seed handling (a StateFlow-backed fake
+        // would emit immediately and overwrite the seed, hiding it).
         val vm = DeviceViewModel(
             RelayController,
-            FakeStatusRepository(Outcome.Failure(ApiError.Unreachable("loading"))),
+            SilentStatusRepository,
+            FakeDeviceRepository(DeviceSummary(null, null, null)),
         )
         subscribe(backgroundScope, vm)
         testScheduler.advanceUntilIdle()
         val s = vm.state.value
         assertEquals(RelayState.Initial, s.relay)
-        assertIs<Outcome.Failure>(s.server)
+        assertEquals(null, s.device.address, "seed device is all-null")
+        assertNull(s.device.lastSeen)
+        val failure = assertIs<Outcome.Failure>(s.server)
+        val unreachable = assertIs<ApiError.Unreachable>(failure.error)
+        assertEquals("loading", unreachable.reason, "seed server is the loading marker")
     }
 
     @Test fun statusEmissionUpdatesServerWhileRelayUnchanged() = runTest(dispatcher) {
-        val status = FakeStatusRepository(Outcome.Failure(ApiError.Unreachable("loading")))
-        val vm = DeviceViewModel(RelayController, status)
+        val status = StateStatusRepository(Outcome.Failure(ApiError.Unreachable("loading")))
+        val vm = DeviceViewModel(
+            RelayController,
+            status,
+            FakeDeviceRepository(DeviceSummary(null, null, null)),
+        )
         subscribe(backgroundScope, vm)
         testScheduler.advanceUntilIdle()
 
         status.flow.value = Outcome.Success(status(5))
         testScheduler.advanceUntilIdle()
-        val s = vm.state.filter { it.server is Outcome.Success }.first()
+        val s = vm.state.value
         assertEquals(RelayState.Initial, s.relay, "relay unchanged")
         val success = assertIs<Outcome.Success<ServerStatus>>(s.server)
         assertEquals(5, success.value.activeSessions)
     }
 
     @Test fun relayChangeUpdatesRelayWhileServerUnchanged() = runTest(dispatcher) {
-        val status = FakeStatusRepository(Outcome.Success(status(1)))
-        val vm = DeviceViewModel(RelayController, status)
+        val status = StateStatusRepository(Outcome.Success(status(1)))
+        val device = FakeDeviceRepository(DeviceSummary(null, null, null))
+        val vm = DeviceViewModel(RelayController, status, device)
         subscribe(backgroundScope, vm)
         testScheduler.advanceUntilIdle()
-        // Confirm the server is present first.
-        vm.state.filter { it.server is Outcome.Success }.first()
 
         RelayController.updateDevice(DeviceState.Connected("AA:BB", "sense-1"))
         RelayController.updateConnection(RelayConnectionState.Live("s1", 0))
         testScheduler.advanceUntilIdle()
-        val s = vm.state.filter { it.relay.device is DeviceState.Connected }.first()
+        val s = vm.state.value
         val dev = assertIs<DeviceState.Connected>(s.relay.device)
         assertEquals("AA:BB", dev.address)
         val conn = assertIs<RelayConnectionState.Live>(s.relay.connection)
@@ -111,15 +144,32 @@ class DeviceViewModelTest {
         assertIs<Outcome.Success<ServerStatus>>(s.server)
     }
 
+    @Test fun deviceLastSeenFlowsThroughFromDeviceRepository() = runTest(dispatcher) {
+        val status = StateStatusRepository(Outcome.Success(status(1)))
+        val device = FakeDeviceRepository(DeviceSummary(null, null, null))
+        val vm = DeviceViewModel(RelayController, status, device)
+        subscribe(backgroundScope, vm)
+        testScheduler.advanceUntilIdle()
+
+        val seen = java.time.Instant.ofEpochSecond(1700_000_000L)
+        device.flow.value = DeviceSummary(address = "AA:BB", name = "sense-1", lastSeen = seen)
+        testScheduler.advanceUntilIdle()
+        val s = vm.state.value
+        assertEquals("AA:BB", s.device.address)
+        assertEquals(seen, s.device.lastSeen)
+    }
+
     @Test fun bothPresentAreCarriedTogether() = runTest(dispatcher) {
-        val status = FakeStatusRepository(Outcome.Success(status(7)))
-        val vm = DeviceViewModel(RelayController, status)
+        val status = StateStatusRepository(Outcome.Success(status(7)))
+        val vm = DeviceViewModel(
+            RelayController,
+            status,
+            FakeDeviceRepository(DeviceSummary(null, null, null)),
+        )
         subscribe(backgroundScope, vm)
         RelayController.updateConnection(RelayConnectionState.Live("sx", 100))
         testScheduler.advanceUntilIdle()
-        val s = vm.state.filter {
-            it.relay.connection is RelayConnectionState.Live && it.server is Outcome.Success
-        }.first()
+        val s = vm.state.value
         assertEquals("sx", (s.relay.connection as RelayConnectionState.Live).sessionId)
         assertEquals(7, (s.server as Outcome.Success).value.activeSessions)
     }
