@@ -16,6 +16,8 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.sense.relay.ui.home.HomeRoute
+import com.sense.relay.ui.recordings.RecordingsRoute
+import com.sense.relay.ui.recordings.SessionDetailRoute
 
 /**
  * Single-Activity nav graph. The 4 main destinations are tied to the
@@ -63,20 +65,30 @@ fun AppNavigation(
             modifier = Modifier.padding(padding),
         ) {
             composable(Destination.Home.route) { HomeRoute() }
-            composable(Destination.Recordings.route) { StubScreen("Recordings — coming soon") }
+            composable(Destination.Recordings.route) {
+                RecordingsRoute(
+                    onOpen = { id -> navController.navigate(Destination.SessionDetail(id).route) },
+                )
+            }
             composable(Destination.Device.route) { StubScreen("Device — coming soon") }
             composable(Destination.Settings.route) { StubScreen("Settings — coming soon") }
-            // SessionDetail: the route has a path segment for the id;
-            // the framework parses it via [SessionIdNavType]. Phase 5
-            // will turn this stub into a real screen reading the id
-            // out of `backStackEntry.arguments`.
+            // SessionDetail: the route has a path segment for the id; the
+            // framework parses it via [SessionIdNavType]. The screen reads the
+            // id out of `backStackEntry.arguments` and pops back on the back
+            // arrow.
             composable(
                 route = "session/{sessionId}",
                 arguments = listOf(
                     navArgument("sessionId") { type = SessionIdNavType },
                 ),
-            ) {
-                StubScreen("Session — coming soon")
+            ) { backStackEntry ->
+                val args = backStackEntry.arguments
+                val id = args?.let { SessionIdNavType[it, "sessionId"] }
+                if (id == null) {
+                    StubScreen("Session not found")
+                } else {
+                    SessionDetailRoute(id = id, onBack = { navController.popBackStack() })
+                }
             }
         }
     }

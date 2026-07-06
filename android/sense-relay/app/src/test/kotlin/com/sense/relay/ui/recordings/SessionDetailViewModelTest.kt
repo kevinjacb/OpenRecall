@@ -1,0 +1,124 @@
+package com.sense.relay.ui.recordings
+
+import com.sense.relay.core.model.ApiError
+import com.sense.relay.core.model.PagedResult
+import com.sense.relay.core.result.Outcome
+import com.sense.relay.data.SessionRepository
+import com.sense.relay.domain.model.CaptureEvent
+import com.sense.relay.domain.model.SessionDetails
+import com.sense.relay.domain.model.SessionId
+import com.sense.relay.domain.model.SessionSummary
+import com.sense.relay.domain.model.TranscriptChunk
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
+import java.time.Instant
+import kotlin.test.AfterTest
+import kotlin.test.BeforeTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
+
+/**
+ * Pins [SessionDetailViewModel]'s progressive emission: the summary lands
+ * first ([SessionDetailUiState.LoadedSummary]), then the event batches fill
+ * in ([SessionDetailUiState.Loaded]); a summary failure is
+ * [SessionDetailUiState.Failed], while an events failure keeps the summary.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+class SessionDetailViewModelTest {
+
+    private val dispatcher = StandardTestDispatcher()
+
+    @BeforeTest fun setUp() = Dispatchers.setMain(dispatcher)
+    @AfterTest fun tearDown() = Dispatchers.resetMain()
+
+    private class FakeDetailRepo(
+        private val summaryFlow: Flow<Outcome<SessionDetails>>,
+        private val eventsFlow: Flow<Outcome<List<CaptureEvent>>>,
+    ) : SessionRepository {
+        override fun observeSessions() = flowOf<PagedResult<SessionSummary>>(PagedResult.Loading)
+        override suspend fun loadMoreSessions() {}
+        override fun observeSession(id: SessionId) = summaryFlow
+        override fun observeSessionEvents(id: SessionId) = eventsFlow
+    }
+
+    private fun summary(id: String) = SessionSummary(
+        id = SessionId(id),
+        startedAt = Instant.EPOCH,
+        endedAt = null,
+        durationMs = 1000,
+        transcriptCount = 1,
+        preview = "p-$id",
+    )
+
+    private fun chunk(id: String, seq: Int): CaptureEvent = TranscriptChunk(
+        id = id,
+        sessionId = SessionId("s1"),
+        seq = seq,
+        startMs = seq * 1000L,
+        createdAt = Instant.EPOCH,
+        text = "t-$id",
+        durationMs = 500,
+    )
+
+    @Test fun emitsSummaryFirstThenEventBatches() = runTest(dispatcher) {
+        val details = SessionDetails(summary("s1"), emptyList())
+        val summaryFlow = MutableStateFlow<Outcome<SessionDetails>>(Outcome.Success(details))
+        val eventsFlow = MutableSharedFlow<Outcome<List<CaptureEvent>>>(extraBufferCapacity = 8)
+        val vm = SessionDetailViewModel(SessionId("s1"), FakeDetailRepo(summaryFlow, eventsFlow))
+        backgroundScope.launch { vm.state.toList(mutableListOf()) }
+        testScheduler.advanceUntilIdle()
+
+        // Summary present, events pending (onStart null) → LoadedSummary.
+        val summaryOnly = assertIs<SessionDetailUiState.LoadedSummary>(vm.state.value)
+        assertEquals("s1", summaryOnly.summary.id.value)
+
+        eventsFlow.emit(Outcome.Success(listOf(chunk("e1", 1))))
+        testScheduler.advanceUntilIdle()
+        val batch1 = assertIs<SessionDetailUiState.Loaded>(vm.state.value)
+        assertEquals(1, batch1.events.size)
+
+        eventsFlow.emit(Outcome.Success(listOf(chunk("e1", 1), chunk("e2", 2))))
+        testScheduler.advanceUntilIdle()
+        val batch2 = assertIs<SessionDetailUiState.Loaded>(vm.state.value)
+        assertEquals(2, batch2.events.size)
+    }
+
+    @Test fun summaryFailureIsFailed() = runTest(dispatcher) {
+        val summaryFlow = MutableStateFlow<Outcome<SessionDetails>>(
+            Outcome.Failure(ApiError.Unreachable("offline")),
+        )
+        val eventsFlow = MutableSharedFlow<Outcome<List<CaptureEvent>>>(extraBufferCapacity = 8)
+        val vm = SessionDetailViewModel(SessionId("s1"), FakeDetailRepo(summaryFlow, eventsFlow))
+        backgroundScope.launch { vm.state.toList(mutableListOf()) }
+        testScheduler.advanceUntilIdle()
+
+        val failed = assertIs<SessionDetailUiState.Failed>(vm.state.value)
+        assertEquals("offline", failed.reason)
+    }
+
+    @Test fun eventsFailureKeepsLoadedSummary() = runTest(dispatcher) {
+        val details = SessionDetails(summary("s1"), emptyList())
+        val summaryFlow = MutableStateFlow<Outcome<SessionDetails>>(Outcome.Success(details))
+        val eventsFlow = MutableSharedFlow<Outcome<List<CaptureEvent>>>(extraBufferCapacity = 8)
+        val vm = SessionDetailViewModel(SessionId("s1"), FakeDetailRepo(summaryFlow, eventsFlow))
+        backgroundScope.launch { vm.state.toList(mutableListOf()) }
+        testScheduler.advanceUntilIdle()
+        assertIs<SessionDetailUiState.LoadedSummary>(vm.state.value)
+
+        eventsFlow.emit(Outcome.Failure(ApiError.Unreachable("events down")))
+        testScheduler.advanceUntilIdle()
+        // Summary still stands; the timeline just doesn't fill in.
+        assertIs<SessionDetailUiState.LoadedSummary>(vm.state.value)
+    }
+}
