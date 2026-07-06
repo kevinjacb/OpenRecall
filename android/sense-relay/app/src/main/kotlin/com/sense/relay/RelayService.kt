@@ -24,6 +24,18 @@ import java.util.UUID
  * Lifecycle: scan/connect device -> open socket -> send §E hello -> bridge. It owns
  * only wiring and I/O; every protocol decision comes from [RelaySession] (the tested
  * brain). Start with an intent extra "server_url", e.g. ws://192.168.1.20:8765.
+ *
+ * **Re-provision (Phase 7):** `onStartCommand` can be re-delivered on an
+ * already-running instance (Settings → Reconfigure re-launches the wizard,
+ * which `startForegroundService`s this service with new `server_url`/`token`).
+ * A re-delivery tears down the prior session/sensor/socket before
+ * re-initializing so the old WebSocket (to the old server) and the old BLE
+ * scan don't leak alongside the new ones. The teardown is generation-guarded:
+ * each `onStartCommand` increments [generation], and the per-call listeners
+ * capture that generation and ignore callbacks from a prior generation —
+ * crucially the async `SensorLink.stop()` → `onDisconnected` (fired on the
+ * GATT thread after `stop()` returns) of the OLD sensor, which would
+ * otherwise call `teardown()` on the NEW session and `stopSelf()` the service.
  */
 class RelayService : Service() {
 
@@ -37,6 +49,14 @@ class RelayService : Service() {
     private var socket: ServerSocket? = null
     private var serverUrl: String = "ws://10.0.2.2:8765"  // host loopback from emulator
     private var token: String = ""
+
+    /**
+     * Bumped on every `onStartCommand`. Per-call listeners capture the value
+     * and ignore callbacks whose generation is stale — the guard that makes
+     * re-provision teardown safe (see the class KDoc).
+     */
+    @Volatile
+    private var generation = 0
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val urlExtra = intent?.getStringExtra("server_url")
@@ -53,8 +73,22 @@ class RelayService : Service() {
         }
         startForeground(1, buildNotification())
 
+        val gen = ++generation
+        // Re-provision: if we're already running (a re-delivery with new
+        // server_url/token), tear down the prior session/sensor/socket before
+        // re-initializing. The per-call listeners below capture `gen`, so the
+        // async onDisconnected/onClosed fired by the OLD sensor's/socket's
+        // teardown (on the GATT/WS thread, after these calls return) are
+        // ignored — they see a stale generation. NOT stopSelf: the service
+        // keeps running with the new config.
+        if (::session.isInitialized) {
+            runCatching { session.stop().forEach(::execute) }
+            socket?.close(); socket = null
+            if (::sensor.isInitialized) sensor.stop()
+        }
+
         session = RelaySession(sessionId = UUID.randomUUID().toString())
-        sensor = SensorLink(this, sensorListener)
+        sensor = SensorLink(this, sensorListener(gen))
         // Publish to RelayController: scanning for the device. The
         // device state machine in DeviceState captures this; the
         // next update is onConnected (Connected) or onDisconnected
@@ -66,8 +100,10 @@ class RelayService : Service() {
     }
 
     // --- device (BLE) events ---
-    private val sensorListener = object : SensorLink.Listener {
+    private fun sensorListener(gen: Int) = object : SensorLink.Listener {
+        private fun stale() = gen != generation
         override fun onConnected() {
+            if (stale()) return
             val wsUrl = serverUrl.replaceFirst(Regex("^https?://"),
                 if (serverUrl.startsWith("https")) "wss://" else "ws://")
             Log.i(TAG, "device connected; opening socket to $wsUrl")
@@ -77,11 +113,18 @@ class RelayService : Service() {
             val addr = sensor.deviceAddress()
             RelayController.updateDevice(DeviceState.Connected(addr ?: "", name = null))
             RelayController.updateConnection(RelayConnectionState.BleConnected(addr ?: ""))
-            socket = ServerSocket(wsUrl, token, socketListener).also { it.connect() }
+            socket = ServerSocket(wsUrl, token, socketListener(gen)).also { it.connect() }
         }
-        override fun onAudio(packet: ByteArray) = execute(session.onDeviceAudio(packet))
-        override fun onCommandAck(payload: ByteArray) = execute(session.onDeviceCommandAck(payload))
+        override fun onAudio(packet: ByteArray) {
+            if (stale()) return
+            execute(session.onDeviceAudio(packet))
+        }
+        override fun onCommandAck(payload: ByteArray) {
+            if (stale()) return
+            execute(session.onDeviceCommandAck(payload))
+        }
         override fun onDisconnected(reason: String) {
+            if (stale()) return
             Log.w(TAG, "device disconnected: $reason"); teardown()
             // Publish to RelayController: device down + connection idle.
             RelayController.updateDevice(DeviceState.Disconnected(reason))
@@ -90,8 +133,10 @@ class RelayService : Service() {
     }
 
     // --- server (WebSocket) events ---
-    private val socketListener = object : ServerSocket.Listener {
+    private fun socketListener(gen: Int) = object : ServerSocket.Listener {
+        private fun stale() = gen != generation
         override fun onOpen() {
+            if (stale()) return
             Log.i(TAG, "socket open; sending hello")
             // Publish to RelayController: server authenticated + relay
             // is Live. `sinceMs` is 0 on first connect; later phases
@@ -102,8 +147,12 @@ class RelayService : Service() {
             )
             session.start().forEach(::execute)
         }
-        override fun onText(text: String) = session.onServerMessage(text).forEach(::execute)
+        override fun onText(text: String) {
+            if (stale()) return
+            session.onServerMessage(text).forEach(::execute)
+        }
         override fun onClosed(reason: String) {
+            if (stale()) return
             Log.w(TAG, "socket closed: $reason"); teardown()
             // Publish to RelayController: socket failed + server unreachable.
             RelayController.updateConnection(RelayConnectionState.Failed(reason))

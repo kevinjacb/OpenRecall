@@ -3,9 +3,9 @@ package com.sense.relay.ui
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.ComponentActivity
 import com.sense.relay.core.ui.SenseTheme
 import com.sense.relay.relay.RelayController
 import com.sense.relay.ui.nav.AppNavigation
