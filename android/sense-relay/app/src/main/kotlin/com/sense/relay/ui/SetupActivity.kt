@@ -105,6 +105,16 @@ class SetupActivity : ComponentActivity() {
                     .putExtra("server_url", c.serverUrl)
                     .putExtra("token", c.token)
                 startForegroundService(i)
+                // Phase 7: navigate. A re-provision (launched from Settings
+                // with EXTRA_RECONFIGURE) returns RESULT_OK to MainActivity;
+                // a first launch starts MainActivity fresh. Either way this
+                // SetupActivity finishes — the wizard is single-use.
+                if (intent?.getBooleanExtra(EXTRA_RECONFIGURE, false) == true) {
+                    setResult(RESULT_OK)
+                } else {
+                    startActivity(Intent(this, MainActivity::class.java))
+                }
+                finish()
             },
             onAttempt = { u, t -> ServerConfig(filesDir).saveCredentials(u, t) },
             initialUrl = saved.serverUrl,
@@ -121,6 +131,12 @@ class SetupActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         if (this::scanner.isInitialized) scanner.close()
+    }
+
+    companion object {
+        /** Intent extra marking a re-provision run (launched from Settings).
+         *  Absent on a first launch (the launcher intent). */
+        const val EXTRA_RECONFIGURE = "reconfigure"
     }
 }
 

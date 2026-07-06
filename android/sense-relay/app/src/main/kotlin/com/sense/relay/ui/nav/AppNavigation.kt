@@ -19,6 +19,7 @@ import com.sense.relay.ui.device.DeviceRoute
 import com.sense.relay.ui.home.HomeRoute
 import com.sense.relay.ui.recordings.RecordingsRoute
 import com.sense.relay.ui.recordings.SessionDetailRoute
+import com.sense.relay.ui.settings.SettingsRoute
 
 /**
  * Single-Activity nav graph. The 4 main destinations are tied to the
@@ -38,6 +39,7 @@ import com.sense.relay.ui.recordings.SessionDetailRoute
  */
 @Composable
 fun AppNavigation(
+    onReconfigure: () -> Unit,
     navController: NavHostController = rememberNavController(),
 ) {
     Scaffold(
@@ -72,7 +74,7 @@ fun AppNavigation(
                 )
             }
             composable(Destination.Device.route) { DeviceRoute() }
-            composable(Destination.Settings.route) { StubScreen("Settings — coming soon") }
+            composable(Destination.Settings.route) { SettingsRoute(onReconfigure) }
             // SessionDetail: the route has a path segment for the id; the
             // framework parses it via [SessionIdNavType]. The screen reads the
             // id out of `backStackEntry.arguments` and pops back on the back
