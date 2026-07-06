@@ -104,15 +104,17 @@ class PollingStatusRepository(
 }
 
 /**
- * Classify a thrown fetch error into the small [ApiError] set the UI cares
- * about. Pure (no I/O, no Android) so it is unit-testable in isolation:
+ * Classify a thrown HTTP error into the small [ApiError] set the UI cares
+ * about. Pure (no I/O, no Android) so it is unit-testable in isolation, and
+ * shared across the repositories that call [SenseHttpClient] (the status
+ * poller and the session repository):
  *  - [SecurityException] → [ApiError.Unauthorized] (the client throws this
- *    on a 401/403 — see `SenseHttpClient.getStatus`).
- *  - [IOException] → [ApiError.Unreachable] (DNS/TCP/TLS/timeout, or a
- *    non-auth non-2xx HTTP status, both surfaced by the client as IOException).
+ *    on a 401/403).
+ *  - [IOException] → [ApiError.Unreachable] (DNS/TCP/TLS/timeout, a 404, or a
+ *    non-auth non-2xx HTTP status, all surfaced by the client as IOException).
  *  - anything else → [ApiError.Unknown] (carries the throwable for logging).
  */
-fun statusApiError(e: Throwable): ApiError = when (e) {
+fun httpApiError(e: Throwable): ApiError = when (e) {
     is SecurityException -> ApiError.Unauthorized
     is IOException -> ApiError.Unreachable(e.message ?: "unreachable")
     else -> ApiError.Unknown(e)

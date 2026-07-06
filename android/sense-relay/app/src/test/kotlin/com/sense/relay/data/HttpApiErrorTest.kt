@@ -7,30 +7,30 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 
 /**
- * Pins [statusApiError]: the pure classifier that turns a thrown fetch
- * error into the small [ApiError] set the UI switches on. The mapping is
- * the only place the "401 → go to Settings" and "network → offline"
- * distinctions are made, so it gets its own focused test.
+ * Pins [httpApiError]: the pure classifier that turns a thrown HTTP error
+ * into the small [ApiError] set the UI switches on. Shared by the status
+ * poller and the session repository — it is the only place the "401 → go to
+ * Settings" and "network → offline" distinctions are made.
  */
-class StatusApiErrorTest {
+class HttpApiErrorTest {
 
     @Test fun securityExceptionMapsToUnauthorized() {
-        assertEquals(ApiError.Unauthorized, statusApiError(SecurityException("401")))
+        assertEquals(ApiError.Unauthorized, httpApiError(SecurityException("401")))
     }
 
     @Test fun ioExceptionMapsToUnreachableWithReason() {
-        val err = assertIs<ApiError.Unreachable>(statusApiError(IOException("timeout")))
+        val err = assertIs<ApiError.Unreachable>(httpApiError(IOException("timeout")))
         assertEquals("timeout", err.reason)
     }
 
     @Test fun ioExceptionWithoutMessageStillMapsToUnreachable() {
-        val err = assertIs<ApiError.Unreachable>(statusApiError(IOException()))
+        val err = assertIs<ApiError.Unreachable>(httpApiError(IOException()))
         assertEquals("unreachable", err.reason)
     }
 
     @Test fun otherThrowableMapsToUnknownCarryingTheCause() {
         val cause = IllegalStateException("boom")
-        val err = assertIs<ApiError.Unknown>(statusApiError(cause))
+        val err = assertIs<ApiError.Unknown>(httpApiError(cause))
         assertEquals(cause, err.throwable)
     }
 }

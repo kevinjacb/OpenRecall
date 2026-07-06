@@ -2,10 +2,13 @@ package com.sense.relay.data
 
 import android.app.Application
 import androidx.lifecycle.ProcessLifecycleOwner
-import com.sense.relay.core.model.ApiError
 import com.sense.relay.core.result.Outcome
 import com.sense.relay.domain.model.ServerStatus
+import com.sense.relay.domain.model.SessionId
 import com.sense.relay.http.SenseHttpClient
+import com.sense.relay.http.dto.CaptureEventDto
+import com.sense.relay.http.dto.SessionDetailsDto
+import com.sense.relay.http.dto.SessionsPageDto
 import com.sense.relay.http.dto.toDomain
 import com.sense.relay.relay.RelayController
 import com.sense.relay.store.ServerConfig
@@ -14,6 +17,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.io.IOException
 
 /**
  * Process-singleton wiring. Constructed once in
@@ -60,9 +66,13 @@ object RepositoryModule {
         if (::repos.isInitialized) return
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val configuration = ConfigurationRepositoryImpl(ServerConfig(app.filesDir))
-        val session = FakeSessionRepository()
+        // One shared, config-aware, thread-safe client provider backs both
+        // the status poller and the session API, so there is a single OkHttp
+        // client per (url, token) across the app.
+        val clientProvider = clientProvider(configuration)
+        val session = SessionRepositoryImpl(HttpSessionApi(clientProvider))
         val status = PollingStatusRepository(
-            fetch = statusFetch(configuration),
+            fetch = statusFetch(clientProvider),
             lifecycle = ProcessLifecycleOwner.get().lifecycle,
             scope = scope,
         )
@@ -84,49 +94,72 @@ object RepositoryModule {
 }
 
 /**
- * Build the production `/status` fetcher for [PollingStatusRepository].
- * Each poll reads the current persisted [com.sense.relay.store.Config]
- * (so a re-provision in Settings takes effect on the next poll without
- * re-wiring), and — when provisioned — calls `GET /status` through a
- * [SenseHttpClient] memoized by (url, token) so we don't rebuild the
- * OkHttp stack every 2 seconds. Errors are classified by [statusApiError];
- * cancellation propagates.
+ * A config-aware, thread-safe provider of the current [SenseHttpClient].
+ * Each call reads the persisted [com.sense.relay.store.Config] (so a
+ * re-provision in Settings takes effect on the next call without re-wiring)
+ * and returns a client memoized by (url, token) — so the OkHttp stack is
+ * built once per credential set, not per request.
  *
- * **The entire body — including the `config.observe().first()` read — sits
- * inside the try.** `ServerConfig.observe()` is a raw DataStore `store.data`
- * flow with no `.catch`, so a read failure (corrupt `.preferences_pb`, disk
- * IO) throws; if that escaped this lambda it would reach the poll loop's
- * `launch` and, under the `SupervisorJob`, crash the app. Guarding it here
- * turns a config-read failure into an `Outcome.Failure` (offline card).
+ * **Not provisioned → `throw IOException`** (rather than returning null), so
+ * the callers' existing catch/`httpApiError` paths turn it into
+ * `Outcome.Failure` / `PagedResult.Error` uniformly.
  *
- * **Client memoization notes (Minor, tracked for Phase 5):**
- *  - The captured `cached` client is safe without synchronization because
- *    the poll loop invokes this lambda sequentially. A future concurrent
- *    caller (e.g. the pull-to-refresh `refresh()` the Phase-5 recordings
- *    screen may want) MUST add synchronization before racing the loop.
- *  - When (url, token) changes (a re-provision), the previous client is
- *    dropped without an explicit OkHttp shutdown; its idle threads/sockets
- *    are reaped by OkHttp's own idle timeout. Re-provision is infrequent,
- *    so the bounded idle-out is accepted rather than adding a close path.
+ * The `config.observe().first()` read and the memo are inside the guard:
+ * `ServerConfig.observe()` is a raw DataStore `store.data` flow with no
+ * `.catch`, so a read failure throws — callers catch it. The [Mutex] makes
+ * the memoized `cached` safe to share across the status poller and the
+ * session repository (which can call concurrently). When (url, token)
+ * changes, the previous client is dropped without an explicit OkHttp
+ * shutdown; its idle threads/sockets are reaped by OkHttp's idle timeout
+ * (re-provision is infrequent, so the bounded idle-out is accepted).
  */
-private fun statusFetch(config: ConfigurationRepository): suspend () -> Outcome<ServerStatus> {
+private fun clientProvider(config: ConfigurationRepository): suspend () -> SenseHttpClient {
+    val mutex = Mutex()
     var cached: Pair<Pair<String, String>, SenseHttpClient>? = null
-    fun clientFor(url: String, token: String): SenseHttpClient {
-        val key = url to token
-        cached?.let { if (it.first == key) return it.second }
-        return SenseHttpClient(url, token).also { cached = key to it }
-    }
-    return fetch@{
-        try {
-            val c = config.observe().first()
-            if (!c.provisioned || c.serverUrl.isBlank()) {
-                return@fetch Outcome.Failure(ApiError.Unreachable("not provisioned"))
-            }
-            Outcome.Success(clientFor(c.serverUrl, c.token).getStatus().toDomain())
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            Outcome.Failure(statusApiError(e))
+    return {
+        val c = config.observe().first()
+        if (!c.provisioned || c.serverUrl.isBlank()) {
+            throw IOException("not provisioned")
+        }
+        val key = c.serverUrl to c.token
+        mutex.withLock {
+            cached?.takeIf { it.first == key }?.second
+                ?: SenseHttpClient(c.serverUrl, c.token).also { cached = key to it }
         }
     }
+}
+
+/**
+ * Production `/status` fetcher for [PollingStatusRepository]. Delegates to
+ * the shared [clientProvider]; every throwable (including a "not
+ * provisioned" or a DataStore read failure surfaced by the provider) is
+ * caught and classified by [httpApiError] into an `Outcome.Failure`, so a
+ * fetch never throws into the poll loop (the Phase-4 crash lesson).
+ * Cancellation propagates.
+ */
+private fun statusFetch(client: suspend () -> SenseHttpClient): suspend () -> Outcome<ServerStatus> = {
+    try {
+        Outcome.Success(client().getStatus().toDomain())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        Outcome.Failure(httpApiError(e))
+    }
+}
+
+/**
+ * Production [SessionApi] over the shared [clientProvider]. Each method
+ * resolves the current client (or throws "not provisioned", which the
+ * repository catches) and delegates. The repository owns DTO → domain
+ * mapping and error classification.
+ */
+private class HttpSessionApi(private val client: suspend () -> SenseHttpClient) : SessionApi {
+    override suspend fun listSessions(limit: Int, cursor: String?): SessionsPageDto =
+        client().listSessions(limit, cursor)
+
+    override suspend fun getSession(id: SessionId): SessionDetailsDto =
+        client().getSession(id)
+
+    override suspend fun getSessionEvents(id: SessionId): List<CaptureEventDto> =
+        client().getSessionEvents(id)
 }

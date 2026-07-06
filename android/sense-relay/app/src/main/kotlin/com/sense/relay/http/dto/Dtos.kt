@@ -82,6 +82,16 @@ data class SessionsPageDto(
 )
 
 /**
+ * The `GET /sessions/{id}/events` response body — a list wrapper so the
+ * server can grow sibling fields (paging, totals) without changing the
+ * shape. `events` defaults to empty so a `{}` body still deserializes.
+ */
+@Serializable
+data class SessionEventsDto(
+    val events: List<CaptureEventDto> = emptyList(),
+)
+
+/**
  * Shared `Json` instance for DTO parsing/encoding. Matches the
  * project's [com.sense.relay.protocol.Wire.json] settings (lenient
  * + default encoding) so a server field addition never deserializes

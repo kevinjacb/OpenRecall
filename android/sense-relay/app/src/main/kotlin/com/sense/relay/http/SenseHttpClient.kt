@@ -5,10 +5,12 @@ import com.sense.relay.http.dto.CaptureEventDto
 import com.sense.relay.http.dto.DtoJson
 import com.sense.relay.http.dto.ServerStatusDto
 import com.sense.relay.http.dto.SessionDetailsDto
+import com.sense.relay.http.dto.SessionEventsDto
 import com.sense.relay.http.dto.SessionsPageDto
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
+import java.net.URLEncoder
 import java.security.KeyStore
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
@@ -90,20 +92,50 @@ class SenseHttpClient(
         }
     }
 
-    // ---- Phase 3+ server-touching calls. `getStatus` is wired to the real
-    // `GET /status` in Phase 4 (the first call the main-app UI needs); the
-    // session-listing/detail calls land in Phase 5. The still-stubbed methods
-    // throw an IOException whose message names the method and the phase, so a
-    // missing-wiring logcat line is greppable.
+    // ---- Phase 3+ server-touching calls, all wired to the real endpoints.
+    // Each follows getStatus's error shape: 401/403 -> SecurityException (the
+    // "go to Settings" signal), 404 -> IOException("... not found"), other
+    // non-2xx -> IOException, body parsed with the shared lenient DtoJson.
 
+    /** `GET /sessions?limit=N&cursor=…`. The cursor is opaque (unpadded
+     *  urlsafe base64 from the server) and URL-encoded defensively. */
     suspend fun listSessions(limit: Int = 20, cursor: String? = null): SessionsPageDto =
-        stub("listSessions")
+        withContext(Dispatchers.IO) {
+            val path = buildString {
+                append("/sessions?limit=").append(limit)
+                if (cursor != null) {
+                    append("&cursor=").append(URLEncoder.encode(cursor, "UTF-8"))
+                }
+            }
+            client.newCall(req(path)).execute().use { resp ->
+                if (resp.code == 401 || resp.code == 403) throw SecurityException("unauthorized")
+                if (resp.code !in 200..299) throw IOException("listSessions http ${resp.code}")
+                DtoJson.decodeFromString(SessionsPageDto.serializer(), resp.body?.string().orEmpty())
+            }
+        }
 
+    /** `GET /sessions/{id}` — summary + events in one payload. */
     suspend fun getSession(id: SessionId): SessionDetailsDto =
-        stub("getSession(${id.value})")
+        withContext(Dispatchers.IO) {
+            client.newCall(req("/sessions/${id.value}")).execute().use { resp ->
+                if (resp.code == 401 || resp.code == 403) throw SecurityException("unauthorized")
+                if (resp.code == 404) throw IOException("session ${id.value} not found")
+                if (resp.code !in 200..299) throw IOException("getSession http ${resp.code}")
+                DtoJson.decodeFromString(SessionDetailsDto.serializer(), resp.body?.string().orEmpty())
+            }
+        }
 
+    /** `GET /sessions/{id}/events` — the event list alone (unwrapped from
+     *  the `{"events": […]}` envelope). */
     suspend fun getSessionEvents(id: SessionId): List<CaptureEventDto> =
-        stub("getSessionEvents(${id.value})")
+        withContext(Dispatchers.IO) {
+            client.newCall(req("/sessions/${id.value}/events")).execute().use { resp ->
+                if (resp.code == 401 || resp.code == 403) throw SecurityException("unauthorized")
+                if (resp.code == 404) throw IOException("session ${id.value} not found")
+                if (resp.code !in 200..299) throw IOException("getSessionEvents http ${resp.code}")
+                DtoJson.decodeFromString(SessionEventsDto.serializer(), resp.body?.string().orEmpty()).events
+            }
+        }
 
     /**
      * `GET /status`. Follows [serverPubkey]'s error shape, but treats both
@@ -112,7 +144,7 @@ class SenseHttpClient(
      * failure for a bearer-token API. Any other non-2xx is an [IOException],
      * and the body is parsed with the shared lenient [DtoJson] so a future
      * server field addition doesn't hard-fail. The caller
-     * ([PollingStatusRepository] via [statusApiError]) classifies the thrown
+     * ([PollingStatusRepository] via [httpApiError]) classifies the thrown
      * error into an [com.sense.relay.core.model.ApiError].
      */
     suspend fun getStatus(): ServerStatusDto = withContext(Dispatchers.IO) {
@@ -123,7 +155,4 @@ class SenseHttpClient(
             DtoJson.decodeFromString(ServerStatusDto.serializer(), body)
         }
     }
-
-    private fun stub(method: String): Nothing =
-        throw IOException("$method: not yet wired (Phase 5 server endpoint)")
 }
