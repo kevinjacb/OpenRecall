@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -57,24 +58,35 @@ def _rank(rows: list[tuple[MemoryAtom, Vector]], query: Vector, k: int) -> list[
 
 
 class InMemoryMemoryIndex:
+    """In-memory :class:`MemoryIndex` — thread-safe by design.
+
+    Like the atom store, the index is shared mutable state across the
+    read path; all reads and writes are guarded by a single lock so
+    ranking sees a consistent snapshot.
+    """
+
     def __init__(self) -> None:
         self._entries: dict[str, tuple[MemoryAtom, Vector]] = {}
+        self._lock = threading.Lock()
 
     def add(self, atom: MemoryAtom, vector: Vector) -> bool:
-        if atom.atom_id in self._entries:
-            return False
-        self._entries[atom.atom_id] = (atom, list(vector))
-        return True
+        with self._lock:
+            if atom.atom_id in self._entries:
+                return False
+            self._entries[atom.atom_id] = (atom, list(vector))
+            return True
 
     def has(self, atom_id: str) -> bool:
-        return atom_id in self._entries
+        with self._lock:
+            return atom_id in self._entries
 
     def search(self, session_id: str, query: Vector, k: int) -> list[SearchResult]:
-        rows = [
-            (atom, vec)
-            for atom, vec in self._entries.values()
-            if atom.session_id == session_id
-        ]
+        with self._lock:
+            rows = [
+                (atom, vec)
+                for atom, vec in self._entries.values()
+                if atom.session_id == session_id
+            ]
         return _rank(rows, query, k)
 
 

@@ -10,6 +10,7 @@ even when an event produces no atoms.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -43,29 +44,43 @@ class AtomStore(Protocol):
 
 
 class InMemoryAtomStore:
+    """In-memory :class:`AtomStore` — thread-safe by design.
+
+    The store is shared mutable state across the read path (Planner thread,
+    extraction worker thread, gateway callbacks). All mutations are guarded
+    by ``self._lock`` so concurrent appends and cursor writes never lose
+    updates; reads are also synchronized to get a consistent view.
+    """
+
     def __init__(self) -> None:
         self._seen: set[str] = set()
         self._by_session: dict[str, list[MemoryAtom]] = {}
         self._cursor: dict[str, int] = {}
+        self._lock = threading.Lock()
 
     def append(self, atom: MemoryAtom) -> bool:
-        if atom.atom_id in self._seen:
-            return False
-        self._seen.add(atom.atom_id)
-        self._by_session.setdefault(atom.session_id, []).append(atom)
-        return True
+        with self._lock:
+            if atom.atom_id in self._seen:
+                return False
+            self._seen.add(atom.atom_id)
+            self._by_session.setdefault(atom.session_id, []).append(atom)
+            return True
 
     def has(self, atom_id: str) -> bool:
-        return atom_id in self._seen
+        with self._lock:
+            return atom_id in self._seen
 
     def atoms(self, session_id: str) -> list[MemoryAtom]:
-        return sorted(self._by_session.get(session_id, []), key=lambda a: a.start_ms)
+        with self._lock:
+            return sorted(self._by_session.get(session_id, []), key=lambda a: a.start_ms)
 
     def get_cursor(self, session_id: str) -> int:
-        return self._cursor.get(session_id, _NO_CURSOR)
+        with self._lock:
+            return self._cursor.get(session_id, _NO_CURSOR)
 
     def set_cursor(self, session_id: str, seq: int) -> None:
-        self._cursor[session_id] = seq
+        with self._lock:
+            self._cursor[session_id] = seq
 
 
 class SqliteAtomStore:
