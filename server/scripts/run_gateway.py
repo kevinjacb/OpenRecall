@@ -42,7 +42,8 @@ from sense_server.gateway.adapter import build_pipeline_factory, serve
 from sense_server.http.app import build_app
 from sense_server.memory.atom import MemoryAtom  # noqa: F401  (used in stage wiring)
 from sense_server.memory.embeddings import OpenAICompatibleEmbedder
-from sense_server.memory.extract import LLMExtractor, OpenAICompatibleChatModel
+from sense_server.memory.extract import LLMExtractor
+from sense_server.memory.llm import OpenAICompatibleChatModel
 from sense_server.memory.extraction_worker import (
     ExtractionEnqueuer,
     ExtractionWorker,
@@ -134,6 +135,7 @@ def main() -> None:
     # populates, so a freshly-extracted atom is immediately queryable.
     from sense_server.agent.audit import InMemoryAuditLogger
     from sense_server.agent.capability import ConstantCapabilityProvider
+    from sense_server.agent.config import load_agent_config
     from sense_server.agent.context import ContextBuilder
     from sense_server.agent.guardrails import ConfidenceGateGuardrails
     from sense_server.agent.intent import OpenAICompatibleAgentLLM
@@ -145,6 +147,10 @@ def main() -> None:
     from sense_server.memory.scoring import SimRecencyScorer
 
     agent_llm = OpenAICompatibleAgentLLM(llm_chat)
+    # Read SENSE_CONFIDENCE_AUTONOMOUS / SENSE_CONFIDENCE_CONFIRM /
+    # SENSE_RATE_LIMIT_PER_MIN from the process environment. Defaults match
+    # the spec; a bad value aborts startup with a clear error.
+    agent_config = load_agent_config(__import__("os").environ)
     planner = Planner(
         retriever=Retriever(
             embedder=embedder,
@@ -156,7 +162,11 @@ def main() -> None:
         context_builder=ContextBuilder(),
         llm=agent_llm,
         validator=StrictJSONValidator(),
-        guardrails=ConfidenceGateGuardrails(),
+        guardrails=ConfidenceGateGuardrails(
+            confidence_autonomous=agent_config.guardrails.confidence_autonomous,
+            confidence_confirm=agent_config.guardrails.confidence_confirm,
+            rate_limit_per_min=agent_config.guardrails.rate_limit_per_min,
+        ),
         audit=InMemoryAuditLogger(),
         metrics=metrics,
         capability_provider=ConstantCapabilityProvider(),
