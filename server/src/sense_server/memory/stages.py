@@ -154,15 +154,22 @@ class Pipeline:
         """Run the four stages and persist the resulting atoms.
 
         Returns the atoms that were newly indexed. Raises if the
-        embedder fails (M7): the index is unchanged in that case.
+        embedder fails (M7): the index and atom store are unchanged in
+        that case. Persistence happens AFTER successful indexing so the
+        H7 cursor-after-indexing invariant holds end-to-end (no partial
+        state survives a failure).
         """
         atoms = self._extraction.run(session_id, events)
         if not atoms:
             return []
         stamped = self._version_stamp.run(atoms)
-        # Persist before indexing so a downstream retrieval can find
-        # the atoms even if the indexer is behind by a tick.
-        for atom in stamped:
-            self._store.append(atom)
+        # Embed first. If this raises, neither the index nor the atom
+        # store is touched (M7 / H7).
         pairs = self._embedding.run(stamped)
-        return self._indexing.run(pairs)
+        indexed = self._indexing.run(pairs)
+        # Persist only after the index has accepted the atoms. The
+        # store's ``append`` is idempotent on ``atom_id``, so a retry
+        # of the same session is safe.
+        for atom in indexed:
+            self._store.append(atom)
+        return indexed
