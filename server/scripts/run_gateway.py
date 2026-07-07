@@ -33,12 +33,29 @@ from pathlib import Path
 
 import aiohttp.web
 
+from sense_server.agent.metrics import InMemoryMetricsRecorder
 from sense_server.auth import load_or_create_token
 from sense_server.commands.dispatcher import CommandDispatcher
 from sense_server.commands.signing import load_or_create_signer
 from sense_server.events.store import SqliteEventStore
 from sense_server.gateway.adapter import build_pipeline_factory, serve
 from sense_server.http.app import build_app
+from sense_server.memory.atom import MemoryAtom  # noqa: F401  (used in stage wiring)
+from sense_server.memory.embeddings import OpenAICompatibleEmbedder
+from sense_server.memory.extract import LLMExtractor, OpenAICompatibleChatModel
+from sense_server.memory.extraction_worker import (
+    ExtractionEnqueuer,
+    ExtractionWorker,
+)
+from sense_server.memory.index import SqliteMemoryIndex
+from sense_server.memory.stages import (
+    EmbeddingStage,
+    ExtractionStage,
+    IndexingStage,
+    Pipeline,
+    VersionStampStage,
+)
+from sense_server.memory.store import SqliteAtomStore
 from sense_server.sessions.index import SessionIndex
 from sense_server.sessions.lifecycle import SessionLifecycle
 
@@ -63,7 +80,7 @@ def main() -> None:
     # Drop to WARNING once it's stable; bump to DEBUG for per-frame decode/ack
     # detail. Format includes time + logger name so the source is obvious.
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
@@ -79,6 +96,36 @@ def main() -> None:
     # a restart rebuilds the index from the durable store on demand.
     session_index = SessionIndex()
     session_lifecycle = SessionLifecycle()
+
+    # Memory pipeline (M4.4 wiring): the gateway offloads extraction +
+    # embedding + indexing to an out-of-band worker so the audio hot path
+    # stays real-time. The enqueuer is the only seam the gateway hot path
+    # touches; the worker drains it on a background task. The metrics
+    # recorder is process-wide so /metrics reflects the same numbers.
+    metrics = InMemoryMetricsRecorder()
+    atom_store = SqliteAtomStore(args.db.replace("events.db", "atoms.db"))
+    memory_index = SqliteMemoryIndex(args.db.replace("events.db", "memory_index.db"))
+    embedder = OpenAICompatibleEmbedder.from_env(__import__("os").environ)
+    llm_chat = OpenAICompatibleChatModel.from_env(__import__("os").environ)
+    extractor = LLMExtractor(llm_chat)
+    pipeline = Pipeline(
+        extraction=ExtractionStage(
+            extractor=extractor,
+            clock=lambda: __import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        ),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=embedder),
+        indexing=IndexingStage(index=memory_index),
+        store=atom_store,
+    )
+    enqueuer = ExtractionEnqueuer(capacity=1024, metrics=metrics)
+    worker = ExtractionWorker(
+        events=store,
+        atoms=atom_store,
+        pipeline=pipeline,
+        metrics=metrics,
+        enqueuer=enqueuer,
+    )
 
     token = load_or_create_token(args.token_file)
     app = build_app(
@@ -100,6 +147,9 @@ def main() -> None:
             await http_runner.setup()
             site = aiohttp.web.TCPSite(http_runner, args.host, args.http_port)
             await site.start()
+            # Start the extraction worker so enqueued sessions are
+            # processed in the background.
+            await worker.start()
             print(f"http control API on http://{args.host}:{args.http_port}")
             print(f"gateway listening on ws://{args.host}:{args.port}  "
                   f"(window={args.window_ms} ms, events -> {args.db})")
@@ -117,6 +167,7 @@ def main() -> None:
                 session_lifecycle=session_lifecycle,
             )
         finally:
+            await worker.stop()
             await http_runner.cleanup()
 
     try:
