@@ -45,6 +45,37 @@ class MappersTest {
         assertEquals(Instant.parse("2026-07-04T10:01:00Z"), domain.endedAt)
     }
 
+    @Test fun sessionSummaryDtoParsesServerOffsetWireFormat() {
+        // The server emits an explicit `+00:00` offset — `datetime.isoformat()`
+        // on a `timezone.utc` value — NOT a `Z` suffix (pinned server-side by
+        // test_sessions.test_sessions_summary_shape_matches_dto: "…+00:00").
+        // This contract test pins that the mapper accepts the server's actual
+        // wire format. On the CI JVM `Instant.parse` happens to accept `+00:00`
+        // too (JDK-8166138, fixed in Java 13), so this alone doesn't reproduce
+        // the older-Android failure — but it guards the contract: if the mapper
+        // ever regresses to a parser that rejects the offset, this fails. The
+        // production parser is `OffsetDateTime.parse(s).toInstant()`, which
+        // accepts `Z` and `+00:00` (and fractional seconds) on every version.
+        val json = """
+            {"id":"s1","startedAt":"2026-07-01T12:00:00+00:00",
+             "durationMs":60000,"transcriptCount":1,"preview":"p"}
+        """.trimIndent()
+        val domain = Wire.json.decodeFromString(SessionSummaryDto.serializer(), json).toDomain()
+        assertEquals(Instant.parse("2026-07-01T12:00:00Z"), domain.startedAt)
+    }
+
+    @Test fun sessionSummaryDtoParsesServerOffsetWithFractionalSeconds() {
+        // `datetime.isoformat()` includes fractional seconds when microseconds
+        // are non-zero: "…12:00:00.123456+00:00". The mapper must not fall back
+        // to EPOCH for that — the most common real timestamp shape.
+        val json = """
+            {"id":"s2","startedAt":"2026-07-01T12:00:00.123456+00:00",
+             "durationMs":1000,"transcriptCount":0,"preview":""}
+        """.trimIndent()
+        val domain = Wire.json.decodeFromString(SessionSummaryDto.serializer(), json).toDomain()
+        assertEquals(Instant.parse("2026-07-01T12:00:00.123456Z"), domain.startedAt)
+    }
+
     @Test fun sessionDetailsDtoMapsSummary() {
         val json = """
             {"summary":{"id":"s1","startedAt":"2026-07-04T10:00:00Z",

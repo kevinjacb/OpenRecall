@@ -8,6 +8,7 @@ import com.sense.relay.domain.model.SessionSummary
 import com.sense.relay.domain.model.ServerStatus
 import com.sense.relay.domain.model.TranscriptChunk
 import java.time.Instant
+import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
 
 /**
@@ -77,13 +78,28 @@ fun ServerStatusDto.toDomain(): ServerStatus = ServerStatus(
 )
 
 /**
- * Parse an ISO-8601 instant. Tolerant of the `Z` suffix the server
- * emits. On failure we fall back to `Instant.EPOCH` — the UI shows
- * "no date" patterns for invalid times, which is the right
- * degradation for a single corrupt row.
+ * Parse an ISO-8601 instant from the server's wire format.
+ *
+ * The server emits an explicit offset — `datetime.isoformat()` on a
+ * `timezone.utc` value produces `…+00:00` (and `…+00:00.123456` when
+ * there are fractional seconds), NOT a `Z` suffix. We parse via
+ * [OffsetDateTime] (which accepts both `Z` and `+00:00` and fractional
+ * seconds on every Java/Android version) and convert to an [Instant].
+ *
+ * `Instant.parse` would be simpler, but it delegates to
+ * `DateTimeFormatter.ISO_INSTANT`, which rejected explicit offsets
+ * until JDK-8166138 (Java 13). Android API 26-30 ship a `java.time`
+ * based on OpenJDK 8-9, so `Instant.parse("…+00:00")` throws there —
+ * silently falling back to [Instant.EPOCH] (every timestamp rendering
+ * as 1970-01-01). Using [OffsetDateTime] avoids that without a server
+ * change.
+ *
+ * On any failure we fall back to [Instant.EPOCH] — the UI shows "no
+ * date" patterns for invalid times, the right degradation for a single
+ * corrupt row.
  */
 private fun parseInstant(s: String): Instant = try {
-    Instant.parse(s)
+    OffsetDateTime.parse(s).toInstant()
 } catch (_: DateTimeParseException) {
     Instant.EPOCH
 }
