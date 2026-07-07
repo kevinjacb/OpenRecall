@@ -13,6 +13,7 @@ used here; it is reserved for end-of-day bulk video retrieval.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from ..ingest.pipeline import AudioIngestPipeline
@@ -25,6 +26,8 @@ if TYPE_CHECKING:
     from ..events.store import EventStore
     from ..sessions.index import SessionIndex
     from ..sessions.lifecycle import SessionLifecycle
+
+logger = logging.getLogger(__name__)
 
 
 def handle_message(core: GatewayCore, message: str | bytes) -> list[str]:
@@ -92,12 +95,15 @@ async def serve(
     from .core import GatewayError
 
     async def handler(ws: "websockets.ServerConnection") -> None:
+        peer = getattr(ws, "remote_address", None)
         # --- bearer-token check (skip when token is None: local dev) ---
         if token is not None:
             auth = ws.request.headers.get("Authorization", "")
             if not auth.startswith("Bearer ") or not constant_time_eq(auth[7:], token):
+                logger.warning("rejecting connection from %s: bad/missing bearer token", peer)
                 await ws.close(code=1008, reason="unauthorized")
                 return
+        logger.info("connection opened from %s", peer)
         core = GatewayCore(
             pipeline_factory=pipeline_factory,
             event_store=event_store,
@@ -112,13 +118,27 @@ async def serve(
                 # event loop stays responsive (keepalive pings, other connections) and
                 # the connection doesn't time out mid-transcribe. Messages from one
                 # connection are still processed in order (we await each in turn).
-                replies = await asyncio.to_thread(handle_message, core, message)
+                try:
+                    replies = await asyncio.to_thread(handle_message, core, message)
+                except GatewayError:
+                    # Protocol violation — re-raise so the outer handler closes 1002.
+                    raise
+                except Exception:
+                    # A bad packet / decode / transcribe error must NOT tear down the
+                    # relay connection. Log it and keep going — one bad frame shouldn't
+                    # reset the link. (GatewayError above is re-raised to the outer try.)
+                    kind = "binary" if isinstance(message, (bytes, bytearray, memoryview)) else "text"
+                    logger.exception("error handling a %s frame (%d bytes) from %s; skipping",
+                                     kind, len(message), peer)
+                    continue
                 for reply in replies:
                     await ws.send(reply)
         except GatewayError:
+            logger.warning("protocol error from %s — closing 1002", peer)
             await ws.close(code=1002, reason="protocol error")  # 1002 == protocol error
         except ConnectionClosed:
             pass  # client went away (possibly mid-transcribe) — a normal disconnect
+        logger.info("connection closed from %s", peer)
 
     async with websockets.serve(handler, host, port):
         await asyncio.Future()  # run forever

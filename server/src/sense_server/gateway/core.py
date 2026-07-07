@@ -14,6 +14,7 @@ Per packet it drives three things off the pipeline/reassembler:
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Callable, Union
 
@@ -37,6 +38,8 @@ from ..sessions.lifecycle import SessionLifecycle
 
 Outbound = Union[Ack, RequestChunks, TranscriptMsg, CommandMessage]
 PipelineFactory = Callable[[int], AudioIngestPipeline]
+
+logger = logging.getLogger(__name__)
 
 
 class GatewayError(Exception):
@@ -76,9 +79,14 @@ class GatewayCore:
             raise GatewayError("audio received before hello")
 
         packet = AudioPacket.parse(data)
+        logger.info(
+            "audio: session=%s chunk_seq=%d frames=%d vad=%s",
+            self._session_id, packet.chunk_seq, len(packet.frames), packet.vad_state.name,
+        )
         out: list[Outbound] = list(self._emit(self._pipeline.ingest(packet)))
         gap = self._pipeline.missing_range()
         if gap is not None:
+            logger.info("request_chunks: session=%s gap=[%d, %d)", self._session_id, gap[0], gap[1])
             out.append(RequestChunks(session_id=self._session_id, start=gap[0], end=gap[1]))
         out.append(Ack(session_id=self._session_id, next_seq=self._pipeline.next_expected_seq))
         return out
@@ -90,6 +98,7 @@ class GatewayCore:
         self._cum_ms = 0
         if self._session_lifecycle is not None:
             self._session_lifecycle.register(msg.session_id)
+        logger.info("hello: session=%s start_seq=%d", msg.session_id, msg.start_seq)
         # initial sync: ack the cursor, then hand over any commands awaiting this session
         return [Ack(session_id=msg.session_id, next_seq=msg.start_seq), *self._pending_commands()]
 
@@ -113,6 +122,7 @@ class GatewayCore:
         if self._pipeline is None or self._session_id is None:
             raise GatewayError("bye received before hello")
         flushed = list(self._emit(self._pipeline.flush()))
+        logger.info("bye: session=%s flushed %d final transcript(s)", msg.session_id, len(flushed))
         closing_session = self._session_id
         if self._session_lifecycle is not None:
             self._session_lifecycle.deregister(closing_session)
@@ -151,6 +161,10 @@ class GatewayCore:
                 self._session_index.record(event)
             self._event_seq += 1
             self._cum_ms += t.duration_ms
+            logger.info(
+                "transcript: session=%s event=%s text=%r (%d ms) stored=%s",
+                self._session_id, event.event_id, t.text, t.duration_ms, stored,
+            )
             msgs.append(
                 TranscriptMsg(
                     session_id=self._session_id, text=t.text, duration_ms=t.duration_ms

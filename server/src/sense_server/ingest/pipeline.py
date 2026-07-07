@@ -17,11 +17,15 @@ derived from frame counts and are independent of the decoder's output size.
 
 from __future__ import annotations
 
+import logging
+
 from .audio_packet import AudioPacket
 from .reassembler import SessionReassembler
 from .transcriber import OpusDecoder, Transcriber, Transcript
 
 FRAME_MS = 20  # one Opus frame == 20 ms of audio (V1 audio spec)
+
+logger = logging.getLogger(__name__)
 
 
 class AudioIngestPipeline:
@@ -53,8 +57,17 @@ class AudioIngestPipeline:
 
     def ingest(self, packet: AudioPacket) -> list[Transcript]:
         """Ingest one packet; return any transcripts completed as a result."""
-        for frame in self._reassembler.accept(packet):
+        delivered = self._reassembler.accept(packet)
+        for frame in delivered:
             self._buffer.append(self._decoder.decode(frame))
+        if delivered:
+            # The key bring-up signal: speech frames are accumulating toward a
+            # transcription window. If you see packet logs (core) but never this
+            # line, the reassembler is stalling on a gap — bump logging to DEBUG.
+            logger.info(
+                "pipeline: +%d frame(s) decoded -> %d/%d buffered for next window",
+                len(delivered), len(self._buffer), self._window_frames,
+            )
 
         out: list[Transcript] = []
         while len(self._buffer) >= self._window_frames:
@@ -72,5 +85,6 @@ class AudioIngestPipeline:
         window = self._buffer[:n_frames]
         del self._buffer[:n_frames]
         pcm = b"".join(window)
+        logger.info("pipeline: window full -> transcribing %d frame(s) (%d ms)", n_frames, n_frames * FRAME_MS)
         text = self._transcriber.transcribe(pcm, self._sample_rate)
         return Transcript(text=text, duration_ms=n_frames * FRAME_MS)

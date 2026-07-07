@@ -18,7 +18,11 @@ timeout/policy concern owned by the gateway); it only reports what is missing.
 
 from __future__ import annotations
 
+import logging
+
 from .audio_packet import AudioPacket
+
+logger = logging.getLogger(__name__)
 
 
 class SessionReassembler:
@@ -45,9 +49,17 @@ class SessionReassembler:
         seq = packet.chunk_seq
 
         if seq < self._next:
+            logger.debug("reassembler: seq=%d behind next=%d — duplicate/old, dropped", seq, self._next)
             return []  # duplicate or already delivered — idempotent drop
         if seq > self._next:
             self._buffer.setdefault(seq, packet)  # future packet; hold for ordering
+            # A gap at the head — the gateway will request_chunks to backfill, and
+            # no frames are delivered until it fills. Surfaced at INFO so a silent
+            # stall is visible at the default level.
+            logger.info(
+                "reassembler: seq=%d ahead of next=%d — buffered, head gap (held=%d)",
+                seq, self._next, len(self._buffer),
+            )
             return []
 
         # seq == next_expected: deliver this packet, then drain any contiguous buffer.
@@ -56,4 +68,5 @@ class SessionReassembler:
         while self._next in self._buffer:
             delivered.extend(self._buffer.pop(self._next).frames)
             self._next += 1
+        logger.debug("reassembler: seq=%d delivered %d frame(s), next=%d", seq, len(delivered), self._next)
         return delivered

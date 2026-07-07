@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 from pathlib import Path
 
 import aiohttp.web
@@ -56,6 +57,16 @@ def main() -> None:
     ap.add_argument("--http-port", type=int, default=8766,
                     help="HTTP control API port (operator/phone-facing)")
     args = ap.parse_args()
+
+    # Bring-up observability: INFO shows the relay flow (connection, hello, each
+    # audio packet, reassembler delivery, window-fill, transcripts, events).
+    # Drop to WARNING once it's stable; bump to DEBUG for per-frame decode/ack
+    # detail. Format includes time + logger name so the source is obvious.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
     store = SqliteEventStore(args.db)
