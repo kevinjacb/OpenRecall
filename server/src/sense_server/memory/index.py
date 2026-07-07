@@ -50,8 +50,12 @@ class MemoryIndex(Protocol):
 
     def has(self, atom_id: str) -> bool: ...
 
-    def search(self, session_id: str, query: Vector, k: int) -> list[SearchResult]:
-        """Top-k atoms in the session by cosine similarity to ``query``."""
+    def search(self, session_id: str | None, query: Vector, k: int) -> list[SearchResult]:
+        """Top-k atoms matching ``query``.
+
+        ``session_id`` filters the search to one session; pass ``None`` for
+        a global search across all sessions.
+        """
         ...
 
 
@@ -87,13 +91,16 @@ class InMemoryMemoryIndex:
         with self._lock:
             return atom_id in self._entries
 
-    def search(self, session_id: str, query: Vector, k: int) -> list[SearchResult]:
+    def search(self, session_id: str | None, query: Vector, k: int) -> list[SearchResult]:
         with self._lock:
-            rows = [
-                (atom, vec)
-                for atom, vec in self._entries.values()
-                if atom.session_id == session_id
-            ]
+            if session_id is None:
+                rows = list(self._entries.values())
+            else:
+                rows = [
+                    (atom, vec)
+                    for atom, vec in self._entries.values()
+                    if atom.session_id == session_id
+                ]
         return _rank(rows, query, k)
 
 
@@ -147,12 +154,18 @@ class SqliteMemoryIndex:
         ).fetchone()
         return row is not None
 
-    def search(self, session_id: str, query: Vector, k: int) -> list[SearchResult]:
-        rows = self._conn.execute(
-            "SELECT atom_id, session_id, source_event_id, kind, text, created_at, "
-            "start_ms, vector FROM memory_index WHERE session_id = ?",
-            (session_id,),
-        ).fetchall()
+    def search(self, session_id: str | None, query: Vector, k: int) -> list[SearchResult]:
+        if session_id is None:
+            rows = self._conn.execute(
+                "SELECT atom_id, session_id, source_event_id, kind, text, created_at, "
+                "start_ms, vector FROM memory_index",
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT atom_id, session_id, source_event_id, kind, text, created_at, "
+                "start_ms, vector FROM memory_index WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
         loaded = [
             (
                 MemoryAtom(
