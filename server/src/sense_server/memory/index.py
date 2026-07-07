@@ -13,7 +13,7 @@ import json
 import math
 import sqlite3
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -26,6 +26,7 @@ Vector = list[float]
 class SearchResult:
     atom: MemoryAtom
     score: float
+    vector: list[float] = field(default_factory=list)
 
 
 def cosine(a: Vector, b: Vector) -> float:
@@ -55,7 +56,7 @@ class MemoryIndex(Protocol):
 
 
 def _rank(rows: list[tuple[MemoryAtom, Vector]], query: Vector, k: int) -> list[SearchResult]:
-    scored = [SearchResult(atom=a, score=cosine(query, v)) for a, v in rows]
+    scored = [SearchResult(atom=a, score=cosine(query, v), vector=list(v)) for a, v in rows]
     scored.sort(key=lambda r: r.score, reverse=True)
     return scored[:k]
 
