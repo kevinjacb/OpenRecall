@@ -16,10 +16,25 @@ sealed interface Destination {
     data object Device : Destination { override val route = "device" }
     data object Settings : Destination { override val route = "settings" }
 
+    /** Cognitive read path: chat with the agent. */
+    data object Chat : Destination { override val route = "chat" }
+
+    /** Cognitive read path: browse + search the memory. */
+    data object Memory : Destination { override val route = "memory" }
+
     /** Session detail screen — per-session transcript timeline. The id is
      *  encoded in the route so deep-links can address a specific session. */
     data class SessionDetail(val id: SessionId) : Destination {
         override val route: String = "session/${id.value}"
+    }
+
+    /** Atom detail screen — one cited atom, drilled into from a chat chip.
+     *  The id is encoded in the route so a chip tap deep-links here. */
+    data class AtomDetail(val atomId: String) : Destination {
+        override val route: String = "memory/atom/$atomId"
+        companion object {
+            fun build(atomId: String) = AtomDetail(atomId)
+        }
     }
 
     /** Gateway back to SetupActivity. Used by Settings to re-provision; the
