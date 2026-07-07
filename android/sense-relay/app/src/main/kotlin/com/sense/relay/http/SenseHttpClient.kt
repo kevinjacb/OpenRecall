@@ -77,6 +77,22 @@ class SenseHttpClient(
         client.newCall(req("/health")).execute().use { it.code in 200..299 }
     }
 
+    /**
+     * The WS gateway port the server advertises on `/health`, or null if the
+     * server doesn't report one (older server / no gateway running). The HTTP
+     * control API and the WS gateway run on separate ports, so the relay can't
+     * derive the WS URL by scheme-swap alone — it needs this port. Null lets
+     * the caller fall back to the legacy same-port behavior. Minimal regex
+     * parse (no JSON dep), matching [serverPubkey].
+     */
+    suspend fun gatewayPort(): Int? = withContext(Dispatchers.IO) {
+        client.newCall(req("/health")).execute().use { resp ->
+            if (resp.code !in 200..299) return@use null
+            val body = resp.body?.string().orEmpty()
+            Regex("\"gatewayPort\"\\s*:\\s*(\\d+)").find(body)?.groupValues?.get(1)?.toIntOrNull()
+        }
+    }
+
     suspend fun serverPubkey(): ByteArray = withContext(Dispatchers.IO) {
         client.newCall(req("/provisioning/pubkey")).execute().use { resp ->
             if (resp.code == 401) throw SecurityException("unauthorized")

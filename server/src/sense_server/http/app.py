@@ -30,6 +30,7 @@ def build_app(
     event_store: EventStore | None = None,
     session_index: SessionIndex | None = None,
     session_lifecycle: SessionLifecycle | None = None,
+    gateway_port: int | None = None,
 ):
     """Build the Sense HTTP control API.
 
@@ -38,6 +39,14 @@ def build_app(
     handlers to read. The boot time is captured as ``app["sense_started_at"]``
     in monotonic seconds (paired with :func:`time.monotonic`) for the
     ``/status`` uptime counter.
+
+    ``gateway_port`` is the port the WS gateway listens on — a separate
+    server from this HTTP API. ``/health`` advertises it so the phone can
+    derive its WebSocket URL: the HTTP API and the WS gateway run on
+    different ports, so the phone can't reach the gateway by swapping only
+    the scheme on the HTTP URL (it would hit the HTTP port, which has no WS
+    route, and fail the ``101`` upgrade). ``None`` (the default) omits the
+    field for back-compat with callers/tests that don't run the gateway.
     """
     app = web.Application(middlewares=[bearer_auth_middleware])
     app["sense_token"] = token
@@ -45,6 +54,7 @@ def build_app(
     app["sense_event_store"] = event_store
     app["sense_session_index"] = session_index
     app["sense_session_lifecycle"] = session_lifecycle
+    app["sense_gateway_port"] = gateway_port
     app["sense_started_at"] = time.monotonic()
 
     from sense_server.http.routes.provisioning import add_routes as add_provisioning

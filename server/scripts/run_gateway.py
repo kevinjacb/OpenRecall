@@ -76,6 +76,11 @@ def main() -> None:
         event_store=store,
         session_index=session_index,
         session_lifecycle=session_lifecycle,
+        # The HTTP API and the WS gateway are on separate ports; advertise the
+        # gateway port on /health so the phone's relay can derive its WS URL
+        # (it provisions against this HTTP URL and would otherwise reuse the
+        # HTTP port for the WS upgrade — "Expected HTTP 101 response").
+        gateway_port=args.port,
     )
 
     async def main_loop() -> None:

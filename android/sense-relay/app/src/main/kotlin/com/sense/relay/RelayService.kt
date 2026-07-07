@@ -10,6 +10,7 @@ import android.os.IBinder
 import android.util.Log
 import com.sense.relay.ble.SensorLink
 import com.sense.relay.net.ServerSocket
+import com.sense.relay.net.wsGatewayUrl
 import com.sense.relay.relay.DeviceState
 import com.sense.relay.relay.RelayConnectionState
 import com.sense.relay.relay.RelayController
@@ -49,6 +50,10 @@ class RelayService : Service() {
     private var socket: ServerSocket? = null
     private var serverUrl: String = "ws://10.0.2.2:8765"  // host loopback from emulator
     private var token: String = ""
+    // The WS gateway port the server advertised on /health (separate from the
+    // HTTP API port in serverUrl). Null → fall back to the legacy same-port
+    // scheme-swap (older server / emulator default). See wsGatewayUrl().
+    private var gatewayPort: Int? = null
 
     /**
      * Bumped on every `onStartCommand`. Per-call listeners capture the value
@@ -61,15 +66,20 @@ class RelayService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val urlExtra = intent?.getStringExtra("server_url")
         val tokenExtra = intent?.getStringExtra("token")
+        val gatewayPortExtra = intent?.getIntExtra("gateway_port", -1)?.takeIf { it > 0 }
         if (urlExtra != null) serverUrl = urlExtra
         if (tokenExtra != null) token = tokenExtra
-        // START_STICKY redelivery: intent extras are null — restore both from the persisted
+        if (gatewayPortExtra != null) gatewayPort = gatewayPortExtra
+        // START_STICKY redelivery: intent extras are null — restore from the persisted
         // config (mirroring the token fallback). Only adopt a non-empty persisted value so we
-        // never overwrite a valid default with an empty one.
-        if (urlExtra == null || tokenExtra == null) {
+        // never overwrite a valid default with an empty one. gatewayPort has no emulator
+        // default, so a missing extra + a null persisted value leaves it null (legacy
+        // same-port scheme-swap fallback).
+        if (urlExtra == null || tokenExtra == null || gatewayPortExtra == null) {
             val cfg = runBlocking { ServerConfig(filesDir).read() }
             if (urlExtra == null) cfg.serverUrl.ifEmpty { null }?.let { serverUrl = it }
             if (tokenExtra == null) cfg.token.ifEmpty { null }?.let { token = it }
+            if (gatewayPortExtra == null) cfg.gatewayPort?.let { gatewayPort = it }
         }
         startForeground(1, buildNotification())
 
@@ -104,8 +114,11 @@ class RelayService : Service() {
         private fun stale() = gen != generation
         override fun onConnected() {
             if (stale()) return
-            val wsUrl = serverUrl.replaceFirst(Regex("^https?://"),
-                if (serverUrl.startsWith("https")) "wss://" else "ws://")
+            // Derive the WS URL from the provisioned HTTP host + the server-
+            // reported gateway port. The HTTP API and the WS gateway are on
+            // separate ports; reusing the HTTP port (scheme-swap only) makes
+            // the upgrade hit the HTTP server → "Expected HTTP 101 response".
+            val wsUrl = wsGatewayUrl(serverUrl, gatewayPort)
             Log.i(TAG, "device connected; opening socket to $wsUrl")
             // Publish to RelayController: device up + BLE link up.
             // Name is null until Phase 4 reads the device's advertised

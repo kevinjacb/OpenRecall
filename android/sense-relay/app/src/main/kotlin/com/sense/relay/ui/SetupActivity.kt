@@ -104,6 +104,7 @@ class SetupActivity : ComponentActivity() {
                 val i = Intent(this, RelayService::class.java)
                     .putExtra("server_url", c.serverUrl)
                     .putExtra("token", c.token)
+                c.gatewayPort?.let { i.putExtra("gateway_port", it) }
                 startForegroundService(i)
                 // Phase 7: navigate. A re-provision (launched from Settings
                 // with EXTRA_RECONFIGURE) returns RESULT_OK to MainActivity;
@@ -147,6 +148,9 @@ object RealServerApi : ServerApi {
 
     override suspend fun pubkey(urlBase: String, token: String): ByteArray =
         SenseHttpClient(urlBase, token).serverPubkey()
+
+    override suspend fun gatewayPort(urlBase: String, token: String): Int? =
+        runCatching { SenseHttpClient(urlBase, token).gatewayPort() }.getOrNull()
 }
 
 /**

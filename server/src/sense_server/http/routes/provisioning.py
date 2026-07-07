@@ -7,7 +7,16 @@ def add_routes(app):
 
 
 async def health(request):
-    return web.json_response({"status": "ok"})
+    # Advertise the WS gateway port so the phone can derive its WebSocket URL.
+    # The HTTP control API and the WS gateway run on separate ports; without
+    # this the phone reuses the HTTP port for the WS upgrade and fails with
+    # "Expected HTTP 101 response". Omitted when no gateway is configured
+    # (gateway_port is None) so bare-test callers keep the {"status":"ok"} shape.
+    gateway_port = request.app.get("sense_gateway_port")
+    body = {"status": "ok"}
+    if gateway_port is not None:
+        body["gatewayPort"] = gateway_port
+    return web.json_response(body)
 
 
 async def provisioning_pubkey(request):

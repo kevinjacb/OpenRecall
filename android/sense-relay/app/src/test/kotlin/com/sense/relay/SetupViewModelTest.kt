@@ -7,10 +7,11 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SetupViewModelTest {
-    private class FakeServer(val ok: Boolean = true) : ServerApi {
+    private class FakeServer(val ok: Boolean = true, val gwPort: Int? = 8765) : ServerApi {
         override suspend fun health(urlBase: String, token: String) = ok
         override suspend fun pubkey(urlBase: String, token: String) =
             if (ok) ByteArray(32) { (it + 1).toByte() } else throw SecurityException("401")
+        override suspend fun gatewayPort(urlBase: String, token: String) = gwPort
     }
     private class FakeScanner(val addrs: List<String> = listOf("AA")) : DeviceScanner {
         var connected: String? = null
@@ -35,6 +36,23 @@ class SetupViewModelTest {
         assertNotNull(saved)
         assertEquals("wss://x:8766", saved!!.serverUrl)
         assertTrue(saved!!.provisioned)
+        // The server-reported WS gateway port is captured into the persisted
+        // config so the relay can derive its WebSocket URL (separate port from
+        // the HTTP API). This is the fix for the "Expected HTTP 101 response"
+        // bug, where the relay reused the HTTP port for the WS upgrade.
+        assertEquals(8765, saved!!.gatewayPort)
+    }
+
+    @Test fun provisioningSurvivesAGatewayPortFetchThatReturnsNull() = runTest {
+        // An older server (or a transient /health hiccup) reports no gateway
+        // port. Provisioning must still succeed; the relay falls back to the
+        // legacy same-port scheme-swap when gatewayPort is null.
+        var saved: Config? = null
+        val vm = SetupViewModel(FakeServer(gwPort = null), FakeScanner()) { saved = it }
+        vm.submitServer("wss://x:8766", "tok")
+        assertTrue(vm.step.value is SetupStep.Done)
+        assertNotNull(saved)
+        assertEquals(null, saved!!.gatewayPort)
     }
 
     @Test fun badTokenStaysOnEnterServerWithError() = runTest {

@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -16,12 +17,21 @@ data class Config(
     val token: String = "",
     val deviceAddress: String? = null,
     val provisioned: Boolean = false,
+    /**
+     * The WS gateway port the server advertised on `/health` at provisioning
+     * time. The HTTP control API (the URL in [serverUrl]) and the WS gateway
+     * run on separate ports, so the relay needs this to derive its WebSocket
+     * URL. Null when the server didn't report one (older server / no gateway),
+     * in which case the relay falls back to the legacy same-port scheme-swap.
+     */
+    val gatewayPort: Int? = null,
 )
 
 private val KEY_URL = stringPreferencesKey("url")
 private val KEY_TOKEN = stringPreferencesKey("token")
 private val KEY_DEV = stringPreferencesKey("device")
 private val KEY_PROV = booleanPreferencesKey("prov")
+private val KEY_GATEWAY_PORT = intPreferencesKey("gateway_port")
 
 /**
  * Persisted server config (URL, token, device address, provisioned flag).
@@ -49,6 +59,7 @@ class ServerConfig(dir: File) {
             token = p[KEY_TOKEN] ?: "",
             deviceAddress = p[KEY_DEV],
             provisioned = p[KEY_PROV] ?: false,
+            gatewayPort = p[KEY_GATEWAY_PORT],
         )
     }.first()
 
@@ -65,6 +76,7 @@ class ServerConfig(dir: File) {
             token = p[KEY_TOKEN] ?: "",
             deviceAddress = p[KEY_DEV],
             provisioned = p[KEY_PROV] ?: false,
+            gatewayPort = p[KEY_GATEWAY_PORT],
         )
     }
 
@@ -74,6 +86,7 @@ class ServerConfig(dir: File) {
             p[KEY_TOKEN] = c.token
             c.deviceAddress?.let { p[KEY_DEV] = it } ?: run { p.remove(KEY_DEV) }
             p[KEY_PROV] = c.provisioned
+            c.gatewayPort?.let { p[KEY_GATEWAY_PORT] = it } ?: run { p.remove(KEY_GATEWAY_PORT) }
         }
     }
 
