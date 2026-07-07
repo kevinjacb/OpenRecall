@@ -37,6 +37,13 @@ int ble_link_notify_ack(const uint8_t *data, size_t len);
 // True while a phone is connected.
 bool ble_link_connected(void);
 
+// The negotiated ATT MTU for the current connection, or 0 if not connected /
+// MTU not yet exchanged. A §C.6 packet handed to [ble_link_notify_audio] must
+// fit in (mtu - 3) bytes — ATT notifications are a single PDU and don't
+// fragment, so a larger buffer is silently truncated to the first mtu-3 bytes.
+// The drainer queries this to size each packet.
+uint16_t ble_link_att_mtu(void);
+
 #ifdef __cplusplus
 }
 #endif

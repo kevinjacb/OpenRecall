@@ -4,6 +4,7 @@
 #include "provisioning.h"
 #include "esp_log.h"
 #include "host/ble_hs.h"
+#include "host/ble_att.h"
 #include "host/util/util.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -222,6 +223,16 @@ void provisioning_notify_state(void) {
 
 bool ble_link_connected(void) {
   return s_conn_handle != BLE_HS_CONN_HANDLE_NONE;
+}
+
+uint16_t ble_link_att_mtu(void) {
+  // ble_att_mtu returns the negotiated ATT MTU for the connection, or 0 if the
+  // connection doesn't exist / MTU hasn't been exchanged. Guard explicitly so
+  // we never pass BLE_HS_CONN_HANDLE_NONE into it.
+  if (!ble_link_connected()) {
+    return 0;
+  }
+  return ble_att_mtu(s_conn_handle);
 }
 
 esp_err_t ble_link_start(ble_command_handler_t on_command) {
