@@ -1,0 +1,44 @@
+"""Canonical metric names — the only strings the :class:`MetricsRecorder`
+will accept.
+
+Adding a new metric is a one-line change here; the recorder rejects any
+name not in :data:`KNOWN_METRICS` so a typo or an ad-hoc name can't
+silently pollute the metrics surface.
+"""
+from __future__ import annotations
+
+from typing import Final
+
+
+class Metrics:
+    """Metric name constants.
+
+    Naming convention: ``<component>_<noun>_<unit>`` for histograms,
+    ``<noun>_<noun>_total`` for counters (per Prometheus convention).
+    """
+
+    # Histograms (latencies)
+    PLANNER_LATENCY_MS:      Final = "planner_latency_ms"
+    RETRIEVAL_LATENCY_MS:    Final = "retrieval_latency_ms"
+    EXTRACTION_LATENCY_MS:   Final = "extraction_latency_ms"
+    EMBEDDING_LATENCY_MS:    Final = "embedding_latency_ms"
+    LLM_LATENCY_MS:          Final = "llm_latency_ms"
+    VALIDATOR_LATENCY_MS:    Final = "validator_latency_ms"
+    GUARDRAILS_LATENCY_MS:   Final = "guardrails_latency_ms"
+    AUDIT_LATENCY_MS:        Final = "audit_latency_ms"
+
+    # Counters
+    RETRIEVAL_HITS_TOTAL:            Final = "retrieval_hits_total"
+    RETRIEVAL_MISSES_TOTAL:          Final = "retrieval_misses_total"
+    VALIDATOR_FAILURES_TOTAL:        Final = "validator_failures_total"
+    REFUSALS_TOTAL:                  Final = "refusals_total"
+    AUDIT_RECORDS_TOTAL:             Final = "audit_records_total"
+    LLM_TOKEN_USAGE_TOTAL:           Final = "llm_token_usage_total"
+    EXTRACTION_FAILURES_TOTAL:       Final = "extraction_failures_total"
+    INDEXING_FAILURES_TOTAL:         Final = "indexing_failures_total"
+    EXTRACTION_QUEUE_OVERFLOW_TOTAL: Final = "extraction_queue_overflow_total"
+
+
+KNOWN_METRICS: Final[frozenset[str]] = frozenset(
+    name for name in vars(Metrics).values() if isinstance(name, str)
+)
