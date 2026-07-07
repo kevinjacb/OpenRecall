@@ -40,6 +40,9 @@ def cosine(a: Vector, b: Vector) -> float:
 
 @runtime_checkable
 class MemoryIndex(Protocol):
+    name: str
+    version: str
+
     def add(self, atom: MemoryAtom, vector: Vector) -> bool:
         """Index an atom; return True if newly added, False if already present."""
         ...
@@ -64,6 +67,9 @@ class InMemoryMemoryIndex:
     read path; all reads and writes are guarded by a single lock so
     ranking sees a consistent snapshot.
     """
+
+    name = "in_memory"
+    version = "v1"
 
     def __init__(self) -> None:
         self._entries: dict[str, tuple[MemoryAtom, Vector]] = {}
@@ -91,6 +97,9 @@ class InMemoryMemoryIndex:
 
 
 class SqliteMemoryIndex:
+    name = "sqlite"
+    version = "v1"
+
     def __init__(self, path: str | Path) -> None:
         self._conn = sqlite3.connect(str(path))
         self._conn.execute(
