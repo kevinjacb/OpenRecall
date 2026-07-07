@@ -194,3 +194,53 @@ class RetrievedContext(BaseModel):
     candidate_count: int = 0
     session_filter: str | None = None
     retrieval_trace_id: str = ""
+
+
+# =============================================================================
+# Planner (N3.2 / INV-9)
+# =============================================================================
+
+
+class PlannerOutcome(str, Enum):
+    """The terminal outcome of one Planner run.
+
+    The Plan is the only place this enum is defined; the mapper (N1.2)
+    translates it to the wire-level ``outcome`` string on
+    :class:`~sense_server.http.routes.dto.AgentResponseDTO`.
+    """
+
+    RETURN = "return"                          # autonomous answer
+    RETURN_WITH_UNCERTAINTY = "return_with_uncertainty"  # answered, low confidence
+    REFUSE = "refuse"                          # explicit refusal
+
+
+class PlannerResult(BaseModel):
+    """The single source of truth for one Planner run (INV-9).
+
+    The HTTP layer reads this object via the mapper (N1.2) and never
+    imports any other domain type. The audit logger reads it for the
+    audit entry. The agent LLM prompt is built before this object is
+    constructed; this object is the post-prompt, post-decision view.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    request_id: str
+    retrieval_trace_id: str
+    audit_id: str | None = None
+    outcome: PlannerOutcome
+    answer: str | None = None
+    confidence: float | None = None
+    confidence_band: str | None = None
+    atom_ids: tuple[str, ...] = Field(default_factory=tuple)
+    refusal_reason: RejectionReason | None = None
+    refusal_message: str | None = None
+    # End-to-end latency breakdown, observed by the Planner.
+    retrieval_latency_ms: int = 0
+    llm_latency_ms: int = 0
+    validator_latency_ms: int = 0
+    guardrails_latency_ms: int = 0
+    total_latency_ms: int = 0
+    # For the wire: the scored atoms referenced by the answer (used by
+    # the mapper to build the chip list). The mapper truncates text to
+    # :data:`~sense_server.http.routes.dto.MAX_ATOM_CHIP_TEXT_LEN`.
+    atoms: tuple[ScoredAtom, ...] = Field(default_factory=tuple)
