@@ -12,9 +12,9 @@ import kotlinx.coroutines.withContext
  * [HttpApiError] for the read path (INV-11). The VM / UI see only
  * [AgentOutcome] — never the raw HTTP error.
  */
-class AgentRepository(private val api: AgentApi) {
+open class AgentRepository(private val api: AgentApi) {
 
-    suspend fun ask(
+    open suspend fun ask(
         sessionId: String?,
         text: String,
         limit: Int = 10,
