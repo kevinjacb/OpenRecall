@@ -31,6 +31,11 @@ def build_app(
     session_index: SessionIndex | None = None,
     session_lifecycle: SessionLifecycle | None = None,
     gateway_port: int | None = None,
+    planner=None,
+    retriever=None,
+    atom_store=None,
+    metrics=None,
+    id_generator=None,
 ):
     """Build the Sense HTTP control API.
 
@@ -56,12 +61,23 @@ def build_app(
     app["sense_session_lifecycle"] = session_lifecycle
     app["sense_gateway_port"] = gateway_port
     app["sense_started_at"] = time.monotonic()
+    app["sense_planner"] = planner
+    app["sense_retriever"] = retriever
+    app["sense_atom_store"] = atom_store
+    app["sense_metrics"] = metrics
+    app["sense_id_generator"] = id_generator
 
     from sense_server.http.routes.provisioning import add_routes as add_provisioning
     from sense_server.http.routes.sessions import add_routes as add_sessions
     from sense_server.http.routes.status import add_routes as add_status
+    from sense_server.http.routes.agent import add_routes as add_agent
+    from sense_server.http.routes.memory import add_routes as add_memory
+    from sense_server.http.routes.metrics_route import add_routes as add_metrics_route
 
     add_provisioning(app)
     add_sessions(app)
     add_status(app)
+    add_agent(app)
+    add_memory(app)
+    add_metrics_route(app)
     return app

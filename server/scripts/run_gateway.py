@@ -127,6 +127,43 @@ def main() -> None:
         enqueuer=enqueuer,
     )
 
+    # Cognitive read path (N3.4 wiring): construct the Planner with the
+    # real components — async LLM, strict validator, confidence-gated
+    # guardrails, durable audit log, and a constant capability stub.
+    # The retriever and atoms store are the same ones the worker
+    # populates, so a freshly-extracted atom is immediately queryable.
+    from sense_server.agent.audit import InMemoryAuditLogger
+    from sense_server.agent.capability import ConstantCapabilityProvider
+    from sense_server.agent.context import ContextBuilder
+    from sense_server.agent.guardrails import ConfidenceGateGuardrails
+    from sense_server.agent.intent import OpenAICompatibleAgentLLM
+    from sense_server.agent.planner import Planner
+    from sense_server.agent.validator import StrictJSONValidator
+    from sense_server.contracts.clock import SystemClock
+    from sense_server.contracts.id_generator import UuidIdGenerator
+    from sense_server.memory.retrieval import Retriever
+    from sense_server.memory.scoring import SimRecencyScorer
+
+    agent_llm = OpenAICompatibleAgentLLM(llm_chat)
+    planner = Planner(
+        retriever=Retriever(
+            embedder=embedder,
+            index=memory_index,
+            scorer=SimRecencyScorer(),
+            clock=SystemClock(),
+            ids=UuidIdGenerator(),
+        ),
+        context_builder=ContextBuilder(),
+        llm=agent_llm,
+        validator=StrictJSONValidator(),
+        guardrails=ConfidenceGateGuardrails(),
+        audit=InMemoryAuditLogger(),
+        metrics=metrics,
+        capability_provider=ConstantCapabilityProvider(),
+        clock=SystemClock(),
+        ids=UuidIdGenerator(),
+    )
+
     token = load_or_create_token(args.token_file)
     app = build_app(
         token=token,
@@ -139,6 +176,11 @@ def main() -> None:
         # (it provisions against this HTTP URL and would otherwise reuse the
         # HTTP port for the WS upgrade — "Expected HTTP 101 response").
         gateway_port=args.port,
+        planner=planner,
+        retriever=planner._retriever,
+        atom_store=atom_store,
+        metrics=metrics,
+        id_generator=UuidIdGenerator(),
     )
 
     async def main_loop() -> None:
