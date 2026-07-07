@@ -196,6 +196,21 @@ class RetrievedContext(BaseModel):
     retrieval_trace_id: str = ""
 
 
+class Prompt(BaseModel):
+    """The LLM prompt built by :class:`ContextBuilder` (H1).
+
+    The ``system_prompt_version`` and ``context_builder_version`` are
+    stamped here so audit + replay can cite the exact prompt shape
+    that produced a given action.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    system: str
+    user: str
+    system_prompt_version: str = "v1"
+    context_builder_version: str = "v1"
+
+
 # =============================================================================
 # Planner (N3.2 / INV-9)
 # =============================================================================
