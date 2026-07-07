@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from .atom import MemoryAtom
+from .migrations import migrate_memory_atoms_table
 
 _NO_CURSOR = -1  # nothing extracted yet (capture event seqs start at 0)
 
@@ -89,13 +90,18 @@ class SqliteAtomStore:
             );
             """
         )
+        # Backfill the five version columns on legacy (pre-v1) databases.
+        # Idempotent; safe to call on every startup.
+        migrate_memory_atoms_table(self._conn)
         self._conn.commit()
 
     def append(self, atom: MemoryAtom) -> bool:
         cur = self._conn.execute(
             "INSERT OR IGNORE INTO memory_atoms "
-            "(atom_id, session_id, source_event_id, kind, text, created_at, start_ms) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(atom_id, session_id, source_event_id, kind, text, created_at, start_ms, "
+            " extraction_version, embedding_model, embedding_version, "
+            " extractor_prompt_version, source_pipeline_version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 atom.atom_id,
                 atom.session_id,
@@ -104,6 +110,11 @@ class SqliteAtomStore:
                 atom.text,
                 atom.created_at.isoformat(),
                 atom.start_ms,
+                atom.extraction_version,
+                atom.embedding_model,
+                atom.embedding_version,
+                atom.extractor_prompt_version,
+                atom.source_pipeline_version,
             ),
         )
         self._conn.commit()
@@ -117,7 +128,9 @@ class SqliteAtomStore:
 
     def atoms(self, session_id: str) -> list[MemoryAtom]:
         rows = self._conn.execute(
-            "SELECT atom_id, session_id, source_event_id, kind, text, created_at, start_ms "
+            "SELECT atom_id, session_id, source_event_id, kind, text, created_at, start_ms, "
+            "extraction_version, embedding_model, embedding_version, "
+            "extractor_prompt_version, source_pipeline_version "
             "FROM memory_atoms WHERE session_id = ? ORDER BY start_ms",
             (session_id,),
         ).fetchall()
@@ -130,6 +143,11 @@ class SqliteAtomStore:
                 text=r[4],
                 created_at=r[5],
                 start_ms=r[6],
+                extraction_version=r[7],
+                embedding_model=r[8],
+                embedding_version=r[9],
+                extractor_prompt_version=r[10],
+                source_pipeline_version=r[11],
             )
             for r in rows
         ]
