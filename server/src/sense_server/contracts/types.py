@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -209,6 +209,61 @@ class Prompt(BaseModel):
     user: str
     system_prompt_version: str = "v1"
     context_builder_version: str = "v1"
+
+
+class GuardOutcome(str, Enum):
+    """What the Guardrails decided to do with a validated action."""
+
+    RETURN = "return"                              # autonomous
+    RETURN_WITH_UNCERTAINTY = "return_with_uncertainty"  # below autonomous threshold
+    REFUSE = "refuse"                              # explicit refusal
+
+
+class GuardedAction(BaseModel):
+    """The output of :class:`Guardrails`. Either an action to dispatch
+    or a refusal with a reason."""
+
+    model_config = ConfigDict(frozen=True)
+    outcome: GuardOutcome
+    action: AgentAction
+    refusal_reason: RejectionReason | None = None
+    refusal_message: str | None = None
+
+
+class CapabilitySet(BaseModel):
+    """Device-advertised capabilities (binding for the P3-commands slice).
+
+    P2-answers does not issue commands, so all flags are advisory here;
+    the Planner still inspects them so a future P3 layer doesn't
+    surprise this slice.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    camera: bool = False
+    microphone: bool = True
+    retrospective_buffer: bool = True
+    display: bool = False
+    speaker: bool = False
+
+
+class DeviceResourceStatus(BaseModel):
+    """Device-side resource snapshot."""
+
+    model_config = ConfigDict(frozen=True)
+    battery_pct: float = 1.0
+    storage_free_bytes: int = 1 << 30
+    camera_available: bool = False
+    microphone_available: bool = True
+    recording: bool = False
+    relay_connected: bool = True
+
+
+@runtime_checkable
+class CapabilityProvider(Protocol):
+    """Single seam for "what can the device do right now?"."""
+
+    def capabilities(self) -> CapabilitySet: ...
+    def resources(self) -> DeviceResourceStatus: ...
 
 
 # =============================================================================
