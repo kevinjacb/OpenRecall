@@ -94,8 +94,11 @@ class SenseHttpClient(
 
     // ---- Phase 3+ server-touching calls, all wired to the real endpoints.
     // Each follows getStatus's error shape: 401/403 -> SecurityException (the
-    // "go to Settings" signal), 404 -> IOException("... not found"), other
-    // non-2xx -> IOException, body parsed with the shared lenient DtoJson.
+    // "go to Settings" signal), 404 -> HttpStatusException(404, "session … not
+    // found"), other non-2xx -> HttpStatusException(code), body parsed with
+    // the shared lenient DtoJson. HttpStatusException carries the code so
+    // httpApiError can surface it as ApiError.Http (e.g. 503 -> "Server is
+    // starting up") instead of a generic ApiError.Unreachable.
 
     /** `GET /sessions?limit=N&cursor=…`. The cursor is opaque (unpadded
      *  urlsafe base64 from the server) and URL-encoded defensively. */
@@ -141,9 +144,10 @@ class SenseHttpClient(
      * `GET /status`. Follows [serverPubkey]'s error shape, but treats both
      * 401 AND 403 as a [SecurityException] (the "go to Settings" signal) —
      * `serverPubkey` only maps 401, and a 403 is just as much an auth
-     * failure for a bearer-token API. Any other non-2xx is an [IOException],
-     * and the body is parsed with the shared lenient [DtoJson] so a future
-     * server field addition doesn't hard-fail. The caller
+     * failure for a bearer-token API. Any other non-2xx is a
+     * [HttpStatusException] carrying the code, and the body is parsed with
+     * the shared lenient [DtoJson] so a future server field addition doesn't
+     * hard-fail. The caller
      * ([PollingStatusRepository] via [httpApiError]) classifies the thrown
      * error into an [com.sense.relay.core.model.ApiError].
      */
