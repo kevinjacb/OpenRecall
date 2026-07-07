@@ -284,6 +284,22 @@ class PlannerOutcome(str, Enum):
     REFUSE = "refuse"                          # explicit refusal
 
 
+class PlannerContext(BaseModel):
+    """The single input the Planner needs from the HTTP layer.
+
+    The HTTP route builds this from the request DTO; the Planner never
+    reads the wire shape. This is the *narrow context* (M2) — the
+    Planner doesn't know about the HTTP layer, the user, or anything
+    outside the trigger + session + request_id.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    request_id: str
+    trigger_text: str
+    session_id: str | None = None
+    limit: int = 10
+
+
 class PlannerResult(BaseModel):
     """The single source of truth for one Planner run (INV-9).
 
