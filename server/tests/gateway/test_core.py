@@ -86,12 +86,17 @@ def test_gap_triggers_backfill_request_and_ack_holds_at_gap_head():
     core = make_core(window_ms=100)
     core.on_control(Hello(session_id="s1", start_seq=0))
 
-    out = core.on_audio(audio_bytes(3, n_frames=5))  # seq 0..2 missing
+    # seq 0 anchors the live stream (start_seq=0 = anchor at first packet) and
+    # yields a window; its outbound messages aren't the subject of this test.
+    core.on_audio(audio_bytes(0, n_frames=5))
+
+    # seq 3 arrives with seq 1..2 missing -> real mid-stream gap, audio held back
+    out = core.on_audio(audio_bytes(3, n_frames=5))
 
     # no transcript (audio is buffered behind the gap), but a backfill + held ack
     assert out == [
-        RequestChunks(session_id="s1", start=0, end=3),
-        Ack(session_id="s1", next_seq=0),
+        RequestChunks(session_id="s1", start=1, end=3),
+        Ack(session_id="s1", next_seq=1),
     ]
 
 

@@ -139,12 +139,19 @@ def test_pipeline_exposes_cursor_and_missing_range_for_backfill():
 def test_out_of_order_packets_contribute_no_audio_until_the_gap_fills():
     pipe, dec, tr = make_pipeline(window_ms=100)  # 5 frames per window
 
-    # seq 1 arrives before seq 0 -> reassembler holds it, no audio decoded yet
-    held = pipe.ingest(pkt(1, n_frames=5))
-    assert held == []
-    assert dec.frames_decoded == 0
+    # seq 0 anchors the live stream (start_seq=0 means "anchor at first packet")
+    # and contributes a full window immediately.
+    out0 = pipe.ingest(pkt(0, n_frames=5))
+    assert [t.text for t in out0] == ["seg1"]
+    assert dec.frames_decoded == 5
 
-    # seq 0 arrives -> its 5 frames + the buffered seq 1's 5 frames = 10 -> 2 windows
-    out = pipe.ingest(pkt(0, n_frames=5))
-    assert [t.text for t in out] == ["seg1", "seg2"]
-    assert dec.frames_decoded == 10
+    # seq 2 arrives before seq 1 -> reassembler holds it, no audio decoded
+    held = pipe.ingest(pkt(2, n_frames=5))
+    assert held == []
+    assert dec.frames_decoded == 5  # unchanged
+    assert pipe.missing_range() == (1, 2)
+
+    # seq 1 arrives -> its 5 frames + buffered seq 2's 5 frames = 10 -> 2 windows
+    out = pipe.ingest(pkt(1, n_frames=5))
+    assert [t.text for t in out] == ["seg2", "seg3"]
+    assert dec.frames_decoded == 15

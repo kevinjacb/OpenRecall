@@ -85,3 +85,39 @@ def test_real_dropout_is_reported_as_missing_range():
     r.accept(pkt(3, [b"d"]))
 
     assert r.missing_range() == (1, 3)  # request backfill for [1, 3)
+
+
+def test_live_stream_anchors_at_first_packet_when_start_seq_is_zero():
+    # start_seq=0 means "live, no resume point." The device's chunk_seq is a
+    # boot-relative monotonic counter that doesn't reset per session, and the
+    # phone drops the first few packets before its socket is ready, so the first
+    # packet the server sees is at an arbitrary chunk_seq (26170 here, mirroring
+    # the real bring-up log). The reassembler anchors the stream there instead
+    # of waiting for 0 (which never comes) — the fix for the silent stall where
+    # every packet was buffered and no audio ever reached the transcriber.
+    r = SessionReassembler(start_seq=0)
+
+    out = r.accept(pkt(26170, [b"a", b"b"]))
+
+    assert out == [b"a", b"b"]
+    assert r.next_expected_seq == 26171
+    assert r.missing_range() is None  # no gap — the stream anchored here
+
+    # subsequent in-order packets deliver normally
+    assert r.accept(pkt(26171, [b"c"])) == [b"c"]
+
+
+def test_resume_with_start_seq_waits_for_the_anchor_and_tolerates_reorder():
+    # start_seq > 0 means "resume from here" — the caller named the anchor, so we
+    # wait for it (don't latch to the first packet) and tolerate reordering.
+    r = SessionReassembler(start_seq=500)
+
+    # seq 502 arrives first -> held (not anchored), gap at 500
+    assert r.accept(pkt(502, [b"z"])) == []
+    assert r.missing_range() == (500, 502)
+
+    # seq 500 anchors; 502 stays buffered until 501 fills (501 not yet present)
+    flushed = r.accept(pkt(500, [b"a"]))
+    assert flushed == [b"a"]
+    assert r.next_expected_seq == 501
+    assert r.missing_range() == (501, 502)

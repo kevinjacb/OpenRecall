@@ -29,6 +29,14 @@ class SessionReassembler:
     def __init__(self, start_seq: int = 0) -> None:
         self._next = start_seq
         self._buffer: dict[int, AudioPacket] = {}
+        # start_seq == 0 means "live stream, no resume point": the device's
+        # chunk_seq is a boot-relative monotonic counter that doesn't reset per
+        # session, and the phone drops the first few packets before its socket
+        # is ready, so the first packet the server sees is at an arbitrary
+        # chunk_seq. Anchor the stream there instead of waiting for 0 (which
+        # never comes). start_seq > 0 means "resume from here" — the caller
+        # named the anchor, so we wait for it and tolerate reordering around it.
+        self._anchored = start_seq != 0
 
     @property
     def next_expected_seq(self) -> int:
@@ -47,6 +55,14 @@ class SessionReassembler:
     def accept(self, packet: AudioPacket) -> list[bytes]:
         """Ingest one packet; return Opus frames now deliverable, in order."""
         seq = packet.chunk_seq
+
+        if not self._anchored:
+            # First packet of a fresh live stream (start_seq=0): anchor here.
+            # The device's chunk_seq is arbitrary (boot-relative), so we start the
+            # stream at the first packet we actually receive.
+            self._next = seq
+            self._anchored = True
+            logger.info("reassembler: anchoring live stream at chunk_seq=%d", seq)
 
         if seq < self._next:
             logger.debug("reassembler: seq=%d behind next=%d — duplicate/old, dropped", seq, self._next)
