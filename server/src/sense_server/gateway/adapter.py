@@ -43,18 +43,48 @@ def build_pipeline_factory(
     window_ms: int = 5000,
     hop_ms: int = 1000,
     model: str | None = None,
+    use_streaming: bool = True,
 ) -> PipelineFactory:
     """Factory wiring the real Opus decoder + MLX-whisper transcriber per session.
 
     Heavy deps (opuslib, mlx-whisper) are imported lazily here so importing the
     gateway never requires them; only actually serving live audio does.
+
+    When ``use_streaming`` is True (the default), the factory builds a
+    :class:`WhisperStreamingBackend` (mlx-whisper with
+    ``word_timestamps=True``) wrapped in a :class:`StreamingTranscriber`
+    via :func:`streaming_from_tokens`. This eliminates the boundary-loss
+    artifacts of the hard-cut 5s window pipeline: every hop re-runs
+    Whisper on a rolling 5s context, and the streaming wrapper dedups
+    tokens whose start is past the committed cursor.
+
+    Set ``use_streaming=False`` for the legacy hard-cut path (only used
+    by tests that pre-date the streaming work).
     """
 
     def factory(start_seq: int) -> AudioIngestPipeline:
         from ..ingest.opus_decoder import OpusStreamDecoder
+        from ..ingest.streaming_transcriber import streaming_from_tokens
         from ..ingest.whisper_mlx import MlxWhisperTranscriber
+        from ..ingest.whisper_streaming import WhisperStreamingBackend
 
-        transcriber = MlxWhisperTranscriber(model) if model else MlxWhisperTranscriber()
+        if use_streaming:
+            # The mlx_whisper call is the slow part (Whisper inference).
+            # In production each session gets its own backend (so the
+            # internal numpy buffers are session-scoped), but the
+            # underlying model is shared implicitly via mlx-whisper's
+            # module-level state. The streaming transcriber owns the
+            # rolling PCM buffer and committed cursor.
+            transcriber = streaming_from_tokens(
+                WhisperStreamingBackend(model=model) if model else WhisperStreamingBackend(),
+                sample_rate=16000,
+                hop_ms=hop_ms,
+                window_ms=window_ms,
+            )
+        else:
+            transcriber = (
+                MlxWhisperTranscriber(model) if model else MlxWhisperTranscriber()
+            )
         return AudioIngestPipeline(
             reassembler=SessionReassembler(start_seq=start_seq),
             decoder=OpusStreamDecoder(),
