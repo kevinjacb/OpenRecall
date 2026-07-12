@@ -32,6 +32,7 @@ def make_core(window_ms: int = 100) -> GatewayCore:
             reassembler=SessionReassembler(start_seq=start_seq),
             decoder=FakeDecoder(),
             transcriber=FakeTranscriber(),
+            hop_ms=20,
             window_ms=window_ms,
             sample_rate=16000,
         )
@@ -64,12 +65,21 @@ def test_text_frame_is_routed_to_control_and_replies_are_json_strings():
 
 
 def test_binary_frame_is_routed_to_audio():
-    core = make_core(window_ms=100)  # 5 frames per window
+    """Under the streaming pipeline, 5 frames @ hop=20ms = 5 transcripts.
+
+    The str-returning FakeTranscriber returns "hello" each call, so
+    each hop produces a new committed segment (no dedup because the
+    start_ms is the trailing edge of an ever-growing buffer).
+    """
+    core = make_core(window_ms=100)
     handle_message(core, '{"type": "hello", "session_id": "s1", "start_seq": 0}')
 
     replies = handle_message(core, audio_bytes(0, n_frames=5))
 
-    assert [json.loads(r) for r in replies] == [
-        {"type": "transcript", "session_id": "s1", "text": "hello", "duration_ms": 100},
-        {"type": "ack", "session_id": "s1", "next_seq": 1},
-    ]
+    parsed = [json.loads(r) for r in replies]
+    transcripts = [m for m in parsed if m["type"] == "transcript"]
+    acks = [m for m in parsed if m["type"] == "ack"]
+    assert len(transcripts) == 5
+    assert all(t["text"] == "hello" for t in transcripts)
+    assert all(t["duration_ms"] == 20 for t in transcripts)
+    assert acks == [{"type": "ack", "session_id": "s1", "next_seq": 1}]

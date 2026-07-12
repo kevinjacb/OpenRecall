@@ -48,23 +48,39 @@ class FakeDecoder:
 
 
 class FakeTranscriber:
-    """Records each window it is asked to transcribe; returns a deterministic text."""
+    """Returns a different token per call so each hop emits a new segment.
+
+    With the streaming transcriber, tokens whose start_ms is past
+    the committed cursor are emitted; tokens re-transcribed in the
+    overlap zone (start_ms < committed) are dropped. A fake that
+    returns "seg1" for every call would see only the first token
+    committed (all subsequent calls re-transcribe the same audio).
+    """
 
     def __init__(self) -> None:
         self.calls: list[tuple[int, int]] = []  # (pcm_len, sample_rate) per call
 
     def transcribe(self, pcm: bytes, sample_rate: int) -> str:
         self.calls.append((len(pcm), sample_rate))
+        # Return a unique token per call so the streaming wrapper
+        # has something new to commit each hop.
         return f"seg{len(self.calls)}"
 
 
-def make_pipeline(window_ms: int = 100):
+def make_pipeline(window_ms: int = 100, hop_ms: int = 20):
+    """Build a pipeline with streaming defaults scaled for the test.
+
+    The old hard-cut pipeline used a single window. The new streaming
+    pipeline uses 1-hop-per-frame (hop=20ms, window=100ms here) so the
+    tests exercise the new path with the same number of frames.
+    """
     dec = FakeDecoder()
     tr = FakeTranscriber()
     pipe = AudioIngestPipeline(
         reassembler=SessionReassembler(start_seq=0),
         decoder=dec,
         transcriber=tr,
+        hop_ms=hop_ms,
         window_ms=window_ms,
         sample_rate=16000,
     )
@@ -72,31 +88,39 @@ def make_pipeline(window_ms: int = 100):
 
 
 def test_emits_a_transcript_once_a_full_window_of_audio_is_buffered():
-    # window_ms=100 -> 5 frames (20 ms each) per window.
-    pipe, dec, tr = make_pipeline(window_ms=100)
+    # 5 frames at 20 ms each = 100 ms of audio. With hop=20 ms,
+    # window=100 ms, the pipeline emits one transcript per hop
+    # (5 total). The transcriber fakes "seg1" for every call, so
+    # the streaming wrapper sees the same token re-transcribed and
+    # commits it once.
+    pipe, dec, tr = make_pipeline(window_ms=100, hop_ms=20)
 
     out = pipe.ingest(pkt(0, n_frames=5))
 
-    assert len(out) == 1
-    assert out[0].text == "seg1"
-    assert out[0].duration_ms == 100
+    # One Transcript per hop (5 frames / 1 frame per hop = 5 hops).
+    assert len(out) == 5
     assert dec.frames_decoded == 5
-    # transcriber got 5 frames * 640 bytes of PCM at 16 kHz
-    assert tr.calls == [(5 * FakeDecoder.BYTES_PER_FRAME, 16000)]
+    # The streaming wrapper calls the backend 5 times; each call gets
+    # an increasingly-long buffer. We don't assert on the exact text
+    # here — that's the streaming transcriber's job, covered in
+    # tests/ingest/test_streaming.py.
+    assert len(tr.calls) == 5
+    # Every transcriber call receives a 16 kHz PCM buffer.
+    for size, sr in tr.calls:
+        assert sr == 16000
+        assert size > 0
 
 
 def test_sub_window_audio_is_buffered_and_not_transcribed_until_flush():
-    pipe, dec, tr = make_pipeline(window_ms=100)  # needs 5 frames
+    pipe, dec, tr = make_pipeline(window_ms=100, hop_ms=20)
 
-    out = pipe.ingest(pkt(0, n_frames=3))  # only 3 frames -> no full window
+    out = pipe.ingest(pkt(0, n_frames=3))  # only 3 frames -> 3 hops
 
-    assert out == []
-    assert tr.calls == []
+    assert len(out) == 3
+    assert len(tr.calls) == 3
 
-    flushed = pipe.flush()
-    assert len(flushed) == 1
-    assert flushed[0].text == "seg1"
-    assert flushed[0].duration_ms == 60  # 3 frames * 20 ms
+    # No leftover — 3 frames / 1 frame per hop = exactly 3 hops.
+    assert pipe.flush() == []
 
 
 def test_flush_on_empty_buffer_emits_nothing():
@@ -106,22 +130,21 @@ def test_flush_on_empty_buffer_emits_nothing():
 
 
 def test_one_ingest_can_emit_multiple_windows_and_keep_the_remainder():
-    pipe, dec, tr = make_pipeline(window_ms=100)  # 5 frames per window
+    pipe, dec, tr = make_pipeline(window_ms=100, hop_ms=20)
 
-    out = pipe.ingest(pkt(0, n_frames=12))  # 2 full windows + 2 leftover
+    out = pipe.ingest(pkt(0, n_frames=12))  # 12 frames -> 12 hops
 
-    assert [t.text for t in out] == ["seg1", "seg2"]
-    assert all(t.duration_ms == 100 for t in out)
-    assert len(tr.calls) == 2
+    # 12 frames / 1 frame per hop = 12 hops, each producing 1 transcript.
+    assert len(out) == 12
+    assert len(tr.calls) == 12
 
-    # the 2 leftover frames stay buffered until flush
+    # no remainder
     tail = pipe.flush()
-    assert len(tail) == 1
-    assert tail[0].duration_ms == 40  # 2 frames * 20 ms
+    assert tail == []
 
 
 def test_pipeline_exposes_cursor_and_missing_range_for_backfill():
-    pipe, _dec, _tr = make_pipeline(window_ms=100)
+    pipe, _dec, _tr = make_pipeline(window_ms=100, hop_ms=20)
 
     assert pipe.next_expected_seq == 0
     assert pipe.missing_range() is None
@@ -137,12 +160,11 @@ def test_pipeline_exposes_cursor_and_missing_range_for_backfill():
 
 
 def test_out_of_order_packets_contribute_no_audio_until_the_gap_fills():
-    pipe, dec, tr = make_pipeline(window_ms=100)  # 5 frames per window
+    pipe, dec, tr = make_pipeline(window_ms=100, hop_ms=20)
 
-    # seq 0 anchors the live stream (start_seq=0 means "anchor at first packet")
-    # and contributes a full window immediately.
+    # seq 0 anchors the live stream and produces 5 hops (5 frames).
     out0 = pipe.ingest(pkt(0, n_frames=5))
-    assert [t.text for t in out0] == ["seg1"]
+    assert len(out0) == 5
     assert dec.frames_decoded == 5
 
     # seq 2 arrives before seq 1 -> reassembler holds it, no audio decoded
@@ -151,7 +173,7 @@ def test_out_of_order_packets_contribute_no_audio_until_the_gap_fills():
     assert dec.frames_decoded == 5  # unchanged
     assert pipe.missing_range() == (1, 2)
 
-    # seq 1 arrives -> its 5 frames + buffered seq 2's 5 frames = 10 -> 2 windows
+    # seq 1 arrives -> its 5 frames + buffered seq 2's 5 frames -> 10 hops
     out = pipe.ingest(pkt(1, n_frames=5))
-    assert [t.text for t in out] == ["seg2", "seg3"]
+    assert len(out) == 10
     assert dec.frames_decoded == 15

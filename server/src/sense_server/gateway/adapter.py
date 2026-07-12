@@ -39,7 +39,11 @@ def handle_message(core: GatewayCore, message: str | bytes) -> list[str]:
     return [m.model_dump_json() for m in outbound]
 
 
-def build_pipeline_factory(window_ms: int = 5000, model: str | None = None) -> PipelineFactory:
+def build_pipeline_factory(
+    window_ms: int = 5000,
+    hop_ms: int = 1000,
+    model: str | None = None,
+) -> PipelineFactory:
     """Factory wiring the real Opus decoder + MLX-whisper transcriber per session.
 
     Heavy deps (opuslib, mlx-whisper) are imported lazily here so importing the
@@ -55,6 +59,7 @@ def build_pipeline_factory(window_ms: int = 5000, model: str | None = None) -> P
             reassembler=SessionReassembler(start_seq=start_seq),
             decoder=OpusStreamDecoder(),
             transcriber=transcriber,
+            hop_ms=hop_ms,
             window_ms=window_ms,
             sample_rate=16000,
         )

@@ -65,6 +65,7 @@ def make_core_with_index(
             reassembler=SessionReassembler(start_seq=start_seq),
             decoder=FakeDecoder(),
             transcriber=FakeTranscriber(),
+            hop_ms=20,
             window_ms=window_ms,
             sample_rate=16000,
         )
@@ -81,6 +82,7 @@ def make_core_with_lifecycle() -> tuple[GatewayCore, SessionLifecycle]:
             reassembler=SessionReassembler(start_seq=start_seq),
             decoder=FakeDecoder(),
             transcriber=FakeTranscriber(),
+            hop_ms=20,
             window_ms=100,
             sample_rate=16000,
         )
@@ -93,28 +95,36 @@ def make_core_with_lifecycle() -> tuple[GatewayCore, SessionLifecycle]:
 
 
 def test_core_with_index_records_newly_stored_events():
-    core, store, index = make_core_with_index(window_ms=100)  # 5 frames per window
+    """5 frames @ hop=20ms = 5 streaming transcripts, each persisted as one event."""
+    core, store, index = make_core_with_index(window_ms=100)
     core.on_control(Hello(session_id="s1", start_seq=0))
 
-    core.on_audio(audio_bytes(0, n_frames=10))  # 2 full windows
+    core.on_audio(audio_bytes(0, n_frames=5))
 
     s = index.summary("s1")
     assert s is not None
-    assert s.event_count == 2
-    assert s.transcript_count == 2
+    assert s.event_count == 5
+    assert s.transcript_count == 5
 
 
 def test_core_with_index_does_not_record_duplicates():
-    """A replay that the store dedupes (event_id collision) must NOT bump the index."""
+    """A replay that the store dedupes (event_id collision) must NOT bump the index.
+
+    Under streaming, the first pass records 5 events (one per hop).
+    The second pass replays the same 5 events; the store dedupes by
+    event_id, so the replay is a no-op. The index records only the
+    first pass.
+    """
     core, store, index = make_core_with_index(window_ms=100)
     for _ in range(2):  # same session captured twice
         core.on_control(Hello(session_id="s1", start_seq=0))
         core.on_audio(audio_bytes(0, n_frames=5))
         core.on_control(Bye(session_id="s1"))
 
-    # 1 event in the store, 1 in the index (the second pass dedupes)
-    assert len(store.events("s1")) == 1
-    assert index.summary("s1").event_count == 1
+    # First pass: 5 events. Second pass: 0 (all event_ids collide; store
+    # dedupes). The replay is a no-op for the store.
+    assert len(store.events("s1")) == 5
+    assert index.summary("s1").event_count == 5
 
 
 def test_core_without_index_works_as_before():
@@ -126,6 +136,7 @@ def test_core_without_index_works_as_before():
             reassembler=SessionReassembler(start_seq=start_seq),
             decoder=FakeDecoder(),
             transcriber=FakeTranscriber(),
+            hop_ms=20,
             window_ms=100,
             sample_rate=16000,
         )
@@ -135,7 +146,8 @@ def test_core_without_index_works_as_before():
     core.on_audio(audio_bytes(0, n_frames=5))
     core.on_control(Bye(session_id="s1"))
 
-    assert len(store.events("s1")) == 1
+    # 5 frames @ hop=20ms = 5 streaming transcripts, each persisted.
+    assert len(store.events("s1")) == 5
 
 
 # ---- lifecycle hook ---------------------------------------------------------
@@ -170,6 +182,7 @@ def test_lifecycle_without_kwarg_works_as_before():
             reassembler=SessionReassembler(start_seq=start_seq),
             decoder=FakeDecoder(),
             transcriber=FakeTranscriber(),
+            hop_ms=20,
             window_ms=100,
             sample_rate=16000,
         )
@@ -191,6 +204,7 @@ def test_lifecycle_count_reflects_open_connections_in_isolation():
             reassembler=SessionReassembler(start_seq=start_seq),
             decoder=FakeDecoder(),
             transcriber=FakeTranscriber(),
+            hop_ms=20,
             window_ms=100,
             sample_rate=16000,
         )

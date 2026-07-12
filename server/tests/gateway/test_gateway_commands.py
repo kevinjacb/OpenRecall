@@ -35,6 +35,7 @@ def factory(start_seq: int) -> AudioIngestPipeline:
         reassembler=SessionReassembler(start_seq=start_seq),
         decoder=FakeDecoder(),
         transcriber=FakeTranscriber(),
+        hop_ms=20,
         window_ms=100,
         sample_rate=16000,
     )

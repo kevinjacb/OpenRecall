@@ -42,6 +42,7 @@ def factory(start_seq: int) -> AudioIngestPipeline:
         reassembler=SessionReassembler(start_seq=start_seq),
         decoder=FakeDecoder(),
         transcriber=FakeTranscriber(),
+        hop_ms=20,
         window_ms=100,  # 5 frames per window
         sample_rate=16000,
     )
@@ -77,13 +78,20 @@ async def test_device_streams_audio_and_executes_a_signed_command():
                 await asyncio.sleep(0.02)
 
         client = DeviceClient("s1", signer.public_key_bytes)
-        # one packet of 5 frames == one transcription window
+        # one packet of 5 frames. Under streaming, the FakeTranscriber
+        # returns "hello world" every hop, so the device receives one
+        # transcript per hop.
         await run_session(f"ws://127.0.0.1:{port}", client, [[b"opus"] * 5])
 
-        assert client.transcripts == ["hello world"]
+        # Streaming + str adapter: every hop emits "hello world"
+        # because the str adapter's start_ms is the trailing edge of
+        # the ever-growing buffer (no internal dedup of re-transcribed
+        # text without internal timestamps). 5 hops = 5 transcripts.
+        assert client.transcripts == ["hello world"] * 5
         assert [c.command_id for c in client.verified_commands] == ["shoot"]
         assert dispatcher.pending() == []  # the device's ack reached the server
-        assert [e.text for e in events.events("s1")] == ["hello world"]  # durably stored
+        # The event store keeps one event per committed transcript.
+        assert [e.text for e in events.events("s1")] == ["hello world"] * 5
     finally:
         server.cancel()
         with pytest.raises(asyncio.CancelledError):

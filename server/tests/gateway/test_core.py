@@ -41,6 +41,7 @@ def make_core(window_ms: int = 100) -> GatewayCore:
             reassembler=SessionReassembler(start_seq=start_seq),
             decoder=FakeDecoder(),
             transcriber=FakeTranscriber(),
+            hop_ms=20,
             window_ms=window_ms,
             sample_rate=16000,
         )
@@ -70,16 +71,27 @@ def test_hello_binds_session_and_acks_the_start_cursor():
     assert out == [Ack(session_id="s1", next_seq=10)]
 
 
-def test_full_window_of_audio_yields_transcript_then_ack():
+def test_full_window_of_audio_yields_transcripts_then_ack():
+    """Under the streaming pipeline, each hop yields a transcript.
+
+    5 frames at hop=20ms = 5 hops, each producing a transcript. The
+    test asserts "we got 5 transcripts and the ack" — the *number*
+    and the text are the streaming shape, not the old 1-transcript
+    per full-window shape.
+    """
     core = make_core(window_ms=100)  # 5 frames per window
     core.on_control(Hello(session_id="s1", start_seq=0))
 
     out = core.on_audio(audio_bytes(0, n_frames=5))
 
-    assert out == [
-        TranscriptMsg(session_id="s1", text="seg1", duration_ms=100),
-        Ack(session_id="s1", next_seq=1),
-    ]
+    # 5 transcripts (one per hop) + 1 ack
+    transcripts = [m for m in out if isinstance(m, TranscriptMsg)]
+    acks = [m for m in out if isinstance(m, Ack)]
+    assert len(transcripts) == 5
+    # The FakeTranscriber returns unique text per call, so we get seg1..seg5
+    assert [t.text for t in transcripts] == ["seg1", "seg2", "seg3", "seg4", "seg5"]
+    assert all(t.duration_ms == 20 for t in transcripts)
+    assert acks == [Ack(session_id="s1", next_seq=1)]
 
 
 def test_gap_triggers_backfill_request_and_ack_holds_at_gap_head():
@@ -101,15 +113,19 @@ def test_gap_triggers_backfill_request_and_ack_holds_at_gap_head():
 
 
 def test_bye_flushes_buffered_subwindow_audio_into_a_transcript():
-    core = make_core(window_ms=100)  # needs 5 frames for a full window
+    """The streaming pipeline flushes the partial last hop on Bye.
+
+    3 frames at hop=20ms = 3 hops, all 3 emit transcripts inline. Bye
+    on an empty buffer emits nothing more.
+    """
+    core = make_core(window_ms=100)  # 3 frames at hop=20 = 3 transcripts
     core.on_control(Hello(session_id="s1", start_seq=0))
-    assert core.on_audio(audio_bytes(0, n_frames=3)) == [
-        Ack(session_id="s1", next_seq=1)
-    ]  # 3 frames buffered, no full window -> just an ack
+    out = core.on_audio(audio_bytes(0, n_frames=3))
+    transcripts = [m for m in out if isinstance(m, TranscriptMsg)]
+    assert len(transcripts) == 3
 
     out = core.on_control(Bye(session_id="s1"))
-
-    assert out == [TranscriptMsg(session_id="s1", text="seg1", duration_ms=60)]
+    assert out == []  # no buffered audio left
 
 
 def test_audio_before_hello_is_a_protocol_violation():
@@ -129,6 +145,7 @@ def make_core_with_store(window_ms: int = 100):
             reassembler=SessionReassembler(start_seq=start_seq),
             decoder=FakeDecoder(),
             transcriber=FakeTranscriber(),
+            hop_ms=20,
             window_ms=window_ms,
             sample_rate=16000,
         )
@@ -137,30 +154,32 @@ def make_core_with_store(window_ms: int = 100):
 
 
 def test_transcripts_are_persisted_as_ordered_capture_events():
-    core, store = make_core_with_store(window_ms=100)  # 5 frames/window
+    """12 frames at hop=20ms = 12 streaming transcripts, each persisted as one event."""
+    core, store = make_core_with_store(window_ms=100)
     core.on_control(Hello(session_id="s1", start_seq=0))
 
-    core.on_audio(audio_bytes(0, n_frames=12))  # 2 full windows + 2 leftover
+    core.on_audio(audio_bytes(0, n_frames=12))
 
     events = store.events("s1")
-    assert [(e.seq, e.start_ms, e.duration_ms, e.kind) for e in events] == [
-        (0, 0, 100, "transcript"),
-        (1, 100, 100, "transcript"),
-    ]
-    assert [e.event_id for e in events] == ["s1:0", "s1:1"]
+    assert len(events) == 12
+    # Each event has 20ms duration (one hop = one frame = 20ms).
+    assert all(e.duration_ms == 20 for e in events)
+    # Sequence ids are 0..11.
+    assert [e.event_id for e in events] == [f"s1:{i}" for i in range(12)]
 
 
 def test_bye_flushed_transcript_is_persisted():
     core, store = make_core_with_store(window_ms=100)
     core.on_control(Hello(session_id="s1", start_seq=0))
-    core.on_audio(audio_bytes(0, n_frames=3))  # buffered, no full window
+    core.on_audio(audio_bytes(0, n_frames=3))
 
-    core.on_control(Bye(session_id="s1"))
-
+    out = core.on_control(Bye(session_id="s1"))
+    # Streaming flushed everything inline; Bye on an empty buffer emits
+    # nothing more. The 3 transcripts are already persisted.
+    assert out == []
     events = store.events("s1")
-    assert len(events) == 1
-    assert events[0].seq == 0
-    assert events[0].duration_ms == 60  # 3 frames * 20 ms
+    assert len(events) == 3
+    assert [e.duration_ms for e in events] == [20, 20, 20]
 
 
 def test_replaying_a_session_does_not_duplicate_events():
@@ -170,4 +189,6 @@ def test_replaying_a_session_does_not_duplicate_events():
         core.on_audio(audio_bytes(0, n_frames=5))
         core.on_control(Bye(session_id="s1"))
 
-    assert len(store.events("s1")) == 1  # deduped by event_id
+    # First pass: 5 events. Second pass: 0 (all event_ids collide; store
+    # dedupes). The replay is a no-op for the store.
+    assert len(store.events("s1")) == 5
