@@ -124,8 +124,7 @@ class WhisperStreamingBackend:
 
         response = transcribe(
             audio,
-            self._model,  # positional: matches mlx_whisper.transcribe's
-                           # `(audio, path_or_hf_repo, ...)` signature.
+            path_or_hf_repo=self._model,  # keyword-only in mlx_whisper.transcribe
             word_timestamps=True,
         )
         tokens = _mlx_segments_to_tokens(response)

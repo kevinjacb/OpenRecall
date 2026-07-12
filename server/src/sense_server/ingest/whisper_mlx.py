@@ -35,4 +35,5 @@ class MlxWhisperTranscriber:
 
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / _INT16_FULL_SCALE
         result = mlx_whisper.transcribe(audio, path_or_hf_repo=self._model)
+        print(f"MLX-whisper transcribed {len(audio)} samples -> {len(result['text'])} chars")
         return result["text"].strip()

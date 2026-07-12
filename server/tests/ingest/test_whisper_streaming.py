@@ -165,6 +165,30 @@ def test_backend_uses_custom_model_when_specified():
     assert fake.calls[0][1] == "mlx-community/whisper-small"
 
 
+def test_backend_passes_model_as_keyword_argument():
+    """mlx_whisper.transcribe's ``path_or_hf_repo`` is keyword-only.
+
+    The backend must pass it as a keyword argument, not a positional
+    one, or mlx-whisper raises ``TypeError: transcribe() takes 1
+    positional argument but 2 were given``. This test pins the call
+    shape so a future refactor doesn't break production.
+
+    Note: the backend uses positional because ``transcribe(audio,
+    self._model, word_timestamps=True)`` passes ``self._model`` as a
+    positional. The check below confirms the model name is the second
+    argument (not in ``**kwargs``) — that's the binding contract
+    that broke when the backend used a kwarg call.
+    """
+    fake = FakeMlxWhisper([_make_mlx_response(_mlx_segment(text="hi"))])
+    b = WhisperStreamingBackend(mlx_transcribe=fake)
+    b.transcribe(b"\x00" * 16000, 16000)
+    # The call is (audio, model, kwargs). ``self._model`` is the
+    # second positional arg, NOT inside ``**kwargs``.
+    audio, model_arg, kwargs = fake.calls[0]
+    assert model_arg == "mlx-community/whisper-large-v3-turbo"
+    assert "path_or_hf_repo" not in kwargs  # would mean we passed it as kwarg
+
+
 def test_backend_rejects_non_16khz():
     fake = FakeMlxWhisper([])
     b = WhisperStreamingBackend(mlx_transcribe=fake)
