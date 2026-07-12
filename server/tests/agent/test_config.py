@@ -6,6 +6,7 @@ import pytest
 from sense_server.agent.config import (
     AgentConfig,
     GuardrailsConfig,
+    WhisperConfig,
     load_agent_config,
 )
 
@@ -69,3 +70,70 @@ def test_agent_config_is_frozen():
     cfg = AgentConfig()
     with pytest.raises(ValidationError):
         cfg.guardrails = GuardrailsConfig()  # type: ignore[misc]
+
+
+# --- WhisperConfig tests -----------------------------------------------------
+
+
+def test_whisper_defaults_match_mlx():
+    cfg = WhisperConfig()
+    assert cfg.no_speech_threshold == 0.6
+    assert cfg.logprob_threshold == -1.0
+
+
+def test_whisper_overrides_from_env():
+    env = {
+        "SENSE_WHISPER_NO_SPEECH_THRESHOLD": "0.8",
+        "SENSE_WHISPER_LOGPROB_THRESHOLD": "-0.5",
+    }
+    cfg = load_agent_config(env)
+    assert cfg.whisper.no_speech_threshold == 0.8
+    assert cfg.whisper.logprob_threshold == -0.5
+
+
+def test_whisper_no_speech_out_of_range_raises():
+    with pytest.raises(ValueError, match="SENSE_WHISPER_NO_SPEECH_THRESHOLD"):
+        WhisperConfig(no_speech_threshold=1.5)
+    with pytest.raises(ValueError, match="SENSE_WHISPER_NO_SPEECH_THRESHOLD"):
+        WhisperConfig(no_speech_threshold=-0.1)
+
+
+def test_whisper_logprob_above_zero_raises():
+    with pytest.raises(ValueError, match="SENSE_WHISPER_LOGPROB_THRESHOLD"):
+        WhisperConfig(logprob_threshold=0.1)
+
+
+def test_whisper_logprob_zero_is_allowed():
+    """logprob_threshold=0 means "drop everything" — an extreme but
+    valid setting for paranoid operator setups. Allow it (the bound
+    check uses >, not >=)."""
+    cfg = WhisperConfig(logprob_threshold=0.0)
+    assert cfg.logprob_threshold == 0.0
+
+
+def test_whisper_logprob_invalid_value_raises_at_loader():
+    with pytest.raises(ValueError, match="SENSE_WHISPER_LOGPROB_THRESHOLD"):
+        load_agent_config({"SENSE_WHISPER_LOGPROB_THRESHOLD": "not-a-number"})
+
+
+def test_whisper_logprob_at_threshold_is_kept():
+    """The `_validate_bounds` uses strict `>` so logprob_threshold=0
+    is allowed; segments at exactly avg_logprob=0 are kept (the
+    logprob check is `<`, not `<=`)."""
+    # This is a semantic contract test — verify the validator logic.
+    cfg = WhisperConfig(logprob_threshold=0.0)
+    # We can't directly test the filter logic here (that's in
+    # _mlx_segments_to_tokens), but we verify the config accepts 0.0.
+    assert cfg.logprob_threshold == 0.0
+
+
+def test_agent_config_contains_whisper_section_by_default():
+    cfg = AgentConfig()
+    assert hasattr(cfg, "whisper")
+    assert isinstance(cfg.whisper, WhisperConfig)
+
+
+def test_agent_config_default_load_returns_whisper_defaults():
+    cfg = load_agent_config({})
+    assert cfg.whisper.no_speech_threshold == 0.6
+    assert cfg.whisper.logprob_threshold == -1.0

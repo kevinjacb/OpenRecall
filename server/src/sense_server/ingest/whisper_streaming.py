@@ -44,13 +44,25 @@ def _seconds_to_ms(seconds: float) -> int:
     return round(seconds * 1000)
 
 
-def _mlx_segments_to_tokens(response: dict) -> list[Token]:
+def _mlx_segments_to_tokens(
+    response: dict,
+    no_speech_threshold: float = 0.6,
+    logprob_threshold: float = -1.0,
+) -> list[Token]:
     """Translate mlx-whisper's output dict into a flat list of Tokens.
 
     A segment with no ``words`` array (silence, or a hallucinated empty
     line) is skipped — we have nothing to commit. Words with
     ``start >= end`` are malformed and are dropped, since they would
     confuse the streaming wrapper's dedup cursor.
+
+    **Noise filtering** (server-side defense against quiet-input
+    hallucination): a segment is dropped if either
+    ``no_speech_prob > no_speech_threshold`` (mlx is confident the
+    audio is silence) OR
+    ``avg_logprob < logprob_threshold`` (mlx is uncertain about
+    what it heard). A missing field is treated as low-risk
+    (conservatively kept) so older mlx-whisper versions still work.
 
     Note: mlx-whisper prefixes non-first word-tokens with a single
     space (a tokenization marker, NOT content). The streaming wrapper
@@ -60,6 +72,15 @@ def _mlx_segments_to_tokens(response: dict) -> list[Token]:
     """
     tokens: list[Token] = []
     for seg in response.get("segments", []):
+        # Per-segment confidence gating. Missing fields are treated as
+        # low-risk so a future mlx-whisper version without these
+        # fields (or a custom backend) doesn't silently drop everything.
+        no_speech_prob = seg.get("no_speech_prob")
+        if no_speech_prob is not None and no_speech_prob > no_speech_threshold:
+            continue
+        avg_logprob = seg.get("avg_logprob")
+        if avg_logprob is not None and avg_logprob < logprob_threshold:
+            continue
         for word in seg.get("words") or []:
             text = word.get("word", "")
             if not text:
@@ -93,15 +114,26 @@ class WhisperStreamingBackend:
     once per hop and uses the returned word_timestamps to dedup the
     overlap zone — eliminating the boundary-loss artifacts of the
     hard-cut pipeline.
+
+    ``no_speech_threshold`` and ``logprob_threshold`` are *server-side*
+    defenses against quiet-input hallucination. The firmware's VAD
+    also gates which frames get sent; this is the second line of
+    defense, and it's particularly important when the XIAO onboard
+    mic's VAD fires on room noise. Default values match mlx-whisper's
+    defaults.
     """
 
     def __init__(
         self,
         mlx_transcribe: MlxTranscribeFn | None = None,
         model: str = DEFAULT_MODEL,
+        no_speech_threshold: float = 0.6,
+        logprob_threshold: float = -1.0,
     ) -> None:
         self._mlx_transcribe = mlx_transcribe
         self._model = model
+        self._no_speech_threshold = no_speech_threshold
+        self._logprob_threshold = logprob_threshold
 
     def transcribe(self, pcm: bytes, sample_rate: int) -> list[Token]:
         if sample_rate != 16000:
@@ -126,8 +158,14 @@ class WhisperStreamingBackend:
             audio,
             path_or_hf_repo=self._model,  # keyword-only in mlx_whisper.transcribe
             word_timestamps=True,
+            no_speech_threshold=self._no_speech_threshold,
+            logprob_threshold=self._logprob_threshold,
         )
-        tokens = _mlx_segments_to_tokens(response)
+        tokens = _mlx_segments_to_tokens(
+            response,
+            no_speech_threshold=self._no_speech_threshold,
+            logprob_threshold=self._logprob_threshold,
+        )
         if tokens:
             print(
                 f"whisper streaming: {len(audio)} samples -> {len(tokens)} tokens"

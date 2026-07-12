@@ -27,6 +27,8 @@ DEFAULT_RATE_LIMIT_PER_MIN = 20
 ENV_CONFIDENCE_AUTONOMOUS = "SENSE_CONFIDENCE_AUTONOMOUS"
 ENV_CONFIDENCE_CONFIRM = "SENSE_CONFIDENCE_CONFIRM"
 ENV_RATE_LIMIT_PER_MIN = "SENSE_RATE_LIMIT_PER_MIN"
+ENV_WHISPER_NO_SPEECH_THRESHOLD = "SENSE_WHISPER_NO_SPEECH_THRESHOLD"
+ENV_WHISPER_LOGPROB_THRESHOLD = "SENSE_WHISPER_LOGPROB_THRESHOLD"
 
 
 class GuardrailsConfig(BaseModel):
@@ -64,12 +66,49 @@ class GuardrailsConfig(BaseModel):
         return self
 
 
+class WhisperConfig(BaseModel):
+    """Server-side noise filtering for the streaming transcriber.
+
+    These thresholds drop hallucinated transcripts on quiet inputs
+    (low-SNR rooms, low-quality mics). They're the second line of
+    defense after the firmware's VAD — and the binding one for
+    the XIAO onboard-mic era until the INMP144s arrive.
+
+    A segment is dropped if either
+    ``no_speech_prob > no_speech_threshold`` (mlx thinks the audio
+    is silence) or ``avg_logprob < logprob_threshold`` (mlx is
+    uncertain about what it heard). Both defaults match mlx-whisper's
+    built-in defaults.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    no_speech_threshold: float = 0.6
+    logprob_threshold: float = -1.0
+
+    @model_validator(mode="after")
+    def _validate_bounds(self) -> "WhisperConfig":
+        if not (0.0 <= self.no_speech_threshold <= 1.0):
+            raise ValueError(
+                f"{ENV_WHISPER_NO_SPEECH_THRESHOLD}={self.no_speech_threshold} "
+                f"must be in [0.0, 1.0]"
+            )
+        if self.logprob_threshold > 0.0:
+            # avg_logprob is bounded above by 0; the threshold is a
+            # "minimum acceptable" so it must be <= 0.
+            raise ValueError(
+                f"{ENV_WHISPER_LOGPROB_THRESHOLD}={self.logprob_threshold} "
+                f"must be <= 0.0"
+            )
+        return self
+
+
 class AgentConfig(BaseModel):
-    """The full server config — currently just guardrails, but
-    future policy (extraction interval, model override, etc.) lives here."""
+    """The full server config — guardrails + whisper noise filtering.
+    Future policy (extraction interval, model override, etc.) lives here."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
+    whisper: WhisperConfig = Field(default_factory=WhisperConfig)
 
 
 # --- env loader --------------------------------------------------------------
@@ -110,4 +149,16 @@ def load_agent_config(env: Mapping[str, str]) -> AgentConfig:
         guardrails_kwargs["rate_limit_per_min"] = _parse_int(
             ENV_RATE_LIMIT_PER_MIN, env[ENV_RATE_LIMIT_PER_MIN]
         )
-    return AgentConfig(guardrails=GuardrailsConfig(**guardrails_kwargs))
+    whisper_kwargs: dict = {}
+    if ENV_WHISPER_NO_SPEECH_THRESHOLD in env:
+        whisper_kwargs["no_speech_threshold"] = _parse_float(
+            ENV_WHISPER_NO_SPEECH_THRESHOLD, env[ENV_WHISPER_NO_SPEECH_THRESHOLD]
+        )
+    if ENV_WHISPER_LOGPROB_THRESHOLD in env:
+        whisper_kwargs["logprob_threshold"] = _parse_float(
+            ENV_WHISPER_LOGPROB_THRESHOLD, env[ENV_WHISPER_LOGPROB_THRESHOLD]
+        )
+    return AgentConfig(
+        guardrails=GuardrailsConfig(**guardrails_kwargs),
+        whisper=WhisperConfig(**whisper_kwargs),
+    )

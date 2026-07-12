@@ -90,7 +90,9 @@ def main() -> None:
     store = SqliteEventStore(args.db)
     signer = load_or_create_signer(args.key_file)
     dispatcher = CommandDispatcher(signer)
-    factory = build_pipeline_factory(window_ms=args.window_ms, model=args.model)
+    # NOTE: the pipeline factory is built later (after `agent_config`
+    # is loaded) so it can thread the whisper noise-filter thresholds
+    # through to the streaming transcriber.
 
     # Phase 3 dependencies: the index backs `/sessions`, the lifecycle backs
     # `/status`'s active_sessions counter. Both are process-wide and in-memory;
@@ -175,6 +177,17 @@ def main() -> None:
     )
 
     token = load_or_create_token(args.token_file)
+    # Thread the whisper noise-filter thresholds into the streaming
+    # transcriber backend.
+    from sense_server.gateway.adapter import build_pipeline_factory as _bpf
+    def _make_factory():
+        return _bpf(
+            window_ms=args.window_ms,
+            hop_ms=1000,
+            model=args.model,
+            whisper_config=agent_config.whisper,
+        )
+    factory = _make_factory()
     app = build_app(
         token=token,
         get_pubkey=lambda: signer.public_key_bytes,

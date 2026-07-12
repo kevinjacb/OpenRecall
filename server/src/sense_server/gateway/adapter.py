@@ -44,6 +44,7 @@ def build_pipeline_factory(
     hop_ms: int = 1000,
     model: str | None = None,
     use_streaming: bool = True,
+    whisper_config=None,
 ) -> PipelineFactory:
     """Factory wiring the real Opus decoder + MLX-whisper transcriber per session.
 
@@ -58,9 +59,25 @@ def build_pipeline_factory(
     Whisper on a rolling 5s context, and the streaming wrapper dedups
     tokens whose start is past the committed cursor.
 
+    ``whisper_config`` (a :class:`WhisperConfig`) threads the
+    server-side noise filtering thresholds (no_speech_threshold,
+    logprob_threshold) into the backend. Defaults to mlx-whisper's own
+    defaults (0.6 / -1.0) if not provided.
+
     Set ``use_streaming=False`` for the legacy hard-cut path (only used
     by tests that pre-date the streaming work).
     """
+
+    no_speech_threshold = (
+        whisper_config.no_speech_threshold
+        if whisper_config is not None
+        else 0.6
+    )
+    logprob_threshold = (
+        whisper_config.logprob_threshold
+        if whisper_config is not None
+        else -1.0
+    )
 
     def factory(start_seq: int) -> AudioIngestPipeline:
         from ..ingest.opus_decoder import OpusStreamDecoder
@@ -76,7 +93,14 @@ def build_pipeline_factory(
             # module-level state. The streaming transcriber owns the
             # rolling PCM buffer and committed cursor.
             transcriber = streaming_from_tokens(
-                WhisperStreamingBackend(model=model) if model else WhisperStreamingBackend(),
+                WhisperStreamingBackend(
+                    model=model,
+                    no_speech_threshold=no_speech_threshold,
+                    logprob_threshold=logprob_threshold,
+                ) if model else WhisperStreamingBackend(
+                    no_speech_threshold=no_speech_threshold,
+                    logprob_threshold=logprob_threshold,
+                ),
                 sample_rate=16000,
                 hop_ms=hop_ms,
                 window_ms=window_ms,
