@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -55,30 +55,59 @@ Confidence = float
 
 
 class AgentActionKind(str, Enum):
-    """Two outcomes the agent can produce in this slice.
+    """Three outcomes the agent can produce.
 
-    P2-answers covers only ``ANSWER`` and ``NO_MEMORY``. P2-commands will
-    add ``ISSUE_COMMAND`` and ``REFUSE`` (currently expressed via
-    :class:`RejectionReason` on the validated action).
+    P2-answers covers ``ANSWER`` and ``NO_MEMORY``. P2-commands adds
+    ``ISSUE_COMMAND`` for autonomous device actions. ``REFUSE`` is
+    expressed via :class:`RejectionReason` on the validated action
+    (not a separate kind — the action parser always produces a
+    real :class:`AgentAction`, and the Validator flags it as
+    rejected rather than discarding it).
     """
 
     ANSWER = "answer"
     NO_MEMORY = "no_memory"
+    ISSUE_COMMAND = "issue_command"
+
+
+class IssueCommandPayload(BaseModel):
+    """The LLM's intent to issue a device command.
+
+    Carries the LLM's parsed intent: the command type, its parameters
+    (validated by the CommandValidator against per-type schemas),
+    and the user's idempotency key (re-issuing the same key returns
+    the same command_id). The Planner + Dispatcher turn this into
+    a persisted :class:`~sense_server.commands.model.Command`.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    command_type: Literal[
+        "capture_photo", "record_video", "start_audio",
+        "stop_audio", "request_buffer",
+    ]
+    params: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str
+    # LLM-reported confidence. The Guardrails pass applies the
+    # confidence threshold; commands above ``autonomous`` execute
+    # without confirmation, commands below may be refused.
+    confidence: float = Field(ge=0.0, le=1.0)
 
 
 class AgentAction(BaseModel):
     """The parsed action the LLM intends to take.
 
-    ``atom_ids`` is the set of memory atoms the LLM is citing in support of
-    ``text``. The Validator enforces that every cited id was actually
-    retrieved; anything else is a hallucination and gets refused.
+    For ``ANSWER`` and ``NO_MEMORY`` kinds, ``atom_ids`` carries the
+    memory atoms cited in support of ``text``. For ``ISSUE_COMMAND``,
+    ``text`` is empty (the LLM returns a structured command, not a
+    sentence) and ``command`` carries the parsed payload.
     """
 
     model_config = ConfigDict(frozen=True)
     kind: AgentActionKind
-    text: str
+    text: str = ""
     atom_ids: tuple[str, ...] = Field(default_factory=tuple)
     confidence: float = Field(ge=0.0, le=1.0)
+    command: IssueCommandPayload | None = None
 
 
 class LLMResult(BaseModel):
@@ -277,11 +306,15 @@ class PlannerOutcome(str, Enum):
     The Plan is the only place this enum is defined; the mapper (N1.2)
     translates it to the wire-level ``outcome`` string on
     :class:`~sense_server.http.routes.dto.AgentResponseDTO`.
+
+    P2-answers: RETURN, RETURN_WITH_UNCERTAINTY, REFUSE.
+    P2-commands: adds ISSUE_COMMAND for autonomous device actions.
     """
 
     RETURN = "return"                          # autonomous answer
     RETURN_WITH_UNCERTAINTY = "return_with_uncertainty"  # answered, low confidence
     REFUSE = "refuse"                          # explicit refusal
+    ISSUE_COMMAND = "issue_command"            # autonomous command dispatch
 
 
 class PlannerContext(BaseModel):
@@ -320,6 +353,12 @@ class PlannerResult(BaseModel):
     atom_ids: tuple[str, ...] = Field(default_factory=tuple)
     refusal_reason: RejectionReason | None = None
     refusal_message: str | None = None
+    # P2-commands: present iff outcome == ISSUE_COMMAND. Carries the
+    # command_id of the newly-dispatched command. The mapper (N1.2)
+    # translates this to the wire-level payload; the Android command
+    # lifecycle UI watches the dispatcher for status changes.
+    command_id: str | None = None
+    command_status: str | None = None  # initial lifecycle status (PENDING)
     # End-to-end latency breakdown, observed by the Planner.
     retrieval_latency_ms: int = 0
     llm_latency_ms: int = 0
