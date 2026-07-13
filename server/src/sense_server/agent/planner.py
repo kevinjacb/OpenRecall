@@ -1,6 +1,6 @@
-"""The real Planner (N3.2).
+"""The real Planner (N3.2 + P2-commands Phase 6).
 
-The Planner orchestrates the read path:
+The Planner orchestrates the read path AND the command path:
 
   1. RETRIEVE — call :class:`Retriever` for relevant atoms.
   2. SHORT-CIRCUIT — if no atoms, refuse with NO_SUPPORTING_MEMORY
@@ -10,7 +10,11 @@ The Planner orchestrates the read path:
   4. REASON — call the async :class:`AgentLLM` (H4 — doesn't block).
   5. VALIDATE — strict JSON schema + provenance enforcement.
   6. GUARDRAIL — confidence-gated autonomy + rate limit.
-  7. AUDIT — best-effort write to the durable log (H3 — failure does
+  7. DISPATCH (P2-commands) — if the LLM emitted ISSUE_COMMAND, run
+     the command through CommandValidator + CommandGuardrails +
+     CommandDispatcher.issue. Carry the command_id back to the caller
+     so the Android UI can watch its lifecycle.
+  8. AUDIT — best-effort write to the durable log (H3 — failure does
      not lose the response).
 
 The Planner is **stateless** (INV-1): every call takes the same
@@ -25,6 +29,8 @@ from __future__ import annotations
 import time
 from typing import Protocol, runtime_checkable
 
+from ..commands.dispatcher import CommandDispatcher
+from ..commands.model import Command
 from ..contracts.clock import Clock
 from ..contracts.id_generator import IdGenerator
 from ..contracts.metrics import Metrics
@@ -44,6 +50,8 @@ from ..contracts.types import (
     ValidatedAction,
     ValidatorContext,
 )
+from .guardrails_command import CommandGuardrails, RejectionReason as CommandRejectionReason
+from .validator_command import CommandValidator
 
 _REFUSE = GuardOutcome.REFUSE
 
@@ -56,7 +64,7 @@ class PlannerLike(Protocol):
 
 
 class Planner:
-    """The read-path orchestrator. See module docstring."""
+    """The read-path + command-path orchestrator. See module docstring."""
 
     def __init__(
         self,
@@ -70,6 +78,13 @@ class Planner:
         capability_provider: CapabilityProvider,
         clock: Clock,
         ids: IdGenerator,
+        # P2-commands: the command-path components. Optional so the
+        # P2-answers slice (which doesn't dispatch commands) can wire a
+        # Planner without them; tests that exercise IssueCommand must
+        # pass all three.
+        command_validator: CommandValidator | None = None,
+        command_guardrails: CommandGuardrails | None = None,
+        dispatcher: CommandDispatcher | None = None,
     ) -> None:
         self._retriever = retriever
         self._context_builder = context_builder
@@ -81,6 +96,9 @@ class Planner:
         self._caps = capability_provider
         self._clock = clock
         self._ids = ids
+        self._command_validator = command_validator
+        self._command_guardrails = command_guardrails
+        self._dispatcher = dispatcher
 
     async def plan(self, ctx: PlannerContext) -> PlannerResult:
         # 1. RETRIEVE
@@ -150,7 +168,18 @@ class Planner:
         guardrails_latency = int((time.monotonic() - t3) * 1000)
         self._metrics.observe(Metrics.GUARDRAILS_LATENCY_MS, guardrails_latency)
 
-        # 7. BUILD RESULT
+        # 7. DISPATCH (P2-commands) or ANSWER
+        # The LLM may have emitted ISSUE_COMMAND; the action carries
+        # the parsed IssueCommandPayload. Run the command through the
+        # validator + guardrails + dispatcher, build a result with
+        # command_id + command_status.
+        if validated.action.kind == AgentActionKind.ISSUE_COMMAND:
+            return await self._dispatch_command(
+                ctx, retrieved, validated, prompt,
+                retrieval_latency, llm_latency, validator_latency, guardrails_latency,
+            )
+
+        # 7b. ANSWER / NO_MEMORY path (P2-answers)
         if guarded.outcome.value == "return":
             outcome = PlannerOutcome.RETURN
         elif guarded.outcome.value == "return_with_uncertainty":
@@ -170,6 +199,151 @@ class Planner:
         )
 
         # 8. AUDIT (H3: best-effort)
+        self._safe_audit(result, prompt=prompt)
+        return result
+
+    async def _dispatch_command(
+        self,
+        ctx: PlannerContext,
+        retrieved: RetrievedContext,
+        validated: ValidatedAction,
+        prompt: Prompt,
+        retrieval_latency_ms: int,
+        llm_latency_ms: int,
+        validator_latency_ms: int,
+        guardrails_latency_ms: int,
+    ) -> PlannerResult:
+        """Run the LLM's IssueCommand through validator + guardrails +
+        dispatcher, build a PlannerResult with command_id + command_status.
+
+        H3: any failure in the dispatch path becomes a refusal rather
+        than a crash. The user sees a friendly message; the audit log
+        records the failure.
+        """
+        action = validated.action
+        if action.command is None:
+            # The LLM said "issue_command" but the parser didn't produce
+            # a payload. Defensive: refuse rather than crash.
+            return self._build_result(
+                ctx, retrieved,
+                outcome=PlannerOutcome.REFUSE,
+                guarded=GuardedAction(
+                    outcome=_REFUSE,
+                    action=action,
+                    refusal_reason=RejectionReason.SCHEMA_MISMATCH,
+                    refusal_message="LLM emitted issue_command with no payload.",
+                ),
+                retrieval_latency_ms=retrieval_latency_ms,
+                llm_latency_ms=llm_latency_ms,
+                validator_latency_ms=validator_latency_ms,
+                guardrails_latency_ms=guardrails_latency_ms,
+            )
+        if self._command_validator is None or self._dispatcher is None:
+            # No command path wired (P2-answers default). Refuse with
+            # a clear message; the operator should set up the command
+            # components to enable IssueCommand.
+            return self._build_result(
+                ctx, retrieved,
+                outcome=PlannerOutcome.REFUSE,
+                guarded=GuardedAction(
+                    outcome=_REFUSE,
+                    action=action,
+                    refusal_reason=RejectionReason.UNKNOWN,
+                    refusal_message="command dispatch is not configured on this server",
+                ),
+                retrieval_latency_ms=retrieval_latency_ms,
+                llm_latency_ms=llm_latency_ms,
+                validator_latency_ms=validator_latency_ms,
+                guardrails_latency_ms=guardrails_latency_ms,
+            )
+
+        # 1. Validate (allowlist + param bounds).
+        v_out = self._command_validator.validate(action.command)
+        if v_out.rejection is not None:
+            return self._build_result(
+                ctx, retrieved,
+                outcome=PlannerOutcome.REFUSE,
+                guarded=GuardedAction(
+                    outcome=_REFUSE,
+                    action=action,
+                    refusal_reason=_map_validator_rejection(v_out.rejection),
+                    refusal_message=v_out.message or "command rejected by validator",
+                ),
+                retrieval_latency_ms=retrieval_latency_ms,
+                llm_latency_ms=llm_latency_ms,
+                validator_latency_ms=validator_latency_ms,
+                guardrails_latency_ms=guardrails_latency_ms,
+            )
+
+        # 2. Guardrails (capability + resource + confidence).
+        # Use the current capability / resource snapshot — the
+        # guardrails read the live device state, not a stale one.
+        # The command guardrails default constructor takes explicit
+        # CapabilitySet / DeviceResourceStatus; we snapshot from the
+        # provider here so the Planner stays stateless.
+        from .guardrails_command import StrictCommandGuardrails as _SCG
+        per_call_guardrails = _SCG(
+            capabilities=self._caps.capabilities(),
+            resources=self._caps.resources(),
+            confidence_autonomous=self._command_guardrails._autonomous,
+        )
+        g_out = per_call_guardrails.check(v_out.command)
+        if not g_out.allowed:
+            return self._build_result(
+                ctx, retrieved,
+                outcome=PlannerOutcome.REFUSE,
+                guarded=GuardedAction(
+                    outcome=_REFUSE,
+                    action=action,
+                    refusal_reason=_map_guardrail_rejection(g_out.rejection),
+                    refusal_message=g_out.message or "command rejected by guardrails",
+                ),
+                retrieval_latency_ms=retrieval_latency_ms,
+                llm_latency_ms=llm_latency_ms,
+                validator_latency_ms=validator_latency_ms,
+                guardrails_latency_ms=guardrails_latency_ms,
+            )
+
+        # 3. Dispatch (sign + track + idempotency dedup).
+        try:
+            signed = self._dispatcher.issue(Command(
+                command_id=self._ids.new(),
+                session_id=ctx.session_id or "",
+                type=v_out.command.command_type,
+                params=v_out.command.params,
+                issued_at=self._clock.now(),
+                expires_at=self._clock.now() + _default_ttl(),
+                idempotency_key=v_out.command.idempotency_key,
+            ))
+            command_id = signed.command.command_id
+        except Exception as exc:
+            # H3: dispatch failure is a refusal, not a crash.
+            return self._build_result(
+                ctx, retrieved,
+                outcome=PlannerOutcome.REFUSE,
+                guarded=GuardedAction(
+                    outcome=_REFUSE,
+                    action=action,
+                    refusal_reason=RejectionReason.UNKNOWN,
+                    refusal_message=f"failed to issue command: {exc}",
+                ),
+                retrieval_latency_ms=retrieval_latency_ms,
+                llm_latency_ms=llm_latency_ms,
+                validator_latency_ms=validator_latency_ms,
+                guardrails_latency_ms=guardrails_latency_ms,
+            )
+
+        result = self._build_result(
+            ctx, retrieved,
+            outcome=PlannerOutcome.ISSUE_COMMAND,
+            guarded=guarded_action_for_command(action, command_id),
+            retrieval_latency_ms=retrieval_latency_ms,
+            llm_latency_ms=llm_latency_ms,
+            validator_latency_ms=validator_latency_ms,
+            guardrails_latency_ms=guardrails_latency_ms,
+            command_id=command_id,
+            command_status="PENDING",
+        )
         self._safe_audit(result, prompt=prompt)
         return result
 
@@ -193,6 +367,8 @@ class Planner:
         llm_latency_ms: int,
         validator_latency_ms: int,
         guardrails_latency_ms: int,
+        command_id: str | None = None,
+        command_status: str | None = None,
     ) -> PlannerResult:
         # Map outcome -> confidence band (per the wire contract).
         if outcome == PlannerOutcome.RETURN:
@@ -211,12 +387,14 @@ class Planner:
             retrieval_trace_id=retrieved.retrieval_trace_id,
             audit_id=None,
             outcome=outcome,
-            answer=guarded.action.text if outcome != PlannerOutcome.REFUSE else None,
+            answer=guarded.action.text if outcome not in (PlannerOutcome.REFUSE, PlannerOutcome.ISSUE_COMMAND) else None,
             confidence=guarded.action.confidence if outcome != PlannerOutcome.REFUSE else None,
             confidence_band=band,
             atom_ids=guarded.action.atom_ids,
             refusal_reason=guarded.refusal_reason,
             refusal_message=guarded.refusal_message,
+            command_id=command_id,
+            command_status=command_status,
             retrieval_latency_ms=retrieval_latency_ms,
             llm_latency_ms=llm_latency_ms,
             validator_latency_ms=validator_latency_ms,
@@ -239,6 +417,9 @@ class Planner:
                 entry["prompt_hash"] = _hash_prompt(prompt)
             entry["validated"] = {"atom_ids": list(result.atom_ids), "confidence": result.confidence}
             entry["guarded"] = {"refusal_reason": str(result.refusal_reason) if result.refusal_reason else None}
+            if result.command_id is not None:
+                entry["command_id"] = result.command_id
+                entry["command_status"] = result.command_status
             audit_id = self._audit.record(entry)
             # Mutate the immutable result: since PlannerResult is frozen,
             # we use object.__setattr__ to attach the audit_id (H3: this
@@ -247,6 +428,9 @@ class Planner:
             self._metrics.increment(Metrics.AUDIT_RECORDS_TOTAL, tags={"status": "ok"})
         except Exception:
             self._metrics.increment(Metrics.AUDIT_RECORDS_TOTAL, tags={"status": "failed"})
+
+
+# --- helpers ----------------------------------------------------------------
 
 
 def _band_for(confidence: float) -> str:
@@ -261,3 +445,61 @@ def _hash_prompt(prompt: Prompt) -> str:
     """A short, stable hash of the prompt so audit can cite the shape."""
     import hashlib
     return hashlib.sha256((prompt.system + "\n" + prompt.user).encode("utf-8")).hexdigest()[:16]
+
+
+def _default_ttl():
+    """Default command TTL: 5 minutes. The dispatcher expires commands
+    past this; the relay won't deliver stale commands."""
+    from datetime import timedelta
+    return timedelta(minutes=5)
+
+
+def _map_validator_rejection(reason) -> RejectionReason:
+    """Map the command validator's :class:`RejectionReason` to the
+    generic :class:`RejectionReason` the Planner carries. Most map
+    to ``SCHEMA_MISMATCH`` (param-related issues) or ``UNKNOWN``."""
+    wire = reason.value
+    if wire == "unknown_command_type":
+        return RejectionReason.SCHEMA_MISMATCH
+    if wire == "missing_required_param":
+        return RejectionReason.SCHEMA_MISMATCH
+    if wire == "invalid_param_type":
+        return RejectionReason.SCHEMA_MISMATCH
+    if wire == "param_out_of_range":
+        return RejectionReason.SCHEMA_MISMATCH
+    if wire == "unknown_param":
+        return RejectionReason.SCHEMA_MISMATCH
+    if wire == "invalid_idempotency_key":
+        return RejectionReason.SCHEMA_MISMATCH
+    return RejectionReason.UNKNOWN
+
+
+def _map_guardrail_rejection(reason) -> RejectionReason:
+    """Map the command guardrails' :class:`RejectionReason` to the
+    generic enum the Planner carries. Capability + resource issues
+    become ``NOT_AUTONOMOUS`` (the device can't act right now);
+    confidence issues become ``CONFIDENCE_OUT_OF_RANGE``."""
+    if reason is None:
+        return RejectionReason.UNKNOWN
+    wire = reason.value
+    if wire == "capability_unavailable":
+        return RejectionReason.NOT_AUTONOMOUS
+    if wire == "resource_unavailable":
+        return RejectionReason.NOT_AUTONOMOUS
+    if wire == "command_confidence_too_low":
+        return RejectionReason.CONFIDENCE_OUT_OF_RANGE
+    return RejectionReason.UNKNOWN
+
+
+def guarded_action_for_command(action: AgentAction, command_id: str) -> GuardedAction:
+    """The Planner's result-building needs a GuardedAction even for
+    the command path; this helper wraps the action in a synthetic
+    RETURN-shape GuardedAction (the real outcome is ISSUE_COMMAND,
+    but the GuardedAction is just a vehicle for the action + reason
+    in the build path)."""
+    return GuardedAction(
+        outcome=GuardOutcome.RETURN,  # placeholder; outcome is on PlannerResult
+        action=action,
+        refusal_reason=None,
+        refusal_message=None,
+    )
