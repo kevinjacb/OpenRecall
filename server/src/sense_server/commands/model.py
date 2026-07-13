@@ -40,6 +40,11 @@ class Command(BaseModel):
     params: dict[str, Any] = {}
     issued_at: datetime
     expires_at: datetime
+    # The user-facing dedup key. Two issues with the same key produce
+    # the same command_id (P2-commands Phase 4). Optional for back-compat
+    # with Phase 1 tests that don't care; the dispatcher's idempotency
+    # falls back to command_id dedup when this is missing.
+    idempotency_key: str | None = None
 
     def canonical_bytes(self) -> bytes:
         """Deterministic bytes to sign/verify: compact, fully key-sorted JSON."""
