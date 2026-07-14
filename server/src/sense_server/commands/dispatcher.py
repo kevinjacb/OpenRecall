@@ -25,6 +25,7 @@ from typing import Any, Callable
 from .model import Command
 from .signing import CommandSigner, SignedCommand
 from .record import StatusTransition
+from .record import CommandRecord
 from .status import CommandStatus, is_valid_transition
 
 Clock = Callable[[], datetime]
@@ -35,9 +36,15 @@ def _utcnow() -> datetime:
 
 
 class CommandDispatcher:
-    def __init__(self, signer: CommandSigner, clock: Clock = _utcnow) -> None:
+    def __init__(
+        self,
+        signer: CommandSigner,
+        clock: Clock = _utcnow,
+        store: "SqliteCommandStore | None" = None,
+    ) -> None:
         self._signer = signer
         self._clock = clock
+        self._store = store  # optional: persist records on every operation
         # command_id -> signed (issue order)
         self._signed: dict[str, SignedCommand] = {}
         # idempotency_key -> command_id (for dedup across retries)
@@ -87,7 +94,18 @@ class CommandDispatcher:
                 detail={"event": "issue"},
             )
         ]
+        if self._store is not None:
+            self._store.save(self._record(command.command_id))
         return signed
+
+    def _record(self, command_id: str) -> 'CommandRecord':
+        if command_id not in self._signed:
+            raise KeyError(f'unknown command {command_id!r}')
+        return CommandRecord(
+            command=self._signed[command_id].command,
+            status=self._status[command_id],
+            history=tuple(self._history[command_id]),
+        )
 
     def ack(self, command_id: str) -> None:
         """Mark a command delivered/executed. Idempotent; unknown ids are ignored."""

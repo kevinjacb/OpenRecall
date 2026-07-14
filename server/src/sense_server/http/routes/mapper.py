@@ -65,6 +65,8 @@ def map_planner_result_to_dto(result: PlannerResult) -> AgentResponseDTO:
         outcome_wire = "return"
     elif result.outcome == PlannerOutcome.RETURN_WITH_UNCERTAINTY:
         outcome_wire = "return_with_uncertainty"
+    elif result.outcome == PlannerOutcome.ISSUE_COMMAND:
+        outcome_wire = "issue_command"
     else:
         outcome_wire = "refuse"
     return AgentResponseDTO(
@@ -77,4 +79,6 @@ def map_planner_result_to_dto(result: PlannerResult) -> AgentResponseDTO:
         confidence=result.confidence,
         confidence_band=result.confidence_band,  # type: ignore[arg-type]
         refusal_reason=result.refusal_message if result.outcome == PlannerOutcome.REFUSE else None,
+        command_id=result.command_id,
+        command_status=result.command_status,
     )

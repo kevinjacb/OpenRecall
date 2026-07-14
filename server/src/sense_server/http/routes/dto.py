@@ -76,13 +76,15 @@ class AgentResponseDTO(BaseModel):
     request_id: str
     retrieval_trace_id: str
     audit_id: str
-    outcome: Literal["return", "return_with_uncertainty", "refuse"]
+    outcome: Literal["return", "return_with_uncertainty", "refuse", "issue_command"]
     answer: str | None = None
     atoms: list[AtomChipDTO] = Field(default_factory=list)
     confidence: float | None = None
     confidence_band: Literal["low", "medium", "high"] | None = None
     refusal_reason: str | None = None
     payload: dict | None = None
+    command_id: str | None = None
+    command_status: str | None = None
 
 
 # --- /memory ----------------------------------------------------------------
