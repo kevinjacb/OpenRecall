@@ -60,6 +60,10 @@ dependencies {
     // the /status poll is foreground-only. Matches the 2.8.7 line used
     // by lifecycle-viewmodel-compose.
     implementation("androidx.lifecycle:lifecycle-process:2.8.7")
+    // P2-commands Phase 9 UI: CommandsScreen uses LifecycleEventEffect
+    // to start/stop the polling timer on ON_RESUME / ON_PAUSE. Same 2.8.7
+    // version line.
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     // navigation-compose: required for NavHost + BottomBar in MainActivity.
     // 2.8.4 is the first stable release in the 2.8.x family that supports
