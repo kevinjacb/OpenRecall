@@ -89,7 +89,11 @@ def main() -> None:
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
     store = SqliteEventStore(args.db)
     signer = load_or_create_signer(args.key_file)
-    dispatcher = CommandDispatcher(signer)
+    from sense_server.commands.store import SqliteCommandStore
+    command_store = SqliteCommandStore(
+        args.db.replace("events.db", "commands.db")
+    )
+    dispatcher = CommandDispatcher(signer, store=command_store)
     # NOTE: the pipeline factory is built later (after `agent_config`
     # is loaded) so it can thread the whisper noise-filter thresholds
     # through to the streaming transcriber.
@@ -204,6 +208,8 @@ def main() -> None:
         atom_store=atom_store,
         metrics=metrics,
         id_generator=UuidIdGenerator(),
+        command_store=command_store,
+        command_dispatcher=dispatcher,
     )
 
     async def main_loop() -> None:
