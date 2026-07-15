@@ -1,11 +1,21 @@
 package com.sense.relay.data
 
+import androidx.lifecycle.ViewModel
 import com.sense.relay.http.HttpApiError
 import com.sense.relay.http.dto.CommandRecordDto
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.plus
 
 /**
  * Domain layer for the command-lifecycle UI.
@@ -40,7 +50,8 @@ open class CommandRepository(private val api: CommandApi) {
  */
 class CommandsViewModel(
     private val repo: CommandRepository,
-) {
+    pollDispatcher: CoroutineDispatcher = Dispatchers.Main.immediate,
+) : ViewModel() {
     sealed class UiState {
         data object Loading : UiState()
         data class Error(val message: String) : UiState()
@@ -49,6 +60,20 @@ class CommandsViewModel(
 
     private val _state = MutableStateFlow<UiState>(UiState.Loading)
     val state: StateFlow<UiState> = _state.asStateFlow()
+
+    /**
+     * Dedicated scope for the polling job. We use a private
+     * `SupervisorJob` + an injected [pollDispatcher] (defaulting to
+     * `Dispatchers.Main.immediate`) rather than `viewModelScope`
+     * so the polling loop is decoupled from the framework's
+     * ViewModelStore ownership and is straightforward to control
+     * in unit tests via the test dispatcher. The supervisor means
+     * a failure in one tick does not cancel the loop. Cancelled
+     * explicitly in [stopPolling] and [onCleared].
+     */
+    private val pollScope: CoroutineScope = CoroutineScope(SupervisorJob() + pollDispatcher)
+
+    private var pollJob: Job? = null
 
     suspend fun refresh() {
         _state.value = UiState.Loading
@@ -78,5 +103,41 @@ class CommandsViewModel(
             // but the response was malformed.
             refresh()
         }
+    }
+
+    /**
+     * Polling lifecycle (added for the CommandsScreen P2-commands
+     * Phase 9 Composable). The screen calls this in a
+     * LifecycleEventEffect(ON_RESUME) and `stopPolling()` in
+     * ON_PAUSE. The job lives on a private [pollScope] (not
+     * `viewModelScope`) so it is straightforward to test with
+     * `runTest`. The explicit [onCleared] override cancels the
+     * job and the scope on teardown.
+     *
+     * `startPolling` is idempotent: calling it twice cancels the
+     * prior job before starting a new one. The first `refresh()`
+     * call is immediate so the screen does not wait one full
+     * interval for its first paint.
+     */
+    fun startPolling(intervalMs: Long = 4_000L) {
+        pollJob?.cancel()
+        pollJob = pollScope.launch {
+            refresh()
+            while (isActive) {
+                delay(intervalMs)
+                refresh()
+            }
+        }
+    }
+
+    fun stopPolling() {
+        pollJob?.cancel()
+        pollJob = null
+    }
+
+    override fun onCleared() {
+        stopPolling()
+        pollScope.coroutineContext[Job]?.cancel()
+        super.onCleared()
     }
 }
