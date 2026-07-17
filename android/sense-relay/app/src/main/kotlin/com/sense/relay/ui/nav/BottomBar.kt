@@ -4,6 +4,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -20,8 +21,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
  * by [Destination.Device] (BLE + server status) since users will care
  * about that more than an empty live tab.
  *
- * Order matters: Home, Recordings, Device, Settings is the spec's
- * reading order — most-used first, "settings where I look for it" last.
+ * Order matters: Home, Recordings, Device, Commands, Settings is the
+ * spec's reading order — most-used first, "settings where I look for
+ * it" last. Commands sits next to Device because both are device-state
+ * surfaces (Device: hardware; Commands: in-flight agent requests).
  *
  * **Icon note:** the core `androidx.compose.material.icons.filled` set
  * only ships a small subset of Material Icons. We use icons that are
@@ -34,6 +37,7 @@ private val mainDestinations: List<MainTab> = listOf(
     MainTab(Destination.Home, "Home", Icons.Filled.Home),
     MainTab(Destination.Recordings, "Recordings", Icons.AutoMirrored.Filled.List),
     MainTab(Destination.Device, "Device", Icons.Filled.Info),
+    MainTab(Destination.Commands, "Commands", Icons.Filled.PlayArrow),
     MainTab(Destination.Settings, "Settings", Icons.Filled.Settings),
 )
 

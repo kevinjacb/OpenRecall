@@ -15,6 +15,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.sense.relay.ui.commands.CommandsRoute
 import com.sense.relay.ui.device.DeviceRoute
 import com.sense.relay.ui.home.HomeRoute
 import com.sense.relay.ui.recordings.RecordingsRoute
@@ -74,6 +75,7 @@ fun AppNavigation(
                 )
             }
             composable(Destination.Device.route) { DeviceRoute() }
+            composable(Destination.Commands.route) { CommandsRoute() }
             composable(Destination.Settings.route) { SettingsRoute(onReconfigure) }
             // SessionDetail: the route has a path segment for the id; the
             // framework parses it via [SessionIdNavType]. The screen reads the
@@ -101,6 +103,7 @@ private val MAIN_ROUTES = setOf(
     Destination.Home.route,
     Destination.Recordings.route,
     Destination.Device.route,
+    Destination.Commands.route,
     Destination.Settings.route,
 )
 

@@ -14,6 +14,10 @@ sealed interface Destination {
     data object Home : Destination { override val route = "home" }
     data object Recordings : Destination { override val route = "recordings" }
     data object Device : Destination { override val route = "device" }
+
+    /** P2-commands user-facing surface — active command lifecycle. */
+    data object Commands : Destination { override val route = "commands" }
+
     data object Settings : Destination { override val route = "settings" }
 
     /** Cognitive read path: chat with the agent. */
