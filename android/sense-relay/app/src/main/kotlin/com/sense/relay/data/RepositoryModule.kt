@@ -36,8 +36,9 @@ object RepositoryModule {
     /**
      * The aggregated repository surface. Holds every cross-cutting
      * dependency the rest of the app reads: configuration, sessions,
-     * device, server status, the aggregated dashboard, and the relay
-     * state controller itself (exposed so screens can observe).
+     * device, server status, the aggregated dashboard, the relay
+     * state controller itself, and the command lifecycle (exposed
+     * so the Commands screen can observe + ack).
      */
     data class Repositories(
         val configuration: ConfigurationRepository,
@@ -46,6 +47,7 @@ object RepositoryModule {
         val status: StatusRepository,
         val dashboard: DashboardRepository,
         val relayController: RelayController,
+        val commandRepository: CommandRepository,
     )
 
     lateinit var repos: Repositories
@@ -82,6 +84,16 @@ object RepositoryModule {
             sessionRepo = session,
             scope = scope,
         )
+        // Command lifecycle: the API resolves the current (url, token)
+        // from the shared clientProvider on every call so a re-provision
+        // takes effect on the next /commands request without rebuilding
+        // the repository.
+        val commandRepository = CommandRepository(
+            apiProvider = {
+                val c = clientProvider()
+                CommandApi(baseUrl = c.baseUrl, token = c.token)
+            },
+        )
         repos = Repositories(
             configuration = configuration,
             session = session,
@@ -89,6 +101,7 @@ object RepositoryModule {
             status = status,
             dashboard = dashboard,
             relayController = RelayController,
+            commandRepository = commandRepository,
         )
     }
 }

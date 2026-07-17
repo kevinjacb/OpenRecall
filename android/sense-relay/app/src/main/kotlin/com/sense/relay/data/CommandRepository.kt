@@ -28,17 +28,27 @@ import kotlinx.coroutines.plus
  * The repository is the only place that imports [HttpApiError] for the
  * command endpoints (mirrors AgentRepository's role for agent
  * endpoints). Callers see only domain types.
+ *
+ * [apiProvider] is a suspend factory that returns the current
+ * [CommandApi]. It exists so the repository tracks the latest
+ * configured server (the `CommandApi` carries the OkHttp client +
+ * bearer token at construction time). The repository resolves the
+ * current `CommandApi` on every call, so re-provisioning takes
+ * effect on the next request without rebuilding the repository.
  */
-open class CommandRepository(private val api: CommandApi) {
+open class CommandRepository(private val apiProvider: suspend () -> CommandApi) {
+
+    /** Test/convenience constructor: a repository pinned to a single [CommandApi]. */
+    constructor(api: CommandApi) : this(apiProvider = { api })
 
     open suspend fun listActive(): List<Command> =
-        api.listActive().map { it.toDomain() }
+        apiProvider().listActive().map { it.toDomain() }
 
     open suspend fun get(commandId: String): Command =
-        api.get(commandId).toDomain()
+        apiProvider().get(commandId).toDomain()
 
     open suspend fun ack(commandId: String): Command =
-        api.ack(commandId).toDomain()
+        apiProvider().ack(commandId).toDomain()
 }
 
 /**

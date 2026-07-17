@@ -21,11 +21,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 class SenseHttpClient(
-    private val baseUrl: String,
-    private val token: String,
+    val baseUrl: String,
+    val token: String,
     caPem: String? = null,
 ) {
-    private val client: OkHttpClient = buildClient(caPem)
+    val client: OkHttpClient = buildClient(caPem)
 
     private fun buildClient(caPem: String?): OkHttpClient {
         val builder = OkHttpClient.Builder()
