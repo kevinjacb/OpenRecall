@@ -39,6 +39,7 @@ from sense_server.commands.dispatcher import CommandDispatcher
 from sense_server.commands.signing import load_or_create_signer
 from sense_server.events.store import SqliteEventStore
 from sense_server.gateway.adapter import build_pipeline_factory, serve
+from sense_server.gateway.core import ProactiveOutbox
 from sense_server.http.app import build_app
 from sense_server.memory.atom import MemoryAtom  # noqa: F401  (used in stage wiring)
 from sense_server.memory.embeddings import OpenAICompatibleEmbedder
@@ -134,6 +135,12 @@ def main() -> None:
         enqueuer=enqueuer,
     )
 
+    # P3 proactive: a single process-wide ProactiveOutbox shared by every
+    # WebSocket connection's proactive_task. The engine listens on the
+    # worker for SessionCompletion, plans, and forwards RETURN results
+    # to whichever GatewayCore is the active ws_sender at the moment.
+    proactive_outbox = ProactiveOutbox(ttl_s=30.0, clock=SystemClock(), metrics=metrics)
+
     # Cognitive read path (N3.4 wiring): construct the Planner with the
     # real components — async LLM, strict validator, confidence-gated
     # guardrails, durable audit log, and a constant capability stub.
@@ -200,6 +207,34 @@ def main() -> None:
         dispatcher=dispatcher,
     )
 
+    # P3 proactive engine: the same Planner serves both inbound user
+    # requests (HTTP /agent) and proactive triggers fired by the
+    # extraction worker. The engine never blocks the worker loop —
+    # 2s timeout, every drop counted. The placeholder ws_sender is
+    # replaced on every WebSocket connect in serve() via
+    # ProactiveTriggerEngine.set_ws_sender.
+    from sense_server.agent.proactive import ProactiveTriggerEngine
+
+    class _PlaceholderWsSender:
+        """No-op ws_sender. Replaced on every WebSocket connect. If a
+        proactive trigger somehow fires before the first connection
+        lands, the engine's call raises and is caught+counted — the
+        worker is never blocked."""
+
+        async def send_proactive(
+            self, *, session_id: str, request_id: str, text: str, atoms
+        ) -> None:
+            raise RuntimeError("no active WebSocket connection")
+
+    proactive_engine = ProactiveTriggerEngine(
+        planner=planner,
+        ws_sender=_PlaceholderWsSender(),
+        clock=SystemClock(),
+        metrics=metrics,
+        ids=UuidIdGenerator(),
+        plan_timeout_s=2.0,
+    )
+
     token = load_or_create_token(args.token_file)
     # Thread the whisper noise-filter thresholds into the streaming
     # transcriber backend.
@@ -241,6 +276,10 @@ def main() -> None:
             # Start the extraction worker so enqueued sessions are
             # processed in the background.
             await worker.start()
+            # P3: register the proactive engine as a worker listener.
+            # The engine is fire-and-forget from the worker's POV, so
+            # this never blocks extraction.
+            worker.add_listener(proactive_engine.on_session_completion)
             print(f"http control API on http://{args.host}:{args.http_port}")
             print(f"gateway listening on ws://{args.host}:{args.port}  "
                   f"(window={args.window_ms} ms, events -> {args.db})")
@@ -257,6 +296,8 @@ def main() -> None:
                 session_index=session_index,
                 session_lifecycle=session_lifecycle,
                 enqueuer=enqueuer,
+                proactive_outbox=proactive_outbox,
+                proactive_engine=proactive_engine,
             )
         finally:
             await worker.stop()

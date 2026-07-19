@@ -27,6 +27,8 @@ if TYPE_CHECKING:
     from ..memory.extraction_worker import ExtractionEnqueuer
     from ..sessions.index import SessionIndex
     from ..sessions.lifecycle import SessionLifecycle
+    from ..agent.proactive import ProactiveTriggerEngine
+    from .core import ProactiveOutbox
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +134,8 @@ async def serve(
     session_index: "SessionIndex | None" = None,
     session_lifecycle: "SessionLifecycle | None" = None,
     enqueuer: "ExtractionEnqueuer | None" = None,
+    proactive_outbox: "ProactiveOutbox | None" = None,
+    proactive_engine: "ProactiveTriggerEngine | None" = None,
 ) -> None:
     """Run the gateway WebSocket server until cancelled.
 
@@ -146,6 +150,14 @@ async def serve(
     by every successfully-stored capture event, and the lifecycle tracks
     currently-open connections. Both are optional for back-compat with the
     existing test suite.
+
+    ``proactive_outbox`` and ``proactive_engine`` (P3): per-connection, the
+    core is bound to a shared ``ProactiveOutbox`` and the engine's
+    ``ws_sender`` is rebound to that core. A background ``proactive_task``
+    on each connection drains pending ProactiveMessages and writes them as
+    ``proactive`` §E frames. Both are optional — when omitted, the
+    per-connection core has no outbox and ``send_proactive`` raises
+    rather than silently dropping.
     """
     import asyncio
 
@@ -172,7 +184,44 @@ async def serve(
             session_index=session_index,
             session_lifecycle=session_lifecycle,
             enqueuer=enqueuer,
+            proactive_outbox=proactive_outbox,
         )
+        # P3: rebind the engine's ws_sender to this per-connection core.
+        # The engine is process-wide (one Planner, one set of listeners),
+        # but every WebSocket connection has its own core, so we re-target
+        # on connect. None-safe for back-compat with callers that don't
+        # have an engine wired (existing test suite).
+        if proactive_engine is not None and proactive_outbox is not None:
+            proactive_engine.set_ws_sender(core)
+
+        # P3: background drain task — wakes on the outbox event, sends
+        # each pending ProactiveMessage as a §E frame. Cancelled on
+        # connection close.
+        proactive_task: asyncio.Task[None] | None = None
+        if proactive_outbox is not None:
+            async def _drain_proactive() -> None:
+                # session_id is fixed for the life of this connection;
+                # the engine always sends to the session it just
+                # completed extraction for. If the client hasn't said
+                # hello yet, we still drain any orphan messages (they
+                # will simply be the empty bucket).
+                while True:
+                    await proactive_outbox.wait()
+                    # We don't know the session_id here yet — drain
+                    # every bucket. In practice each connection has at
+                    # most one active session, so the cost is O(1).
+                    for bucket in list(proactive_outbox._by_session.keys()):  # noqa: SLF001
+                        for msg in proactive_outbox.drain(bucket):
+                            try:
+                                await ws.send(msg.model_dump_json())
+                            except ConnectionClosed:
+                                return
+                            except Exception:
+                                logger.exception(
+                                    "proactive_send_failed peer=%s", peer,
+                                )
+                                return
+            proactive_task = asyncio.create_task(_drain_proactive())
         try:
             async for message in ws:
                 # Decode + transcription are blocking and can take seconds (model
@@ -200,6 +249,17 @@ async def serve(
             await ws.close(code=1002, reason="protocol error")  # 1002 == protocol error
         except ConnectionClosed:
             pass  # client went away (possibly mid-transcribe) — a normal disconnect
+        finally:
+            if proactive_task is not None:
+                # Wake the drain task if it's parked on the outbox event
+                # so the cancellation can be observed promptly.
+                if proactive_outbox is not None:
+                    proactive_outbox.signal()
+                proactive_task.cancel()
+                try:
+                    await proactive_task
+                except (asyncio.CancelledError, Exception):
+                    pass
         logger.info("connection closed from %s", peer)
 
     async with websockets.serve(handler, host, port):

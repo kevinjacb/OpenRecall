@@ -93,3 +93,20 @@ class CommandMessage(_Strict):
     session_id: str
     payload: str
     sig: str
+
+
+class ProactiveMessage(_Strict):
+    """A proactive answer from the server (P3).
+
+    Carries the agent's answer text and the cited atom ids. The relay
+    forwards it into the phone's ChatHistoryStore; the chat screen
+    renders it as a new ``AGENT_PROACTIVE`` ChatMessage. The proactive
+    trigger is server-initiated, never the user, so the user knows
+    it's not from a question they asked.
+    """
+
+    type: Literal["proactive"] = "proactive"
+    session_id: str
+    request_id: str
+    text: str
+    atoms: tuple[str, ...] = Field(default_factory=tuple)
