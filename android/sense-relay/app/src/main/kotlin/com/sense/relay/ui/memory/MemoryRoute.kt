@@ -1,15 +1,46 @@
 package com.sense.relay.ui.memory
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import com.sense.relay.data.RepositoryModule
 
 /**
- * Route for the Memory screen. STUB — no ViewModel yet. The real
- * MemoryViewModel (which already exists at ui/memory/MemoryViewModel.kt)
- * is wired in the real-MemoryScreen slice. This stub exists so the
- * Chat refuse-link has a navigable target.
+ * Real entry point for the Memory screen. Builds a [MemoryViewModel]
+ * from [RepositoryModule.repos.memoryRepository] (a config-aware
+ * factory, so a re-provision in Settings takes effect on the next
+ * search) and renders the stateless [MemoryScreen].
+ *
+ * The deep-link entry from ChatScreen's refuse-link navigates here
+ * with no arguments. A future per-session filter (e.g.
+ * `Destination.Memory.withSessionId(id)`) can read it from
+ * `backStackEntry.arguments` without changing the route.
+ *
+ * The `onAtomTap` handler is a no-op for this slice: the full
+ * AtomDetailScreen Composable is a follow-up. Tapping an atom in
+ * the list currently does nothing.
  */
 @Composable
 fun MemoryRoute(modifier: Modifier = Modifier) {
-    MemoryScreen(modifier = modifier)
+    val vm: MemoryViewModel = viewModel(
+        factory = viewModelFactory {
+            initializer {
+                MemoryViewModel(
+                    repo = RepositoryModule.repos.memoryRepository,
+                )
+            }
+        },
+    )
+    val state by vm.state.collectAsState()
+    MemoryScreen(
+        state = state,
+        onQueryChanged = vm::onQueryChanged,
+        onSearch = vm::search,
+        onAtomTap = { /* TODO: navigate to AtomDetail in a follow-up slice */ },
+        modifier = modifier,
+    )
 }
