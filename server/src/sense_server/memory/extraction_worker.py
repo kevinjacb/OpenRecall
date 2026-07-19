@@ -18,7 +18,10 @@ does not stop other sessions from being processed.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
+from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from typing import Optional
 
 from ..agent.metrics import InMemoryMetricsRecorder
@@ -26,6 +29,40 @@ from ..contracts.metrics import Metrics
 from ..events.store import EventStore
 from .stages import Pipeline
 from .store import AtomStore
+
+log = logging.getLogger(__name__)
+
+
+class SessionCompletion:
+    """The completion record dispatched to listeners after a successful
+    extraction. Carries the session id, the wall-clock time of completion
+    (injected via a clock so tests are deterministic), and the inclusive
+    ``(first, last)`` event sequence range that was just processed.
+
+    P3: listeners registered on :class:`ExtractionWorker` receive one
+    of these after every successful ``process_session`` call. The
+    primary listener is the :class:`ProactiveTriggerEngine`, which
+    turns the completion into a Proactive planner call.
+    """
+
+    __slots__ = ("session_id", "completed_at", "event_id_range")
+
+    def __init__(
+        self,
+        session_id: str,
+        completed_at: datetime,
+        event_id_range: tuple[int, int],
+    ) -> None:
+        self.session_id = session_id
+        self.completed_at = completed_at
+        self.event_id_range = event_id_range
+
+    def __repr__(self) -> str:
+        return (
+            f"SessionCompletion(session_id={self.session_id!r}, "
+            f"completed_at={self.completed_at!r}, "
+            f"event_id_range={self.event_id_range!r})"
+        )
 
 
 class ExtractionEnqueuer:
@@ -99,6 +136,7 @@ class ExtractionWorker:
         pipeline: Pipeline,
         metrics: InMemoryMetricsRecorder,
         enqueuer: ExtractionEnqueuer | None = None,
+        listeners: list[Callable[[SessionCompletion], Awaitable[None]]] | None = None,
     ) -> None:
         self._events = events
         self._atoms = atoms
@@ -108,6 +146,11 @@ class ExtractionWorker:
         self._enqueuer.attach(self)
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        # P3: listeners invoked after every successful extraction.
+        # Snapshot-iterated in process_session so a listener that
+        # calls remove_listener during dispatch doesn't mutate the
+        # iteration (no skip, no RuntimeError).
+        self._listeners: list[Callable[[SessionCompletion], Awaitable[None]]] = list(listeners or [])
 
     # --- public API -------------------------------------------------------
 
@@ -115,6 +158,69 @@ class ExtractionWorker:
         """Swap the worker's enqueuer. Both must be bound to ``self``."""
         self._enqueuer = enqueuer
         enqueuer.attach(self)
+
+    def add_listener(
+        self, listener: Callable[[SessionCompletion], Awaitable[None]]
+    ) -> None:
+        """Register a listener to be called after every successful extraction.
+
+        Listeners are awaited sequentially in registration order.
+        Exceptions are caught, logged, and counted as
+        ``EXTRACTION_LISTENER_FAILURE_TOTAL`` — they never block the
+        worker or other listeners.
+        """
+        self._listeners.append(listener)
+
+    def remove_listener(
+        self, listener: Callable[[SessionCompletion], Awaitable[None]]
+    ) -> None:
+        """Remove a previously-registered listener. No-op if absent."""
+        try:
+            self._listeners.remove(listener)
+        except ValueError:
+            pass
+
+    def _dispatch_listeners(self, completion: SessionCompletion) -> None:
+        """Schedule each registered listener to run after the cursor advance.
+
+        Fire-and-forget on the running event loop (if any). Each
+        listener is a coroutine; exceptions are caught, logged, and
+        counted — never re-raised. Snapshot iteration so a listener
+        that calls remove_listener during dispatch is safe.
+        """
+        for listener in list(self._listeners):
+            try:
+                task = asyncio.ensure_future(listener(completion))
+            except RuntimeError:
+                # No running loop. Run synchronously and log any exception
+                # so the listener gets a chance to run in a test that
+                # doesn't drive the loop.
+                try:
+                    listener(completion).close()
+                except Exception:
+                    self._metrics.increment(
+                        Metrics.EXTRACTION_LISTENER_FAILURE_TOTAL,
+                        tags={"session_id": completion.session_id},
+                    )
+                    log.exception(
+                        "extraction_listener_failed",
+                        extra={"session_id": completion.session_id},
+                    )
+                continue
+            # Wrap the task to catch + count exceptions.
+            def _safe(t: asyncio.Task, sid: str = completion.session_id) -> None:
+                try:
+                    t.result()
+                except Exception:
+                    self._metrics.increment(
+                        Metrics.EXTRACTION_LISTENER_FAILURE_TOTAL,
+                        tags={"session_id": sid},
+                    )
+                    log.exception(
+                        "extraction_listener_failed",
+                        extra={"session_id": sid},
+                    )
+            task.add_done_callback(_safe)
 
     def process_session(self, session_id: str) -> list:
         """Run the pipeline for one session. H7: cursor advances on success only.
@@ -144,6 +250,16 @@ class ExtractionWorker:
             if pending:
                 new_cursor = max(e.seq for e in pending)
                 self._atoms.set_cursor(session_id, new_cursor)
+            # 4. P3: dispatch to listeners after the cursor advances.
+            #    H7: only after success. Listener failures are caught,
+            #    logged, and counted as EXTRACTION_LISTENER_FAILURE_TOTAL.
+            if pending:
+                completion = SessionCompletion(
+                    session_id=session_id,
+                    completed_at=datetime.now(tz=timezone.utc),
+                    event_id_range=(pending[0].seq, pending[-1].seq),
+                )
+                self._dispatch_listeners(completion)
             self._metrics.observe(
                 Metrics.EXTRACTION_LATENCY_MS,
                 (time.monotonic() - start) * 1000.0,
