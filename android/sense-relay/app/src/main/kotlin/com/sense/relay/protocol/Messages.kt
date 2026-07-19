@@ -62,6 +62,15 @@ sealed interface ServerMessage {
      *  `sig` is base64 — the device needs raw signature bytes prepended to payload. */
     data class Command(val payload: String, val sig: String) : ServerMessage
 
+    /** P3: a server-initiated proactive answer. The relay forwards it
+     *  into the phone's ChatHistoryStore; the chat screen renders it
+     *  as an AGENT_PROACTIVE ChatMessage. */
+    data class Proactive(
+        val requestId: String,
+        val text: String,
+        val atoms: List<String>,
+    ) : ServerMessage
+
     /** Any type the relay doesn't handle. */
     data class Unknown(val type: String) : ServerMessage
 }
@@ -77,6 +86,13 @@ fun parseServerMessage(text: String): ServerMessage {
         "request_chunks" -> ServerMessage.RequestChunks(int("start") ?: 0, int("end") ?: 0)
         "transcript" -> ServerMessage.Transcript(str("text") ?: "", int("duration_ms") ?: 0)
         "command" -> ServerMessage.Command(str("payload") ?: "", str("sig") ?: "")
+        "proactive" -> ServerMessage.Proactive(
+            requestId = str("request_id") ?: "",
+            text = str("text") ?: "",
+            atoms = (obj["atoms"] as? kotlinx.serialization.json.JsonArray)
+                ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() }
+                ?: emptyList(),
+        )
         else -> ServerMessage.Unknown(str("type") ?: "missing")
     }
 }

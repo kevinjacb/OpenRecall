@@ -70,8 +70,13 @@ class ChatHistoryStore {
  * - AGENT_ERROR: an Error outcome (network failure, server error,
  *   rate limit, etc.). The text is pre-mapped via
  *   [com.sense.relay.core.ui.toDisplayMessage] in the route.
+ * - AGENT_PROACTIVE: a server-initiated message (P3 proactive
+ *   trigger). The server pushed an unsolicited answer based on
+ *   the user's recent activity; the user did not ask a question.
+ *   The chat screen renders a "Proactive" tag so the user knows
+ *   the message wasn't a response to them.
  */
-enum class ChatMessageKind { USER_TEXT, AGENT_ANSWER, AGENT_REFUSE, AGENT_ERROR }
+enum class ChatMessageKind { USER_TEXT, AGENT_ANSWER, AGENT_REFUSE, AGENT_ERROR, AGENT_PROACTIVE }
 
 data class ChatMessage(
     val id: String,

@@ -66,6 +66,10 @@ fun ChatMessageList(
                 ChatMessageKind.AGENT_ERROR -> ErrorMessageBubble(
                     message = msg.text.removePrefix("Error: "),
                 )
+                // P3: server-initiated proactive answer. Same
+                // surface as an AGENT_ANSWER bubble, plus a "Proactive"
+                // tag so the user knows they didn't ask.
+                ChatMessageKind.AGENT_PROACTIVE -> ProactiveMessageBubble(message = msg)
             }
         }
         if (isThinking) {

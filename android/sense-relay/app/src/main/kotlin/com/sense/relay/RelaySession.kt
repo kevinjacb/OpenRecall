@@ -1,5 +1,9 @@
 package com.sense.relay
 
+import com.sense.relay.data.AtomChip
+import com.sense.relay.data.ChatMessage
+import com.sense.relay.data.ChatMessageKind
+import com.sense.relay.data.Role
 import com.sense.relay.protocol.CommandAck
 import com.sense.relay.protocol.Bye
 import com.sense.relay.protocol.Hello
@@ -38,8 +42,40 @@ class RelaySession(val sessionId: String, private val startSeq: Int = 0) {
             is ServerMessage.Transcript ->
                 listOf(RelayAction.Note("transcript: ${msg.text}"))
             is ServerMessage.Ack -> emptyList()       // cursor ack; nothing to relay
+            is ServerMessage.Proactive -> listOf(forwardProactive(msg))
             is ServerMessage.Unknown -> emptyList()   // forward-compatible: ignore
         }
+
+    /**
+     * P3: turn a server-initiated proactive answer into a ChatMessage
+     * and hand it to [RelayAction.ForwardToChatHistory] for the runtime
+     * to append. The wire payload only carries atom ids; the bubble
+     * shows the cited atoms as empty chips (deep-link is the
+     * follow-up slice). The request_id becomes the ChatMessage id so
+     * later server messages about the same proactive (none today, but
+     * the contract is forward-compatible) dedup naturally.
+     */
+    private fun forwardProactive(msg: ServerMessage.Proactive): RelayAction {
+        val chatMessage = ChatMessage(
+            id = msg.requestId,
+            role = Role.AGENT,
+            kind = ChatMessageKind.AGENT_PROACTIVE,
+            text = msg.text,
+            atoms = msg.atoms.map { atomId ->
+                AtomChip(
+                    atomId = atomId,
+                    sessionId = "",
+                    kind = "",
+                    text = "",
+                    createdAt = "",
+                    startMs = 0,
+                    score = 0.0,
+                )
+            },
+            traceRequestId = msg.requestId,
+        )
+        return RelayAction.ForwardToChatHistory(chatMessage)
+    }
 
     /** The device notified a command ack (the command_id bytes) — wrap it as §E. */
     fun onDeviceCommandAck(ackPayload: ByteArray): RelayAction {
@@ -65,5 +101,9 @@ sealed interface RelayAction {
     data class SendServerBinary(val data: ByteArray) : RelayAction
     data class SendServerText(val text: String) : RelayAction
     data class WriteDeviceCommand(val frame: ByteArray) : RelayAction
+    /** P3: append the message to the chat history store (process-singleton
+     *  on [com.sense.relay.data.RepositoryModule.repos]). The runtime's
+     *  RelayService handles this branch. */
+    data class ForwardToChatHistory(val message: ChatMessage) : RelayAction
     data class Note(val message: String) : RelayAction
 }

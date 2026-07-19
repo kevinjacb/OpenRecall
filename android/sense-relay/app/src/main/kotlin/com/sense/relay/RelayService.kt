@@ -9,6 +9,7 @@ import android.content.Intent
 import android.os.IBinder
 import android.util.Log
 import com.sense.relay.ble.SensorLink
+import com.sense.relay.data.RepositoryModule
 import com.sense.relay.net.ServerSocket
 import com.sense.relay.net.wsGatewayUrl
 import com.sense.relay.relay.DeviceState
@@ -178,6 +179,11 @@ class RelayService : Service() {
             is RelayAction.SendServerBinary -> socket?.sendBinary(action.data)
             is RelayAction.SendServerText -> socket?.sendText(action.text)
             is RelayAction.WriteDeviceCommand -> sensor.writeCommand(action.frame)
+            // P3: server-initiated proactive answer. Append to the
+            // process-singleton chat history; the chat screen picks
+            // it up via its StateFlow observer.
+            is RelayAction.ForwardToChatHistory ->
+                RepositoryModule.repos.chatHistoryStore.append(action.message)
             is RelayAction.Note -> Log.i(TAG, action.message)
         }
     }
