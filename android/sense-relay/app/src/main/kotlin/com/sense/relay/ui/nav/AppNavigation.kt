@@ -71,17 +71,31 @@ fun AppNavigation(
             startDestination = Destination.Home.route,
             modifier = Modifier.padding(padding),
         ) {
-            composable(Destination.Home.route) { HomeRoute() }
+            composable(Destination.Home.route) {
+                HomeRoute(
+                    onOpenDevice = {
+                        navController.navigate(Destination.Device.route)
+                    },
+                    onOpenCommands = {
+                        navController.navigate(Destination.Commands.route)
+                    },
+                )
+            }
             composable(Destination.Recordings.route) {
                 RecordingsRoute(
                     onOpen = { id -> navController.navigate(Destination.SessionDetail(id).route) },
                 )
             }
+            // Device + Commands are not in the bottom bar (4-tab
+            // layout, INV-13 compliant); Home has drill-down cards
+            // that navigate here. The composable() entries are kept
+            // so the back stack works: Home -> Device -> back returns
+            // to Home.
             composable(Destination.Device.route) { DeviceRoute() }
             composable(Destination.Commands.route) { CommandsRoute() }
-            // P2-answers user-facing surface (ChatScreen). 6th tab —
-            // INV-13 deviation. Chip taps deep-link to AtomDetail;
-            // the refuse-link deep-links to Memory.
+            // P2-answers user-facing surface (ChatScreen). Chip taps
+            // deep-link to AtomDetail; the refuse-link deep-links to
+            // Memory.
             composable(Destination.Chat.route) {
                 ChatRoute(
                     onOpenAtom = { id ->
@@ -142,9 +156,7 @@ fun AppNavigation(
 private val MAIN_ROUTES = setOf(
     Destination.Home.route,
     Destination.Recordings.route,
-    Destination.Device.route,
-    Destination.Commands.route,
-    Destination.Chat.route,        // P2-answers — 6th tab (INV-13 deviation)
+    Destination.Chat.route,
     Destination.Settings.route,
 )
 

@@ -41,16 +41,33 @@ import com.sense.relay.ui.design.Tone
  * [RepositoryModule] (manual DI — no Hilt in this slice) and renders the
  * stateless [HomeScreen]. Kept separate from [HomeScreen] so the screen
  * itself is preview-/test-friendly (it takes a plain [HomeUiState]).
+ *
+ * The two [onOpenDevice] / [onOpenCommands] callbacks are passed in by
+ * [com.sense.relay.ui.nav.AppNavigation] and translate to
+ * `navController.navigate(Destination.Device.route)` /
+ * `navController.navigate(Destination.Commands.route)`. Device and
+ * Commands lost their bar slots when the 6-tab bottom bar was
+ * collapsed back to 4 tabs (INV-13 compliant); Home is now the
+ * drill-down entry point for both admin surfaces.
  */
 @Composable
-fun HomeRoute(modifier: Modifier = Modifier) {
+fun HomeRoute(
+    onOpenDevice: () -> Unit,
+    onOpenCommands: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val vm: HomeViewModel = viewModel(
         factory = viewModelFactory {
             initializer { HomeViewModel(RepositoryModule.repos.dashboard) }
         },
     )
     val state by vm.state.collectAsState()
-    HomeScreen(state = state, modifier = modifier)
+    HomeScreen(
+        state = state,
+        onOpenDevice = onOpenDevice,
+        onOpenCommands = onOpenCommands,
+        modifier = modifier,
+    )
 }
 
 /**
@@ -59,12 +76,26 @@ fun HomeRoute(modifier: Modifier = Modifier) {
  * and `Failed` (a calm empty state). The `Loaded` branch composes the
  * design system's [MetricCard], [ConnectionBadge], [SectionHeader], and
  * [EmptyState] — no bespoke layout primitives.
+ *
+ * The Loaded branch also surfaces the Device + Commands cards (the
+ * drill-down entry points for the two admin surfaces that are not
+ * in the bottom bar).
  */
 @Composable
-fun HomeScreen(state: HomeUiState, modifier: Modifier = Modifier) {
+fun HomeScreen(
+    state: HomeUiState,
+    onOpenDevice: () -> Unit = {},
+    onOpenCommands: () -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
     when (state) {
         is HomeUiState.Loading -> CenteredSpinner(modifier)
-        is HomeUiState.Loaded -> DashboardContent(state.dashboard, modifier)
+        is HomeUiState.Loaded -> DashboardContent(
+            dashboard = state.dashboard,
+            onOpenDevice = onOpenDevice,
+            onOpenCommands = onOpenCommands,
+            modifier = modifier,
+        )
         is HomeUiState.Failed -> FailedContent(state.reason, modifier)
     }
 }
@@ -101,6 +132,8 @@ private fun FailedContent(reason: String, modifier: Modifier = Modifier) {
 @Composable
 private fun DashboardContent(
     dashboard: DashboardState.Loaded,
+    onOpenDevice: () -> Unit,
+    onOpenCommands: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -125,6 +158,25 @@ private fun DashboardContent(
             subtitle = serverSubtitle,
         )
 
+        // Drill-down entry points for the two admin surfaces that
+        // are not in the bottom bar (Device + Commands). Tapping a
+        // card navigates to the corresponding route via the callback
+        // the AppNavigation wired in.
+        SectionHeader(
+            title = "Device & commands",
+            modifier = Modifier.padding(top = Spacing.sm),
+        )
+        DrillDownCard(
+            title = "Device",
+            subtitle = "BLE link, server status, provisioning",
+            onClick = onOpenDevice,
+        )
+        DrillDownCard(
+            title = "Commands",
+            subtitle = "Active and recent agent requests",
+            onClick = onOpenCommands,
+        )
+
         SectionHeader(
             title = "Recent sessions",
             modifier = Modifier.padding(top = Spacing.sm),
@@ -138,6 +190,40 @@ private fun DashboardContent(
             dashboard.recentSessions.forEach { session ->
                 SessionRow(session)
             }
+        }
+    }
+}
+
+/**
+ * A tappable card for a Home drill-down entry point. Mirrors the
+ * existing [SessionRow] visual rhythm (Card + Column + Text) but
+ * the entire card is clickable.
+ */
+@Composable
+private fun DrillDownCard(
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+        ),
+        onClick = onClick,
+    ) {
+        Column(modifier = Modifier.padding(Spacing.md)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
