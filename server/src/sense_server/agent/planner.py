@@ -43,6 +43,7 @@ from ..contracts.types import (
     PlannerContext,
     PlannerOutcome,
     PlannerResult,
+    Proactive,
     Prompt,
     RejectionReason,
     RetrievedContext,
@@ -129,7 +130,7 @@ class Planner:
                 validator_latency_ms=0,
                 guardrails_latency_ms=0,
             )
-            self._safe_audit(result, prompt=None)
+            self._safe_audit(result, prompt=None, ctx=ctx)
             return result
 
         # 3. BUILD CONTEXT
@@ -179,6 +180,30 @@ class Planner:
         # validator + guardrails + dispatcher, build a result with
         # command_id + command_status.
         if validated.action.kind == AgentActionKind.ISSUE_COMMAND:
+            # P3: a Proactive trigger is FORBIDDEN from issuing a device
+            # command. The user didn't ask — a hallucination on the
+            # proactive path would become a real device action. This is
+            # enforced here (not in CommandValidator, not in
+            # CommandGuardrails, not in CommandDispatcher) as a
+            # type-system guarantee: a reviewer can grep for the
+            # prohibition and find exactly one place.
+            if isinstance(ctx.trigger, Proactive):
+                result = self._build_result(
+                    ctx, retrieved,
+                    outcome=PlannerOutcome.REFUSE,
+                    guarded=GuardedAction(
+                        outcome=_REFUSE,
+                        action=validated.action,
+                        refusal_reason=RejectionReason.PROACTIVE_TRIGGER_CANNOT_ISSUE_COMMAND,
+                        refusal_message="proactive triggers cannot issue device commands",
+                    ),
+                    retrieval_latency_ms=retrieval_latency,
+                    llm_latency_ms=llm_latency,
+                    validator_latency_ms=validator_latency,
+                    guardrails_latency_ms=guardrails_latency,
+                )
+                self._safe_audit(result, prompt=prompt, ctx=ctx)
+                return result
             return await self._dispatch_command(
                 ctx, retrieved, validated, prompt,
                 retrieval_latency, llm_latency, validator_latency, guardrails_latency,
@@ -204,7 +229,7 @@ class Planner:
         )
 
         # 8. AUDIT (H3: best-effort)
-        self._safe_audit(result, prompt=prompt)
+        self._safe_audit(result, prompt=prompt, ctx=ctx)
         return result
 
     async def _dispatch_command(
@@ -349,7 +374,7 @@ class Planner:
             command_id=command_id,
             command_status="PENDING",
         )
-        self._safe_audit(result, prompt=prompt)
+        self._safe_audit(result, prompt=prompt, ctx=ctx)
         return result
 
     def _do_retrieve(self, ctx: PlannerContext) -> RetrievedContext:
@@ -415,7 +440,12 @@ class Planner:
             atoms=retrieved.atoms,
         )
 
-    def _safe_audit(self, result: PlannerResult, prompt: Prompt | None) -> None:
+    def _safe_audit(
+        self,
+        result: PlannerResult,
+        prompt: Prompt | None,
+        ctx: PlannerContext | None = None,
+    ) -> None:
         try:
             entry = {
                 "request_id": result.request_id,
@@ -424,6 +454,14 @@ class Planner:
                 "outcome": result.outcome.value,
                 "latency_ms": result.total_latency_ms,
             }
+            # P3: stamp the trigger source so the audit log can be
+            # filtered by user_request vs proactive. Default to
+            # user_request when ctx is None (legacy / unit-test paths
+            # that don't pass ctx — should not happen in production).
+            if ctx is not None:
+                entry["trigger_source"] = (
+                    "proactive" if isinstance(ctx.trigger, Proactive) else "user_request"
+                )
             if prompt is not None:
                 entry["raw"] = prompt.user
                 entry["prompt_hash"] = _hash_prompt(prompt)

@@ -140,6 +140,9 @@ class RejectionReason(str, Enum):
     NOT_AUTONOMOUS = "not_autonomous"
     NO_SUPPORTING_MEMORY = "no_supporting_memory"
     UNKNOWN = "unknown"
+    # P3: a Proactive trigger is FORBIDDEN from issuing device commands.
+    # Enforced inside Planner.plan before _dispatch_command.
+    PROACTIVE_TRIGGER_CANNOT_ISSUE_COMMAND = "proactive_trigger_cannot_issue_command"
 
 
 class ValidatorContext(BaseModel):

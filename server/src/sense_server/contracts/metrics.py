@@ -38,6 +38,14 @@ class Metrics:
     INDEXING_FAILURES_TOTAL:         Final = "indexing_failures_total"
     EXTRACTION_QUEUE_OVERFLOW_TOTAL: Final = "extraction_queue_overflow_total"
 
+    # P3 proactive trigger
+    PROACTIVE_DELIVERED_TOTAL:          Final = "proactive_delivered_total"
+    PROACTIVE_REFUSED_TOTAL:            Final = "proactive_refused_total"
+    PROACTIVE_PLAN_FAILURE_TOTAL:       Final = "proactive_plan_failure_total"
+    PROACTIVE_SEND_FAILURE_TOTAL:       Final = "proactive_send_failure_total"
+    PROACTIVE_DELIVERY_DROPPED_TOTAL:   Final = "proactive_delivery_dropped_total"
+    EXTRACTION_LISTENER_FAILURE_TOTAL:  Final = "extraction_listener_failure_total"
+
 
 KNOWN_METRICS: Final[frozenset[str]] = frozenset(
     name for name in vars(Metrics).values() if isinstance(name, str)
