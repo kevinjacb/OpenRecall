@@ -15,9 +15,12 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.sense.relay.ui.atom.AtomDetailRoute
+import com.sense.relay.ui.chat.ChatRoute
 import com.sense.relay.ui.commands.CommandsRoute
 import com.sense.relay.ui.device.DeviceRoute
 import com.sense.relay.ui.home.HomeRoute
+import com.sense.relay.ui.memory.MemoryRoute
 import com.sense.relay.ui.recordings.RecordingsRoute
 import com.sense.relay.ui.recordings.SessionDetailRoute
 import com.sense.relay.ui.settings.SettingsRoute
@@ -76,7 +79,44 @@ fun AppNavigation(
             }
             composable(Destination.Device.route) { DeviceRoute() }
             composable(Destination.Commands.route) { CommandsRoute() }
+            // P2-answers user-facing surface (ChatScreen). 6th tab —
+            // INV-13 deviation. Chip taps deep-link to AtomDetail;
+            // the refuse-link deep-links to Memory.
+            composable(Destination.Chat.route) {
+                ChatRoute(
+                    onOpenAtom = { id ->
+                        navController.navigate(Destination.AtomDetail.build(id).route)
+                    },
+                    onOpenMemory = {
+                        navController.navigate(Destination.Memory.route)
+                    },
+                )
+            }
+            // Memory — stub reachable from Chat's refuse-link.
+            // The full MemoryScreen is a follow-up slice.
+            composable(Destination.Memory.route) { MemoryRoute() }
             composable(Destination.Settings.route) { SettingsRoute(onReconfigure) }
+            // AtomDetail — stub reachable from Chat's chip-tap.
+            // The full AtomDetailScreen is a follow-up slice.
+            composable(
+                route = Destination.AtomDetail.ROUTE_TEMPLATE,  // "memory/atom/{atomId}"
+                arguments = listOf(
+                    navArgument(Destination.AtomDetail.ARG_ATOM_ID) {
+                        type = NavType.StringType
+                    },
+                ),
+            ) { backStackEntry ->
+                val atomId = backStackEntry.arguments
+                    ?.getString(Destination.AtomDetail.ARG_ATOM_ID)
+                if (atomId == null) {
+                    StubScreen("Atom not found")
+                } else {
+                    AtomDetailRoute(
+                        atomId = atomId,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+            }
             // SessionDetail: the route has a path segment for the id; the
             // framework parses it via [SessionIdNavType]. The screen reads the
             // id out of `backStackEntry.arguments` and pops back on the back
@@ -104,6 +144,7 @@ private val MAIN_ROUTES = setOf(
     Destination.Recordings.route,
     Destination.Device.route,
     Destination.Commands.route,
+    Destination.Chat.route,        // P2-answers — 6th tab (INV-13 deviation)
     Destination.Settings.route,
 )
 

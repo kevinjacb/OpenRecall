@@ -2,6 +2,7 @@ package com.sense.relay.ui.nav
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
@@ -38,6 +39,17 @@ private val mainDestinations: List<MainTab> = listOf(
     MainTab(Destination.Recordings, "Recordings", Icons.AutoMirrored.Filled.List),
     MainTab(Destination.Device, "Device", Icons.Filled.Info),
     MainTab(Destination.Commands, "Commands", Icons.Filled.PlayArrow),
+    // INV-13 deviation: 6 tabs (spec says 4). Chat was added in
+    // 2026-07 as a P2-answers user-facing surface. The future
+    // consolidation (drop Device or Commands from the bar; deep-link
+    // from Home) is tracked as a follow-up. See
+    // docs/superpowers/specs/2026-07-17-sense-android-chat-screen-design.md
+    // section 5.1.
+    //
+    // Icons.AutoMirrored.Filled.Send (paper plane) is reused for
+    // the tab so the icon matches the input bar's send affordance;
+    // the core icon set does not include a dedicated Chat icon.
+    MainTab(Destination.Chat, "Chat", Icons.AutoMirrored.Filled.Send),
     MainTab(Destination.Settings, "Settings", Icons.Filled.Settings),
 )
 

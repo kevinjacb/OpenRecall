@@ -37,6 +37,17 @@ sealed interface Destination {
     data class AtomDetail(val atomId: String) : Destination {
         override val route: String = "memory/atom/$atomId"
         companion object {
+            /**
+             * Nav-arg key. Named in one place so the AppNavigation
+             * composable() and the route reader stay in sync.
+             */
+            const val ARG_ATOM_ID = "atomId"
+            /**
+             * Route template, used by [com.sense.relay.ui.nav.AppNavigation]
+             * to register the composable() (the templated path with the
+             * nav-arg placeholder).
+             */
+            const val ROUTE_TEMPLATE = "memory/atom/{atomId}"
             fun build(atomId: String) = AtomDetail(atomId)
         }
     }
