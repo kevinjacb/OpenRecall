@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Callable, Union
+from typing import TYPE_CHECKING, Callable, Union
 
 from ..commands.dispatcher import CommandDispatcher
 from ..events.model import CaptureEvent
@@ -36,6 +36,9 @@ from ..protocol.messages import (
 from ..sessions.index import SessionIndex
 from ..sessions.lifecycle import SessionLifecycle
 
+if TYPE_CHECKING:
+    from ..memory.extraction_worker import ExtractionEnqueuer
+
 Outbound = Union[Ack, RequestChunks, TranscriptMsg, CommandMessage]
 PipelineFactory = Callable[[int], AudioIngestPipeline]
 
@@ -54,12 +57,14 @@ class GatewayCore:
         dispatcher: CommandDispatcher | None = None,
         session_index: SessionIndex | None = None,
         session_lifecycle: SessionLifecycle | None = None,
+        enqueuer: "ExtractionEnqueuer | None" = None,
     ) -> None:
         self._factory = pipeline_factory
         self._store = event_store
         self._dispatcher = dispatcher
         self._session_index = session_index
         self._session_lifecycle = session_lifecycle
+        self._enqueuer = enqueuer
         self._session_id: str | None = None
         self._pipeline: AudioIngestPipeline | None = None
         self._event_seq = 0  # per-session monotonic event index
@@ -159,6 +164,15 @@ class GatewayCore:
                 stored = self._store.append(event)
             if stored and self._session_index is not None:
                 self._session_index.record(event)
+            # M4.3 wiring: every successful event append enqueues the
+            # session for the background ExtractionWorker. The enqueuer
+            # is bounded and dedupes, so this is safe per-transcript.
+            # Without this seam the worker loop sat idle forever, the
+            # atom table stayed empty, and POST /agent always refused
+            # with NO_SUPPORTING_MEMORY. None-defaulted for back-compat
+            # with tests that don't wire a worker.
+            if stored and self._enqueuer is not None and self._session_id is not None:
+                self._enqueuer.enqueue(self._session_id)
             self._event_seq += 1
             self._cum_ms += t.duration_ms
             logger.info(

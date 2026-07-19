@@ -24,6 +24,7 @@ from .core import GatewayCore, PipelineFactory
 if TYPE_CHECKING:
     from ..commands.dispatcher import CommandDispatcher
     from ..events.store import EventStore
+    from ..memory.extraction_worker import ExtractionEnqueuer
     from ..sessions.index import SessionIndex
     from ..sessions.lifecycle import SessionLifecycle
 
@@ -130,6 +131,7 @@ async def serve(
     token: str | None = None,
     session_index: "SessionIndex | None" = None,
     session_lifecycle: "SessionLifecycle | None" = None,
+    enqueuer: "ExtractionEnqueuer | None" = None,
 ) -> None:
     """Run the gateway WebSocket server until cancelled.
 
@@ -169,6 +171,7 @@ async def serve(
             dispatcher=dispatcher,
             session_index=session_index,
             session_lifecycle=session_lifecycle,
+            enqueuer=enqueuer,
         )
         try:
             async for message in ws:

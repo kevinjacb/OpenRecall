@@ -15,6 +15,8 @@ import pytest
 from sense_server.agent.metrics import InMemoryMetricsRecorder
 from sense_server.events.model import CaptureEvent
 from sense_server.events.store import InMemoryEventStore
+from sense_server.gateway.core import GatewayCore
+from sense_server.ingest.pipeline import Transcript
 from sense_server.memory.atom import MemoryAtom
 from sense_server.memory.embeddings import Embedder
 from sense_server.memory.extract import ExtractedMemory, Extractor
@@ -104,3 +106,40 @@ async def test_enqueuer_overflow_with_small_capacity():
     enq.enqueue("a")
     enq.enqueue("a")
     assert metrics.counter(Metrics_or := __import__("sense_server.contracts.metrics", fromlist=["Metrics"]).Metrics.EXTRACTION_QUEUE_OVERFLOW_TOTAL) == 2
+
+
+def test_gateway_core_enqueues_after_emit():
+    """After _emit stores a transcript event, the enqueuer should see
+    the session id. The pipeline factory and the audio hot path are
+    bypassed: we drive _emit directly so this is a pure unit test of
+    the enqueue side-effect.
+
+    This is the binding seam for the "memory never gets extracted"
+    bug fix: the hot path was writing events to the event store and
+    the session index but never enqueueing the session for the
+    background worker, so the atom table stayed empty.
+    """
+    events = InMemoryEventStore()
+    metrics = InMemoryMetricsRecorder()
+    enq = ExtractionEnqueuer(capacity=10, metrics=metrics)
+
+    # The factory is never invoked (we don't call Hello), so a no-op
+    # suffices. This keeps the test pure and avoids importing the
+    # heavy Opus / whisper deps.
+    noop_factory = lambda _start_seq: None  # noqa: E731
+    core = GatewayCore(
+        pipeline_factory=noop_factory,
+        event_store=events,
+        enqueuer=enq,  # NEW PARAM — this is the seam we're testing
+    )
+    # Set the bound state without going through Hello (we don't need
+    # a real AudioIngestPipeline for this test).
+    core._session_id = "s1"
+    core._pipeline = None
+
+    # Drive _emit with a fake transcript; the method only reads
+    # self._session_id, self._store, self._session_index, and (after
+    # this fix) self._enqueuer.
+    core._emit([Transcript(text="hello world", duration_ms=1500)])
+
+    assert enq.qsize() == 1, f"expected 1 enqueued, got {enq.qsize()}"

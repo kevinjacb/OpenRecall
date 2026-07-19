@@ -236,6 +236,7 @@ def main() -> None:
                 token=token,
                 session_index=session_index,
                 session_lifecycle=session_lifecycle,
+                enqueuer=enqueuer,
             )
         finally:
             await worker.stop()
