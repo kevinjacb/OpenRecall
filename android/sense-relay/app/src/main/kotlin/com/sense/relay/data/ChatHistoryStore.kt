@@ -55,9 +55,35 @@ class ChatHistoryStore {
     fun unflushedCount(): Int = unflushedDelta
 }
 
+/**
+ * Variant of a [ChatMessage]. The screen's [com.sense.relay.ui.chat.ChatMessageList]
+ * dispatches on this with an exhaustive `when` — adding a new
+ * variant is a compile error in the screen, which is the right
+ * failure mode.
+ *
+ * - USER_TEXT: a message the user typed.
+ * - AGENT_ANSWER: a Return or ReturnWithUncertainty outcome from the
+ *   agent. Carries [ChatMessage.atoms] (the cited memory atoms).
+ * - AGENT_REFUSE: a Refuse outcome (no supporting memory). The
+ *   screen renders this as the friendly-copy + "browse memory"
+ *   link variant.
+ * - AGENT_ERROR: an Error outcome (network failure, server error,
+ *   rate limit, etc.). The text is pre-mapped via
+ *   [com.sense.relay.core.ui.toDisplayMessage] in the route.
+ */
+enum class ChatMessageKind { USER_TEXT, AGENT_ANSWER, AGENT_REFUSE, AGENT_ERROR }
+
 data class ChatMessage(
     val id: String,
     val role: Role,
+    /**
+     * The variant of this message. Defaults to [ChatMessageKind.USER_TEXT]
+     * so the user-typed construction site in
+     * [com.sense.relay.ui.chat.ChatViewModel.ask] doesn't need to
+     * set it explicitly. The three agent-outcome branches set the
+     * appropriate AGENT_* value.
+     */
+    val kind: ChatMessageKind = ChatMessageKind.USER_TEXT,
     val text: String,
     val atoms: List<AtomChip> = emptyList(),
     val traceRequestId: String = "",
