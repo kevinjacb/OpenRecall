@@ -20,9 +20,10 @@ from sense_server.contracts.types import (
     PlannerResult,
     Prompt,
     RejectionReason,
-    RetrieverContext,
     RetrievedContext,
+    RetrieverContext,
     ScoredAtom,
+    UserRequest,
     ValidatedAction,
     ValidatorContext,
 )
@@ -78,9 +79,10 @@ class FakeAgentLLM:
 
 
 def _ctx(extra: dict | None = None) -> PlannerContext:
+    # P3: use the new Trigger envelope (UserRequest).
     base = dict(
         request_id="req-1",
-        trigger_text="hello",
+        trigger=UserRequest(request_id="req-1", text="hello"),
         session_id="s1",
     )
     if extra:

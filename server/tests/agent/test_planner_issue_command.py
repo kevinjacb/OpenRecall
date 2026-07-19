@@ -52,6 +52,7 @@ from sense_server.contracts.types import (
     RejectionReason,
     RetrievedContext,
     ScoredAtom,
+    UserRequest,
 )
 
 
@@ -102,9 +103,10 @@ class FakeAgentLLM(AgentLLM):
 
 
 def _ctx() -> PlannerContext:
+    # P3: use the new Trigger envelope (UserRequest).
     return PlannerContext(
         request_id="req-1",
-        trigger_text="record the next 10s",
+        trigger=UserRequest(request_id="req-1", text="record the next 10s"),
         session_id="s1",
     )
 

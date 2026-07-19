@@ -11,6 +11,7 @@ from sense_server.contracts.types import (
     Prompt,
     RetrievedContext,
     ScoredAtom,
+    UserRequest,
 )
 
 
@@ -29,7 +30,7 @@ def _atom(atom_id: str, text: str, session_id: str = "s1") -> ScoredAtom:
 def test_context_builder_marks_prompt_versions():
     rc = RetrievedContext(atoms=(_atom("a1", "x"),))
     cb = ContextBuilder()
-    prompt = cb.build("hello", rc, capabilities=CapabilitySet())
+    prompt = cb.build(UserRequest(request_id="req-test", text="hello"), rc, capabilities=CapabilitySet())
     assert prompt.system_prompt_version == "v1"
     assert prompt.context_builder_version == "v1"
 
@@ -40,7 +41,7 @@ def test_context_builder_includes_retrieved_atoms_with_delimiters():
         _atom("a2", "beta"),
     ))
     cb = ContextBuilder()
-    prompt = cb.build("what?", rc, capabilities=CapabilitySet())
+    prompt = cb.build(UserRequest(request_id="req-test", text="what?"), rc, capabilities=CapabilitySet())
     # The system prompt carries the atom block with [id] delimiters.
     assert "[a1]" in prompt.system
     assert "[a2]" in prompt.system
@@ -55,7 +56,7 @@ def test_context_builder_includes_capabilities_in_system():
     rc = RetrievedContext(atoms=())
     cb = ContextBuilder()
     caps = CapabilitySet(camera=True, microphone=False)
-    prompt = cb.build("x", rc, capabilities=caps)
+    prompt = cb.build(UserRequest(request_id="req-test", text="x"), rc, capabilities=caps)
     assert "camera" in prompt.system
     assert "microphone" in prompt.system
 
@@ -66,15 +67,15 @@ def test_context_builder_no_supporting_memory_short_circuits():
     ``no_memory`` rather than a hallucinated answer."""
     rc = RetrievedContext(atoms=())
     cb = ContextBuilder()
-    prompt = cb.build("x", rc, capabilities=CapabilitySet())
+    prompt = cb.build(UserRequest(request_id="req-test", text="x"), rc, capabilities=CapabilitySet())
     assert "no supporting" in prompt.system.lower() or "no relevant" in prompt.system.lower()
 
 
 def test_context_builder_prompt_is_pure_for_same_inputs():
     rc = RetrievedContext(atoms=(_atom("a1", "x"),))
     cb = ContextBuilder()
-    p1 = cb.build("x", rc, capabilities=CapabilitySet())
-    p2 = cb.build("x", rc, capabilities=CapabilitySet())
+    p1 = cb.build(UserRequest(request_id="req-test", text="x"), rc, capabilities=CapabilitySet())
+    p2 = cb.build(UserRequest(request_id="req-test", text="x"), rc, capabilities=CapabilitySet())
     # Pydantic frozen model + identical inputs => identical objects.
     assert p1.system == p2.system
     assert p1.user == p2.user

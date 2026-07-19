@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Annotated, Any, Literal, Protocol, Union, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -317,6 +317,45 @@ class PlannerOutcome(str, Enum):
     ISSUE_COMMAND = "issue_command"            # autonomous command dispatch
 
 
+class UserRequest(BaseModel):
+    """The user asked a question via ``POST /agent``.
+
+    ``request_id`` is the inbound request's id, preserved so the audit
+    log can correlate the trigger with the result. P3 (proactive
+    trigger) introduces :class:`Proactive` as the alternative
+    source — see :class:`Trigger`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    kind: Literal["user_request"] = "user_request"
+    request_id: str
+    text: str
+
+
+class Proactive(BaseModel):
+    """The server-initiated trigger (P3 proactive).
+
+    A session just finished extracting new atoms, and the planner is
+    being asked to look for something worth surfacing without the
+    user having asked a question. ``event_id`` identifies the
+    transcript event that triggered the extraction; ``transcript`` is
+    the raw text (v1 sends an empty string — the planner retrieves
+    from session memory; capturing the exact transcript is a
+    follow-up). A Proactive trigger is FORBIDDEN from issuing device
+    commands — enforced inside :meth:`Planner.plan` (not in
+    :class:`CommandValidator` or :class:`CommandGuardrails`).
+    """
+
+    model_config = ConfigDict(frozen=True)
+    kind: Literal["proactive"] = "proactive"
+    request_id: str
+    event_id: str
+    transcript: str
+
+
+Trigger = Annotated[Union[UserRequest, Proactive], Field(discriminator="kind")]
+
+
 class PlannerContext(BaseModel):
     """The single input the Planner needs from the HTTP layer.
 
@@ -324,11 +363,17 @@ class PlannerContext(BaseModel):
     reads the wire shape. This is the *narrow context* (M2) — the
     Planner doesn't know about the HTTP layer, the user, or anything
     outside the trigger + session + request_id.
+
+    The trigger is a tagged union: :class:`UserRequest` (the user
+    asked a question) vs :class:`Proactive` (the server noticed a
+    session just finished extracting). The Planner's behavior is
+    source-agnostic except for the proactive trigger's
+    ISSUE_COMMAND prohibition (see :mod:`sense_server.agent.planner`).
     """
 
     model_config = ConfigDict(frozen=True)
     request_id: str
-    trigger_text: str
+    trigger: Trigger
     session_id: str | None = None
     limit: int = 10
 

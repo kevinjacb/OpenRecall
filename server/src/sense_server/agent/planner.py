@@ -47,6 +47,7 @@ from ..contracts.types import (
     RejectionReason,
     RetrievedContext,
     ScoredAtom,
+    UserRequest,
     ValidatedAction,
     ValidatorContext,
 )
@@ -133,8 +134,12 @@ class Planner:
 
         # 3. BUILD CONTEXT
         capabilities = self._caps.capabilities()
+        # P3: pass the Trigger envelope. The ContextBuilder is
+        # source-agnostic; for UserRequest it uses trigger.text, for
+        # Proactive it uses trigger.transcript. The proactive
+        # ISSUE_COMMAND prohibition is enforced later in this method.
         prompt = self._context_builder.build(
-            ctx.trigger_text, retrieved, capabilities
+            ctx.trigger, retrieved, capabilities
         )
 
         # 4. REASON (async — H4)
@@ -348,9 +353,16 @@ class Planner:
         return result
 
     def _do_retrieve(self, ctx: PlannerContext) -> RetrievedContext:
+        # P3: the retriever only needs a string to embed. For
+        # UserRequest the trigger text is the question; for Proactive
+        # the v1 transcript is empty so the empty-string embedding
+        # pulls from the session (the retriever handles that).
+        query_text = (
+            ctx.trigger.text if isinstance(ctx.trigger, UserRequest) else ctx.trigger.transcript
+        )
         return self._retriever.retrieve(
             type("RC", (), {
-                "query_text": ctx.trigger_text,
+                "query_text": query_text,
                 "limit": ctx.limit,
                 "session_id": ctx.session_id,
             })()

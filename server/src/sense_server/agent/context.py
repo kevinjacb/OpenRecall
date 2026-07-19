@@ -13,6 +13,8 @@ from ..contracts.types import (
     CapabilitySet,
     Prompt,
     RetrievedContext,
+    Trigger,
+    UserRequest,
 )
 
 
@@ -64,7 +66,7 @@ class ContextBuilder:
 
     def build(
         self,
-        trigger_text: str,
+        trigger: Trigger,
         retrieved: RetrievedContext,
         capabilities: CapabilitySet,
     ) -> Prompt:
@@ -76,6 +78,12 @@ class ContextBuilder:
             # If we have no atoms, append the explicit "no_memory" hint
             # so the LLM does not invent.
             system = system + "\n" + _V1_NO_MEMORY_LINE + "\n"
+        # P3: source-agnostic — the union's text is the trigger text for
+        # UserRequest, the raw transcript for Proactive. v1 sends empty
+        # transcript for proactive; the planner retrieves from session memory.
+        trigger_text = (
+            trigger.text if isinstance(trigger, UserRequest) else trigger.transcript
+        )
         user = _format_user(trigger_text, retrieved)
         return Prompt(
             system=system,

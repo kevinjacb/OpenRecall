@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from aiohttp import web
 
 from ...contracts.id_generator import UuidIdGenerator
-from ...contracts.types import PlannerContext
+from ...contracts.types import PlannerContext, UserRequest
 from .dto import AgentRequestDTO, AgentResponseDTO, ErrorEnvelopeDTO
 from .mapper import map_planner_result_to_dto
 
@@ -33,9 +33,12 @@ async def post_agent(request: web.Request) -> web.Response:
     # imports any domain class besides PlannerContext + the DTOs.
     planner = request.app["sense_planner"]
     request_id = dto.schema_version and _new_request_id(request.app)
+    # P3: wrap the inbound text in a UserRequest trigger envelope.
+    # The proactive trigger is constructed by the extraction worker
+    # listener; the HTTP layer only ever builds UserRequest.
     ctx = PlannerContext(
         request_id=request_id,
-        trigger_text=dto.text,
+        trigger=UserRequest(request_id=request_id, text=dto.text),
         session_id=dto.session_id,
         limit=dto.limit,
     )
