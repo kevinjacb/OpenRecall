@@ -156,7 +156,7 @@ def main() -> None:
     from sense_server.agent.intent import OpenAICompatibleAgentLLM
     from sense_server.agent.planner import Planner
     from sense_server.agent.validator import StrictJSONValidator
-    from sense_server.agent.validator_command import CommandValidator
+    from sense_server.agent.validator_command import StrictCommandValidator
     from sense_server.contracts.id_generator import UuidIdGenerator
     from sense_server.memory.retrieval import Retriever
     from sense_server.memory.scoring import SimRecencyScorer
@@ -200,7 +200,7 @@ def main() -> None:
         # high confidence will still be refused with
         # "device is not connected to the relay" — a documented
         # accepted behavior for this slice.
-        command_validator=CommandValidator(),
+        command_validator=StrictCommandValidator(),
         command_guardrails=StrictCommandGuardrails(
             confidence_autonomous=agent_config.guardrails.confidence_autonomous,
         ),
