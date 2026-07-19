@@ -37,6 +37,7 @@ from sense_server.agent.metrics import InMemoryMetricsRecorder
 from sense_server.auth import load_or_create_token
 from sense_server.commands.dispatcher import CommandDispatcher
 from sense_server.commands.signing import load_or_create_signer
+from sense_server.contracts.clock import SystemClock
 from sense_server.events.store import SqliteEventStore
 from sense_server.gateway.adapter import build_pipeline_factory, serve
 from sense_server.gateway.core import ProactiveOutbox
@@ -156,7 +157,6 @@ def main() -> None:
     from sense_server.agent.planner import Planner
     from sense_server.agent.validator import StrictJSONValidator
     from sense_server.agent.validator_command import CommandValidator
-    from sense_server.contracts.clock import SystemClock
     from sense_server.contracts.id_generator import UuidIdGenerator
     from sense_server.memory.retrieval import Retriever
     from sense_server.memory.scoring import SimRecencyScorer
