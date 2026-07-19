@@ -5,6 +5,7 @@ import com.sense.relay.data.AgentRepository
 import com.sense.relay.data.AtomChip
 import com.sense.relay.data.ChatHistoryStore
 import com.sense.relay.data.ChatMessage
+import com.sense.relay.data.ChatMessageKind
 import com.sense.relay.data.Role
 import com.sense.relay.core.SenseLog
 import com.sense.relay.core.TraceContext
@@ -37,6 +38,15 @@ class ChatViewModel(
 
     private val _draft = MutableStateFlow(savedState.get<String>(KEY_DRAFT) ?: "")
     val draft: StateFlow<String> = _draft.asStateFlow()
+
+    /**
+     * Passthrough to [ChatHistoryStore.messages]. The screen collects
+     * this and dispatches each message to the right bubble Composable
+     * based on [ChatMessage.kind]. Added for the ChatScreen Composable
+     * (P2-answers user-facing surface). The store is the source of
+     * truth; this property is a one-line accessor.
+     */
+    val messages: StateFlow<List<ChatMessage>> = store.messages
 
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
@@ -72,6 +82,7 @@ class ChatViewModel(
                         val agent = ChatMessage(
                             id = "msg-${System.currentTimeMillis()}-agent",
                             role = Role.AGENT,
+                            kind = ChatMessageKind.AGENT_ANSWER,
                             text = outcome.text,
                             atoms = outcome.atoms.map {
                                 com.sense.relay.data.AtomChip(
@@ -99,6 +110,7 @@ class ChatViewModel(
                         val msg = ChatMessage(
                             id = "msg-${System.currentTimeMillis()}-refuse",
                             role = Role.AGENT,
+                            kind = ChatMessageKind.AGENT_REFUSE,
                             text = outcome.reason.replace("_", " ").replaceFirstChar { it.uppercase() },
                             traceRequestId = outcome.trace.requestId,
                             traceRetrievalId = outcome.trace.retrievalTraceId ?: "",
@@ -115,6 +127,7 @@ class ChatViewModel(
                         val msg = ChatMessage(
                             id = "msg-${System.currentTimeMillis()}-error",
                             role = Role.AGENT,
+                            kind = ChatMessageKind.AGENT_ERROR,
                             text = "Error: ${outcome.message}",
                             traceRequestId = outcome.trace.requestId,
                         )

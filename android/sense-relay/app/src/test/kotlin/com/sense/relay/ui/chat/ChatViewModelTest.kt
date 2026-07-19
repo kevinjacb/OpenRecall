@@ -5,6 +5,7 @@ import com.sense.relay.data.AgentOutcome
 import com.sense.relay.data.AgentOutcomeKind
 import com.sense.relay.data.AgentRepository
 import com.sense.relay.data.ChatHistoryStore
+import com.sense.relay.data.ChatMessageKind
 import com.sense.relay.data.Role
 import com.sense.relay.http.ErrorCode
 import kotlinx.coroutines.Dispatchers
@@ -55,8 +56,10 @@ class ChatViewModelTest {
         val msgs = store.messages.value
         assertEquals(2, msgs.size)
         assertEquals(Role.USER, msgs[0].role)
+        assertEquals(ChatMessageKind.USER_TEXT, msgs[0].kind)
         assertEquals("what?", msgs[0].text)
         assertEquals(Role.AGENT, msgs[1].role)
+        assertEquals(ChatMessageKind.AGENT_ANSWER, msgs[1].kind)
         assertEquals("answer: what?", msgs[1].text)
         assertEquals(1, msgs[1].atoms.size)
     }
@@ -86,6 +89,7 @@ class ChatViewModelTest {
         advanceUntilIdle()
         val msgs = store.messages.value
         assertEquals(2, msgs.size)
+        assertEquals(ChatMessageKind.AGENT_REFUSE, msgs[1].kind)
         assertTrue(msgs[1].text.contains("No supporting", ignoreCase = true))
     }
 
@@ -105,6 +109,7 @@ class ChatViewModelTest {
         advanceUntilIdle()
         val msgs = store.messages.value
         assertEquals(2, msgs.size)
+        assertEquals(ChatMessageKind.AGENT_ERROR, msgs[1].kind)
         assertTrue(msgs[1].text.contains("boom", ignoreCase = true))
     }
 
