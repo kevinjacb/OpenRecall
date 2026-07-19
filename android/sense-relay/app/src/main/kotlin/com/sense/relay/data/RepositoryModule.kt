@@ -48,6 +48,9 @@ object RepositoryModule {
         val dashboard: DashboardRepository,
         val relayController: RelayController,
         val commandRepository: CommandRepository,
+        // P2-answers user-facing surface (ChatScreen):
+        val agentRepository: AgentRepository,
+        val chatHistoryStore: ChatHistoryStore,
     )
 
     lateinit var repos: Repositories
@@ -94,14 +97,32 @@ object RepositoryModule {
                 CommandApi(baseUrl = c.baseUrl, token = c.token)
             },
         )
+        // P2-answers (ChatScreen): same apiProvider pattern as the
+        // command repository. Resolves the current OkHttp client +
+        // bearer token on every /agent call, so a re-provision takes
+        // effect on the next request without rebuilding the repository.
+        val agentRepository = AgentRepository(
+            apiProvider = {
+                val c = clientProvider()
+                AgentApi(baseUrl = c.baseUrl, token = c.token, client = c.client)
+            },
+        )
+        // ChatHistoryStore is a process-singleton (not per-ViewModel) so
+        // a deep-link hop (Chat -> AtomDetail -> back) doesn't lose
+        // history. The future DataStore-backed version keeps the same
+        // accessor and persists across process restarts.
+        val chatHistoryStore = ChatHistoryStore()
+        val device = DeviceRepositoryImpl(RelayController)
         repos = Repositories(
             configuration = configuration,
             session = session,
-            device = DeviceRepositoryImpl(RelayController),
+            device = device,
             status = status,
             dashboard = dashboard,
             relayController = RelayController,
             commandRepository = commandRepository,
+            agentRepository = agentRepository,
+            chatHistoryStore = chatHistoryStore,
         )
     }
 }

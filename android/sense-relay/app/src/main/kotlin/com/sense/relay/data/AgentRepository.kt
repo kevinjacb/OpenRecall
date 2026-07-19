@@ -11,8 +11,18 @@ import kotlinx.coroutines.withContext
  * Domain layer for the agent endpoint. The single importer of
  * [HttpApiError] for the read path (INV-11). The VM / UI see only
  * [AgentOutcome] — never the raw HTTP error.
+ *
+ * [apiProvider] is a suspend factory that returns the current
+ * [AgentApi]. It exists so the repository tracks the latest
+ * configured server (the [AgentApi] carries the OkHttp client +
+ * bearer token at construction time). The repository resolves the
+ * current [AgentApi] on every call, so re-provisioning takes effect
+ * on the next /agent request without rebuilding the repository.
  */
-open class AgentRepository(private val api: AgentApi) {
+open class AgentRepository(private val apiProvider: suspend () -> AgentApi) {
+
+    /** Test/convenience constructor: a repository pinned to a single [AgentApi]. */
+    constructor(api: AgentApi) : this(apiProvider = { api })
 
     open suspend fun ask(
         sessionId: String?,
@@ -20,7 +30,7 @@ open class AgentRepository(private val api: AgentApi) {
         limit: Int = 10,
     ): AgentOutcome = withContext(Dispatchers.IO) {
         val dto: AgentResponseDto = try {
-            api.postAgent(sessionId, text, limit)
+            apiProvider().postAgent(sessionId, text, limit)
         } catch (e: HttpApiError) {
             return@withContext AgentOutcome.Error(
                 code = e.code,
