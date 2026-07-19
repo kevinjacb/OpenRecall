@@ -41,12 +41,16 @@ fun ChatScreen(
     Column(modifier = modifier.fillMaxSize()) {
         SenseTopBar(state = TopBarState(title = "Chat"))
         if (messages.isEmpty()) {
+            // weight(1f) — takes the remaining vertical space between
+            // the top bar and the input bar. fillMaxSize() would consume
+            // the whole column and push the ChatInputBar off-screen
+            // (the visible bug from the manual smoke test on 2026-07-19).
             EmptyState(
                 title = "Ask the agent",
                 body = "Try \"what did I say about X yesterday?\" — answers cite " +
                     "the memory atoms they used.",
                 modifier = Modifier
-                    .fillMaxSize()
+                    .weight(1f)
                     .testTag("chat_empty"),
             )
         } else {
