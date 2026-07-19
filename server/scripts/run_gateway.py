@@ -144,9 +144,11 @@ def main() -> None:
     from sense_server.agent.config import load_agent_config
     from sense_server.agent.context import ContextBuilder
     from sense_server.agent.guardrails import ConfidenceGateGuardrails
+    from sense_server.agent.guardrails_command import StrictCommandGuardrails
     from sense_server.agent.intent import OpenAICompatibleAgentLLM
     from sense_server.agent.planner import Planner
     from sense_server.agent.validator import StrictJSONValidator
+    from sense_server.agent.validator_command import CommandValidator
     from sense_server.contracts.clock import SystemClock
     from sense_server.contracts.id_generator import UuidIdGenerator
     from sense_server.memory.retrieval import Retriever
@@ -178,6 +180,24 @@ def main() -> None:
         capability_provider=ConstantCapabilityProvider(),
         clock=SystemClock(),
         ids=UuidIdGenerator(),
+        # P2-commands command-path wiring. Without these three, the
+        # Planner's _dispatch_command guard refuses every issue_command
+        # with "command dispatch is not configured on this server."
+        # StrictCommandGuardrails reads the live capability + resource
+        # snapshot at check-time (per-call inside the Planner), so
+        # confidence_autonomous is the only value we need to seed.
+        # NOTE: ConstantCapabilityProvider returns
+        # DeviceResourceStatus(relay_connected=False) by default; the
+        # device-status characteristic that flips this flag lands in
+        # the P3 BLE bring-up slice. Until then, an issue_command with
+        # high confidence will still be refused with
+        # "device is not connected to the relay" — a documented
+        # accepted behavior for this slice.
+        command_validator=CommandValidator(),
+        command_guardrails=StrictCommandGuardrails(
+            confidence_autonomous=agent_config.guardrails.confidence_autonomous,
+        ),
+        dispatcher=dispatcher,
     )
 
     token = load_or_create_token(args.token_file)
