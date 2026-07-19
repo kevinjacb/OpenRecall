@@ -36,6 +36,11 @@ def fake_factory(start_seq: int) -> AudioIngestPipeline:
         reassembler=SessionReassembler(start_seq=start_seq),
         decoder=FakeDecoder(),
         transcriber=FakeTranscriber(),
+        # hop_ms == window_ms produces one transcript per full window
+        # (matches the pre-streaming test expectation: 5 frames in one
+        # 100ms window -> one 100ms transcript). The streaming pipeline
+        # would otherwise emit hop-sized transcripts, not window-sized.
+        hop_ms=100,
         window_ms=100,  # 5 frames per window
         sample_rate=16000,
     )
