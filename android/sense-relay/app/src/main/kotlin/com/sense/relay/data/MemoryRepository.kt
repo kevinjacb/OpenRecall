@@ -6,8 +6,21 @@ import com.sense.relay.http.HttpApiError
 /**
  * Domain layer for the memory endpoints. Maps [HttpApiError] to a
  * sealed [MemoryOutcome] so the VM sees only domain types.
+ *
+ * [apiProvider] is a suspend factory that returns the current
+ * [MemoryApi] (i.e. with the live (baseUrl, token, client) resolved
+ * from the shared [com.sense.relay.http.SenseHttpClient] provider).
+ * The provider is called on every search/sessionAtoms, so a
+ * re-provision in Settings takes effect on the next /memory request
+ * without rebuilding the repository. This mirrors [CommandRepository].
  */
-class MemoryRepository(private val api: MemoryApi) {
+open class MemoryRepository(private val apiProvider: suspend () -> MemoryApi) {
+
+    /**
+     * Convenience secondary constructor for unit tests that pass a
+     * single stub [MemoryApi]. Mirrors [CommandRepository].
+     */
+    constructor(api: MemoryApi) : this(apiProvider = { api })
 
     suspend fun search(
         query: String,
@@ -15,7 +28,7 @@ class MemoryRepository(private val api: MemoryApi) {
         limit: Int = 10,
     ): MemoryOutcome {
         return try {
-            val dto = api.search(query, sessionId, limit)
+            val dto = apiProvider().search(query, sessionId, limit)
             MemoryOutcome.Success(
                 atoms = dto.atoms.map { it.toDomain() },
                 query = dto.query,
@@ -28,7 +41,7 @@ class MemoryRepository(private val api: MemoryApi) {
 
     suspend fun sessionAtoms(sessionId: String): MemoryOutcome {
         return try {
-            val dto = api.sessionAtoms(sessionId)
+            val dto = apiProvider().sessionAtoms(sessionId)
             MemoryOutcome.Success(
                 atoms = dto.atoms.map { it.toDomain() },
                 query = "",

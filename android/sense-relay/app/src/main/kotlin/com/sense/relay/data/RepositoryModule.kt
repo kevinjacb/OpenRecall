@@ -37,8 +37,10 @@ object RepositoryModule {
      * The aggregated repository surface. Holds every cross-cutting
      * dependency the rest of the app reads: configuration, sessions,
      * device, server status, the aggregated dashboard, the relay
-     * state controller itself, and the command lifecycle (exposed
-     * so the Commands screen can observe + ack).
+     * state controller itself, the command lifecycle (exposed
+     * so the Commands screen can observe + ack), the agent / chat
+     * surface (ChatScreen + ChatHistoryStore), and the memory
+     * browse surface (MemoryScreen).
      */
     data class Repositories(
         val configuration: ConfigurationRepository,
@@ -51,6 +53,8 @@ object RepositoryModule {
         // P2-answers user-facing surface (ChatScreen):
         val agentRepository: AgentRepository,
         val chatHistoryStore: ChatHistoryStore,
+        // P1 memory-browse user-facing surface (MemoryScreen):
+        val memoryRepository: MemoryRepository,
     )
 
     lateinit var repos: Repositories
@@ -112,6 +116,17 @@ object RepositoryModule {
         // history. The future DataStore-backed version keeps the same
         // accessor and persists across process restarts.
         val chatHistoryStore = ChatHistoryStore()
+        // P1 memory-browse surface (MemoryScreen): same apiProvider
+        // pattern as the command + agent repositories. Resolves the
+        // current OkHttp client + bearer token on every /memory call,
+        // so a re-provision takes effect on the next search without
+        // rebuilding the repository.
+        val memoryRepository = MemoryRepository(
+            apiProvider = {
+                val c = clientProvider()
+                MemoryApi(baseUrl = c.baseUrl, token = c.token, client = c.client)
+            },
+        )
         val device = DeviceRepositoryImpl(RelayController)
         repos = Repositories(
             configuration = configuration,
@@ -123,6 +138,7 @@ object RepositoryModule {
             commandRepository = commandRepository,
             agentRepository = agentRepository,
             chatHistoryStore = chatHistoryStore,
+            memoryRepository = memoryRepository,
         )
     }
 }
