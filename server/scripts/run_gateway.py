@@ -101,9 +101,14 @@ def main() -> None:
     # through to the streaming transcriber.
 
     # Phase 3 dependencies: the index backs `/sessions`, the lifecycle backs
-    # `/status`'s active_sessions counter. Both are process-wide and in-memory;
-    # a restart rebuilds the index from the durable store on demand.
+    # `/status`'s active_sessions counter. Both are process-wide and in-memory.
+    # Cold start: rebuild the index from the durable event store so a
+    # gateway restart does not 404 every session that was captured before
+    # the restart. The live record() path keeps the index in sync after
+    # the rebuild; the two are independent and safe to interleave under
+    # SessionIndex's existing lock.
     session_index = SessionIndex()
+    session_index.rebuild_from_store(store)
     session_lifecycle = SessionLifecycle()
 
     # Memory pipeline (M4.4 wiring): the gateway offloads extraction +
