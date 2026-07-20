@@ -31,7 +31,7 @@ def test_context_builder_marks_prompt_versions():
     rc = RetrievedContext(atoms=(_atom("a1", "x"),))
     cb = ContextBuilder()
     prompt = cb.build(UserRequest(request_id="req-test", text="hello"), rc, capabilities=CapabilitySet())
-    assert prompt.system_prompt_version == "v1"
+    assert prompt.system_prompt_version == "v2"
     assert prompt.context_builder_version == "v1"
 
 
@@ -79,3 +79,23 @@ def test_context_builder_prompt_is_pure_for_same_inputs():
     # Pydantic frozen model + identical inputs => identical objects.
     assert p1.system == p2.system
     assert p1.user == p2.user
+
+
+def test_context_builder_v2_prompt_documents_command_option():
+    """The v2 system prompt must mention issue_command AND every one
+    of the 5 valid command types so the LLM knows the option exists
+    and produces payloads the CommandValidator will accept."""
+    rc = RetrievedContext(atoms=(
+        _atom("a1", "x"),
+    ))
+    cb = ContextBuilder()
+    prompt = cb.build(UserRequest(request_id="req-test", text="x"), rc, capabilities=CapabilitySet())
+    assert prompt.system_prompt_version == "v2"
+    # The command option must be documented.
+    assert "issue_command" in prompt.system
+    # All 5 P2 command types must be in the prompt.
+    for cmd_type in ("capture_photo", "record_video", "start_audio", "stop_audio", "request_buffer"):
+        assert cmd_type in prompt.system, f"command type {cmd_type!r} missing from v2 prompt"
+    # The LLM must know to include an idempotency_key + confidence.
+    assert "idempotency_key" in prompt.system
+    assert "confidence" in prompt.system
