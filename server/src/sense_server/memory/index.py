@@ -109,7 +109,18 @@ class SqliteMemoryIndex:
     version = "v1"
 
     def __init__(self, path: str | Path) -> None:
-        self._conn = sqlite3.connect(str(path))
+        # The proactive-trigger listener path runs `search` in a
+        # fresh thread created by `asyncio.run` inside
+        # `ExtractionWorker._dispatch_listeners`'s no-loop fallback
+        # (the reconcile-on-start path). Without
+        # `check_same_thread=False` + a serialising lock, every
+        # cross-thread search raises
+        # `ProgrammingError: SQLite objects created in a thread can
+        # only be used in that same thread` and the proactive
+        # trigger silently fails. This mirrors `SqliteEventStore`
+        # and `SqliteAtomStore`.
+        self._conn = sqlite3.connect(str(path), check_same_thread=False)
+        self._lock = threading.Lock()
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS memory_index (
@@ -130,42 +141,45 @@ class SqliteMemoryIndex:
         self._conn.commit()
 
     def add(self, atom: MemoryAtom, vector: Vector) -> bool:
-        cur = self._conn.execute(
-            "INSERT OR IGNORE INTO memory_index "
-            "(atom_id, session_id, source_event_id, kind, text, created_at, start_ms, vector) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                atom.atom_id,
-                atom.session_id,
-                atom.source_event_id,
-                atom.kind,
-                atom.text,
-                atom.created_at.isoformat(),
-                atom.start_ms,
-                json.dumps(vector),
-            ),
-        )
-        self._conn.commit()
-        return cur.rowcount == 1
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO memory_index "
+                "(atom_id, session_id, source_event_id, kind, text, created_at, start_ms, vector) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    atom.atom_id,
+                    atom.session_id,
+                    atom.source_event_id,
+                    atom.kind,
+                    atom.text,
+                    atom.created_at.isoformat(),
+                    atom.start_ms,
+                    json.dumps(vector),
+                ),
+            )
+            self._conn.commit()
+            return cur.rowcount == 1
 
     def has(self, atom_id: str) -> bool:
-        row = self._conn.execute(
-            "SELECT 1 FROM memory_index WHERE atom_id = ?", (atom_id,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM memory_index WHERE atom_id = ?", (atom_id,)
+            ).fetchone()
         return row is not None
 
     def search(self, session_id: str | None, query: Vector, k: int) -> list[SearchResult]:
-        if session_id is None:
-            rows = self._conn.execute(
-                "SELECT atom_id, session_id, source_event_id, kind, text, created_at, "
-                "start_ms, vector FROM memory_index",
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT atom_id, session_id, source_event_id, kind, text, created_at, "
-                "start_ms, vector FROM memory_index WHERE session_id = ?",
-                (session_id,),
-            ).fetchall()
+        with self._lock:
+            if session_id is None:
+                rows = self._conn.execute(
+                    "SELECT atom_id, session_id, source_event_id, kind, text, created_at, "
+                    "start_ms, vector FROM memory_index",
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT atom_id, session_id, source_event_id, kind, text, created_at, "
+                    "start_ms, vector FROM memory_index WHERE session_id = ?",
+                    (session_id,),
+                ).fetchall()
         loaded = [
             (
                 MemoryAtom(

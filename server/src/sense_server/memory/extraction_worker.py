@@ -187,16 +187,61 @@ class ExtractionWorker:
         listener is a coroutine; exceptions are caught, logged, and
         counted — never re-raised. Snapshot iteration so a listener
         that calls remove_listener during dispatch is safe.
+
+        No-loop fallback: ``process_session`` is also called from
+        :meth:`start`'s reconcile sweep, which runs on a worker
+        thread via ``asyncio.to_thread`` — there is no event loop
+        on that thread. In that case we run the listener on a
+        transient loop in the same thread. (The previous fallback
+        ``listener(completion).close()`` created the coroutine and
+        immediately discarded it, leaking a
+        ``RuntimeWarning: coroutine '...' was never awaited`` and
+        silently dropping the proactive trigger. The reconcile
+        sweep is the first production caller of this fallback
+        path; before M4.3 the queue loop was the only caller and
+        always had a loop, so the broken fallback was
+        untested-and-unused.)
         """
+        # Detect a running loop ONCE, before creating any coroutine.
+        # We must not call `listener(completion)` speculatively and
+        # then discard the coroutine if there is no loop — that
+        # leaks a `RuntimeWarning: coroutine ... was never awaited`
+        # from Python's GC. (The original fallback did exactly that,
+        # hence the warning. The proactive trigger also silently
+        # dropped in production until M4.3 added a test that
+        # exercises the no-loop path.)
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
         for listener in list(self._listeners):
-            try:
-                task = asyncio.ensure_future(listener(completion))
-            except RuntimeError:
-                # No running loop. Run synchronously and log any exception
-                # so the listener gets a chance to run in a test that
-                # doesn't drive the loop.
+            if running_loop is not None:
+                # Fire-and-forget on the existing loop. Exceptions
+                # are caught by the done-callback.
+                task = running_loop.create_task(listener(completion))
+
+                def _safe(t: asyncio.Task, sid: str = completion.session_id) -> None:
+                    try:
+                        t.result()
+                    except Exception:
+                        self._metrics.increment(
+                            Metrics.EXTRACTION_LISTENER_FAILURE_TOTAL,
+                            tags={"session_id": sid},
+                        )
+                        log.exception(
+                            "extraction_listener_failed",
+                            extra={"session_id": sid},
+                        )
+
+                task.add_done_callback(_safe)
+            else:
+                # No running loop (e.g. process_session called from
+                # a worker thread by `asyncio.to_thread` in start()).
+                # `asyncio.run` creates a transient loop, drives the
+                # coroutine to completion, and tears the loop down.
                 try:
-                    listener(completion).close()
+                    asyncio.run(listener(completion))
                 except Exception:
                     self._metrics.increment(
                         Metrics.EXTRACTION_LISTENER_FAILURE_TOTAL,
@@ -206,21 +251,6 @@ class ExtractionWorker:
                         "extraction_listener_failed",
                         extra={"session_id": completion.session_id},
                     )
-                continue
-            # Wrap the task to catch + count exceptions.
-            def _safe(t: asyncio.Task, sid: str = completion.session_id) -> None:
-                try:
-                    t.result()
-                except Exception:
-                    self._metrics.increment(
-                        Metrics.EXTRACTION_LISTENER_FAILURE_TOTAL,
-                        tags={"session_id": sid},
-                    )
-                    log.exception(
-                        "extraction_listener_failed",
-                        extra={"session_id": sid},
-                    )
-            task.add_done_callback(_safe)
 
     def process_session(self, session_id: str) -> list:
         """Run the pipeline for one session. H7: cursor advances on success only.
@@ -281,22 +311,19 @@ class ExtractionWorker:
 
         A failure in one session is logged and skipped; other sessions
         continue. Returns the concatenated list of newly-indexed atoms.
+
+        Session discovery goes through :meth:`EventStore.sessions`
+        (both backends implement it after the M4.3 reconciliation
+        pass landed). The previous implementation tried to introspect
+        ``self._events.events.__self__._by_session`` (an
+        :class:`InMemoryEventStore` private attribute) and fell
+        through to ``_atoms_sessions`` for the sqlite case — both
+        fragile and broken in production. Replaced with the
+        protocol-level ``sessions()`` method, which is a single
+        ``SELECT DISTINCT session_id`` against sqlite and a
+        ``list(self._by_session.keys())`` against the in-memory store.
         """
-        # Discover the set of sessions by reading from both the event
-        # store and the atom store (a session can have atoms but no
-        # events if the gateway is the only writer; we still want to
-        # visit it for reconciliation).
-        sessions: set[str] = set()
-        for ev in self._events.events.__self__._by_session.keys() if hasattr(self._events.events, "__self__") else []:
-            sessions.add(ev)
-        # The above only works for InMemoryEventStore; for production
-        # we'd query SQLite. For this slice we just iterate the in-memory
-        # session list; production wiring will add a per-store helper.
-        if hasattr(self._events, "sessions"):
-            sessions.update(self._events.sessions())
-        else:
-            # Fallback: discover from atoms.
-            sessions.update(self._atoms_sessions())
+        sessions = list(self._events.sessions())
         indexed: list = []
         for sid in sorted(sessions):
             try:
@@ -310,18 +337,23 @@ class ExtractionWorker:
                 continue
         return indexed
 
-    def _atoms_sessions(self) -> set[str]:
-        """Discover sessions that have atoms but no events yet (e.g. for tests)."""
-        if hasattr(self._atoms, "_by_session"):
-            return set(self._atoms._by_session.keys())
-        return set()
-
     # --- async lifecycle --------------------------------------------------
 
     async def start(self) -> None:
         if self._task is not None:
             return
         self._stop.clear()
+        # Reconcile-on-start (M4.3 reconciliation). The live enqueuer
+        # only sees new events from the gateway; any session that
+        # accumulated events while the worker was down (e.g. an
+        # `events.db` that already has rows from a previous run, or
+        # the first start after a fresh deploy) needs an explicit
+        # sweep. We do this on a worker thread so a slow LLM-based
+        # extractor doesn't block the event loop. H7 still holds:
+        # `process_session` advances the cursor only after the full
+        # extract+embed+index pipeline succeeds, so a partially-indexed
+        # session is correctly re-attempted on the next start.
+        await asyncio.to_thread(self._safe_reconcile)
         self._task = asyncio.create_task(self._run(), name="extraction-worker")
 
     async def stop(self) -> None:
@@ -377,3 +409,16 @@ class ExtractionWorker:
             )
             # Re-raise for the reconcile path; swallow for the queue path.
             raise
+
+    def _safe_reconcile(self) -> None:
+        """Wrap :meth:`reconcile` so a per-session failure doesn't abort
+        the whole sweep. The sweep is best-effort: the live enqueuer
+        is the primary path; reconcile is the backstop for events that
+        landed while the worker was down. A failed sweep on start is
+        not fatal — the next start retries, and a single bad session
+        doesn't prevent the others from being processed."""
+        try:
+            self.reconcile()
+        except Exception:
+            log.exception("extraction_reconcile_on_start_failed")
+            self._metrics.increment(Metrics.INDEXING_FAILURES_TOTAL)

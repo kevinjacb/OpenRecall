@@ -215,3 +215,49 @@ async def test_in_iteration_remove_is_safe():
     worker.process_session("s1")
     await _drain_listeners()
     assert seen == ["s1"]
+
+
+def test_listener_runs_when_process_session_called_from_a_thread():
+    """Reconcile-on-start calls process_session from a thread
+    (``asyncio.to_thread(self._safe_reconcile)`` inside
+    ``ExtractionWorker.start``). When there is no event loop, the
+    dispatch path used to create the listener coroutine and
+    immediately ``.close()`` it — emitting a
+    ``RuntimeWarning: coroutine '...' was never awaited`` and
+    silently dropping the proactive trigger. The fallback must
+    actually run the coroutine.
+
+    Without this test, the in-memory vs production divergence is
+    silent: every test that exercises listeners runs inside an
+    event loop (``@pytest.mark.asyncio``), so the broken
+    fallback path was never observed.
+    """
+    import threading
+    import warnings
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    metrics = InMemoryMetricsRecorder()
+    enq = ExtractionEnqueuer(capacity=10, metrics=metrics)
+    worker = _build_worker(events, atoms, idx, metrics, enq)
+
+    seen: list[str] = []
+
+    async def listener(c: SessionCompletion) -> None:
+        seen.append(c.session_id)
+
+    worker.add_listener(listener)
+    events.append(_event(0, "s1", "hello"))
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        t = threading.Thread(target=worker.process_session, args=("s1",))
+        t.start()
+        t.join()
+
+    leaked = [w for w in caught if "was never awaited" in str(w.message)]
+    assert leaked == [], (
+        f"listener coroutine was not awaited when process_session "
+        f"ran outside an event loop: {[str(w.message) for w in leaked]}"
+    )
+    assert seen == ["s1"]

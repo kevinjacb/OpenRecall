@@ -21,7 +21,7 @@ from sense_server.contracts.clock import FakeClock
 from sense_server.contracts.id_generator import DeterministicIdGenerator
 from sense_server.contracts.metrics import Metrics
 from sense_server.events.model import CaptureEvent
-from sense_server.events.store import InMemoryEventStore
+from sense_server.events.store import InMemoryEventStore, SqliteEventStore
 from sense_server.memory.atom import MemoryAtom
 from sense_server.memory.embeddings import Embedder
 from sense_server.memory.extract import ExtractedMemory, Extractor
@@ -37,7 +37,7 @@ from sense_server.memory.stages import (
     Pipeline,
     VersionStampStage,
 )
-from sense_server.memory.store import InMemoryAtomStore
+from sense_server.memory.store import InMemoryAtomStore, SqliteAtomStore
 
 
 # --- fakes ------------------------------------------------------------------
@@ -266,3 +266,151 @@ async def test_worker_lifecycle_start_stop():
         await asyncio.sleep(0.01)
     assert atoms.get_cursor("s1") == 0
     await w.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_start_reconciles_historical_events():
+    """Reconcile-on-start: the worker must catch up on any session that
+    has un-indexed events left over from before the worker was up. The
+    live enqueuer only sees new events; without a startup sweep, a
+    gateway that was offline for an hour leaves 60 minutes of un-indexed
+    transcripts — and a fresh gateway start on a populated events.db
+    leaves ALL history un-indexed."""
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    # Pre-seed two sessions with events that the live path never enqueued
+    # (the gateway was down, or this is a fresh worker after a restart).
+    events.append(_event(0, session_id="s1"))
+    events.append(_event(1, session_id="s1"))
+    events.append(_event(0, session_id="s2"))
+    metrics = InMemoryMetricsRecorder()
+    enq = ExtractionEnqueuer(capacity=10, metrics=metrics)
+    w = _build_worker(events, atoms, idx, HappyEmbedder(), metrics=metrics)
+    w.replace_enqueuer(enq)
+    await w.start()
+    # The startup sweep runs synchronously inside start(); we should
+    # already see the cursors advanced without any enqueue() call.
+    assert atoms.get_cursor("s1") == 1
+    assert atoms.get_cursor("s2") == 0
+    # And atoms should be in the store.
+    assert len(atoms.atoms("s1")) == 2
+    assert len(atoms.atoms("s2")) == 1
+    await w.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_start_reconcile_is_idempotent_across_restart():
+    """Re-running start() after a stop() must not re-extract atoms that
+    are already at the cursor (H7 still holds)."""
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    events.append(_event(0, session_id="s1"))
+    events.append(_event(1, session_id="s1"))
+    metrics = InMemoryMetricsRecorder()
+    enq = ExtractionEnqueuer(capacity=10, metrics=metrics)
+    w = _build_worker(events, atoms, idx, HappyEmbedder(), metrics=metrics)
+    w.replace_enqueuer(enq)
+    await w.start()
+    assert len(atoms.atoms("s1")) == 2
+    await w.stop()
+    # Spin up a fresh worker against the same stores — the cursor is
+    # already at the latest seq, so reconcile() must produce no new atoms.
+    enq2 = ExtractionEnqueuer(capacity=10, metrics=metrics)
+    w2 = _build_worker(events, atoms, idx, HappyEmbedder(), metrics=metrics)
+    w2.replace_enqueuer(enq2)
+    await w2.start()
+    assert len(atoms.atoms("s1")) == 2  # unchanged
+    await w2.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_start_reconciles_against_sqlite_event_store(tmp_path):
+    """Production path: SqliteEventStore + SqliteAtomStore. The reconcile
+    sweep on start() must use ``SELECT DISTINCT session_id`` from the
+    sqlite store (not the broken private-attribute introspection that
+    pre-dated EventStore.sessions()). This is the gap that left 12
+    historical sessions un-indexed on the live gateway.
+
+    Without this test, the in-memory + sqlite divergence is silent:
+    in-memory reconcile always works (because ``_by_session`` is
+    visible), sqlite reconcile never works (because the old code
+    couldn't see the rows). Catching that here means a future
+    refactor of either store can't silently break the production path.
+    """
+    events_db = tmp_path / "events.db"
+    atoms_db = tmp_path / "atoms.db"
+    events = SqliteEventStore(events_db)
+    atoms = SqliteAtomStore(atoms_db)
+    idx = InMemoryMemoryIndex()
+
+    # Pre-seed two sessions — this is the "gateway was up before the
+    # worker started" scenario, the one that left the user's history
+    # un-extracted in production.
+    for seq in range(3):
+        events.append(_event(seq, session_id="session-A", text=f"A{seq}"))
+    for seq in range(2):
+        events.append(_event(seq, session_id="session-B", text=f"B{seq}"))
+
+    metrics = InMemoryMetricsRecorder()
+    enq = ExtractionEnqueuer(capacity=10, metrics=metrics)
+    pipeline = Pipeline(
+        extraction=ExtractionStage(extractor=FixedExtractor(), clock=lambda: datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=HappyEmbedder()),
+        indexing=IndexingStage(index=idx),
+        store=atoms,
+    )
+    w = ExtractionWorker(
+        events=events, atoms=atoms, pipeline=pipeline,
+        metrics=metrics, enqueuer=enq,
+    )
+    await w.start()
+    try:
+        # The reconcile sweep runs on a worker thread via
+        # ``asyncio.to_thread`` so the event loop stays responsive.
+        # Poll for the cursor advance (it should be effectively
+        # immediate — a few events against an in-process embedder).
+        for _ in range(40):
+            if atoms.get_cursor("session-A") == 2 and atoms.get_cursor("session-B") == 1:
+                break
+            await asyncio.sleep(0.01)
+        # Both historical sessions were swept.
+        assert atoms.get_cursor("session-A") == 2
+        assert atoms.get_cursor("session-B") == 1
+        # And atoms are durable in the sqlite atom store.
+        assert len(atoms.atoms("session-A")) == 3
+        assert len(atoms.atoms("session-B")) == 2
+        # The index was populated.
+        assert idx.search("session-A", [1.0, 0.0, 0.0], 10) != []
+    finally:
+        await w.stop()
+
+    # A second worker against the same DBs (the "after a restart" case):
+    # reconcile is a no-op because cursors are already at the latest seq.
+    events2 = SqliteEventStore(events_db)
+    atoms2 = SqliteAtomStore(atoms_db)
+    enq2 = ExtractionEnqueuer(capacity=10, metrics=metrics)
+    pipeline2 = Pipeline(
+        extraction=ExtractionStage(extractor=FixedExtractor(), clock=lambda: datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=HappyEmbedder()),
+        indexing=IndexingStage(index=idx),
+        store=atoms2,
+    )
+    w2 = ExtractionWorker(
+        events=events2, atoms=atoms2, pipeline=pipeline2,
+        metrics=metrics, enqueuer=enq2,
+    )
+    await w2.start()
+    try:
+        for _ in range(40):
+            # Atoms shouldn't change — the second start should be a no-op.
+            if atoms2.get_cursor("session-A") == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert len(atoms2.atoms("session-A")) == 3
+        assert len(atoms2.atoms("session-B")) == 2
+    finally:
+        await w2.stop()

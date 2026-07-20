@@ -69,6 +69,45 @@ def test_unknown_session_reads_empty(store):
     assert store.events("nope") == []
 
 
+def test_sessions_returns_distinct_session_ids(store):
+    """Reconcile-on-start (M4.3 reconciliation) needs the EventStore to
+    enumerate every session id it holds. Both backends must agree on the
+    shape: a list of distinct session ids, order-independent (test sorts
+    to be deterministic)."""
+    store.append(ev("s1", 0))
+    store.append(ev("s1", 1))
+    store.append(ev("s2", 0))
+    store.append(ev("s3", 0))
+    store.append(ev("s3", 1))
+    store.append(ev("s3", 2))
+    assert sorted(store.sessions()) == ["s1", "s2", "s3"]
+
+
+def test_sessions_is_empty_for_unwritten_store(store):
+    assert store.sessions() == []
+
+
+def test_sessions_dedupes_even_with_many_events(store):
+    """Many events per session still produce one session id per session."""
+    for i in range(50):
+        store.append(ev("s1", i))
+    for i in range(50):
+        store.append(ev("s2", i))
+    assert sorted(store.sessions()) == ["s1", "s2"]
+
+
+def test_sessions_survives_persistence_across_reopen(tmp_path):
+    """The SqliteEventStore's sessions() must read committed state —
+    a fresh handle on the same file sees the same set of sessions."""
+    path = tmp_path / "events.db"
+    s1 = SqliteEventStore(path)
+    s1.append(ev("s1", 0))
+    s1.append(ev("s2", 0))
+
+    s2 = SqliteEventStore(path)
+    assert sorted(s2.sessions()) == ["s1", "s2"]
+
+
 def test_sqlite_store_is_usable_from_another_thread(tmp_path):
     # The gateway offloads ingest to worker threads, so the store (built on the main
     # thread) must tolerate access from a different thread.

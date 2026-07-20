@@ -83,3 +83,68 @@ def test_sqlite_atoms_and_cursor_persist_across_reopen(tmp_path):
     s2 = SqliteAtomStore(path)
     assert len(s2.atoms("s1")) == 1
     assert s2.get_cursor("s1") == 0
+
+
+def test_sqlite_atom_store_is_usable_from_another_thread(tmp_path):
+    """The extraction worker calls `atom_store.append` from a thread
+    pool (`asyncio.to_thread` in ``ExtractionWorker._run`` and the
+    reconcile sweep in ``start()``). The atom store's sqlite
+    connection must be safe to use from a thread that did not create
+    it — otherwise the entire production extraction path raises
+    ``ProgrammingError: SQLite objects created in a thread can only
+    be used in that same thread`` and silently fails (the
+    ``process_session`` ``try/except`` increments
+    ``INDEXING_FAILURES_TOTAL`` and the cursor never advances).
+
+    Without this test, the in-memory + sqlite divergence is silent:
+    in-memory extraction always works, sqlite extraction never
+    writes an atom. Mirrors ``test_sqlite_store_is_usable_from_another_thread``
+    in ``tests/events/test_store.py`` for the event store.
+    """
+    import threading
+
+    store = SqliteAtomStore(tmp_path / "atoms.db")
+    errors: list[Exception] = []
+
+    def worker() -> None:
+        try:
+            store.append(atom("s1", 0, 0, kind="from-thread"))
+            store.set_cursor("s1", 0)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+
+    assert errors == [], f"thread-affinity errors: {errors}"
+    assert [a.text for a in store.atoms("s1")] == ["memory 0/0"]
+    assert store.get_cursor("s1") == 0
+
+
+def test_sqlite_atom_store_handles_concurrent_writes(tmp_path):
+    """Two threads appending different atoms simultaneously must both
+    succeed and both be visible after a join. With the
+    ``check_same_thread=False`` + lock pattern used by
+    :class:`SqliteEventStore`, sqlite serialises the writes."""
+    import threading
+
+    store = SqliteAtomStore(tmp_path / "atoms.db")
+    errors: list[Exception] = []
+    barrier = threading.Barrier(2)
+
+    def worker(idx: int) -> None:
+        try:
+            barrier.wait(timeout=2.0)
+            store.append(atom("s1", 0, idx, kind=f"k{idx}"))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == [], f"concurrent write errors: {errors}"
+    assert len(store.atoms("s1")) == 2

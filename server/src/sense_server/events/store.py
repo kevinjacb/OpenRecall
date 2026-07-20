@@ -30,6 +30,16 @@ class EventStore(Protocol):
         """All events for a session, ordered by seq."""
         ...
 
+    def sessions(self) -> list[str]:
+        """Distinct session ids held by this store. Order is not specified;
+        callers that need determinism must sort. Empty if no events have
+        been appended. Used by the extraction worker's reconcile pass to
+        discover historical sessions that the live enqueuer missed
+        (e.g. when the gateway was down for a window and the enqueuer
+        overflowed, or on the very first start before any live event
+        has flowed)."""
+        ...
+
 
 class InMemoryEventStore:
     def __init__(self) -> None:
@@ -45,6 +55,9 @@ class InMemoryEventStore:
 
     def events(self, session_id: str) -> list[CaptureEvent]:
         return sorted(self._by_session.get(session_id, []), key=lambda e: e.seq)
+
+    def sessions(self) -> list[str]:
+        return list(self._by_session.keys())
 
 
 class SqliteEventStore:
@@ -114,3 +127,10 @@ class SqliteEventStore:
             )
             for r in rows
         ]
+
+    def sessions(self) -> list[str]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT session_id FROM capture_events"
+            ).fetchall()
+        return [r[0] for r in rows]

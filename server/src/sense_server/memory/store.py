@@ -85,7 +85,19 @@ class InMemoryAtomStore:
 
 class SqliteAtomStore:
     def __init__(self, path: str | Path) -> None:
-        self._conn = sqlite3.connect(str(path))
+        # The extraction worker writes atoms from a thread pool
+        # (`asyncio.to_thread` inside `ExtractionWorker._run` and the
+        # reconcile-on-start sweep in `start()`). Without
+        # `check_same_thread=False` and a serialising lock, every
+        # cross-thread write raises
+        # `ProgrammingError: SQLite objects created in a thread can
+        # only be used in that same thread` and is silently swallowed
+        # by `process_session`'s try/except — the cursor never
+        # advances, the atom is never persisted, the live extraction
+        # path is dead in production. This mirrors
+        # :class:`SqliteEventStore`.
+        self._conn = sqlite3.connect(str(path), check_same_thread=False)
+        self._lock = threading.Lock()
         self._conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS memory_atoms (
@@ -111,44 +123,47 @@ class SqliteAtomStore:
         self._conn.commit()
 
     def append(self, atom: MemoryAtom) -> bool:
-        cur = self._conn.execute(
-            "INSERT OR IGNORE INTO memory_atoms "
-            "(atom_id, session_id, source_event_id, kind, text, created_at, start_ms, "
-            " extraction_version, embedding_model, embedding_version, "
-            " extractor_prompt_version, source_pipeline_version) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                atom.atom_id,
-                atom.session_id,
-                atom.source_event_id,
-                atom.kind,
-                atom.text,
-                atom.created_at.isoformat(),
-                atom.start_ms,
-                atom.extraction_version,
-                atom.embedding_model,
-                atom.embedding_version,
-                atom.extractor_prompt_version,
-                atom.source_pipeline_version,
-            ),
-        )
-        self._conn.commit()
-        return cur.rowcount == 1
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO memory_atoms "
+                "(atom_id, session_id, source_event_id, kind, text, created_at, start_ms, "
+                " extraction_version, embedding_model, embedding_version, "
+                " extractor_prompt_version, source_pipeline_version) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    atom.atom_id,
+                    atom.session_id,
+                    atom.source_event_id,
+                    atom.kind,
+                    atom.text,
+                    atom.created_at.isoformat(),
+                    atom.start_ms,
+                    atom.extraction_version,
+                    atom.embedding_model,
+                    atom.embedding_version,
+                    atom.extractor_prompt_version,
+                    atom.source_pipeline_version,
+                ),
+            )
+            self._conn.commit()
+            return cur.rowcount == 1
 
     def has(self, atom_id: str) -> bool:
-        row = self._conn.execute(
-            "SELECT 1 FROM memory_atoms WHERE atom_id = ?", (atom_id,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM memory_atoms WHERE atom_id = ?", (atom_id,)
+            ).fetchone()
         return row is not None
 
     def atoms(self, session_id: str) -> list[MemoryAtom]:
-        rows = self._conn.execute(
-            "SELECT atom_id, session_id, source_event_id, kind, text, created_at, start_ms, "
-            "extraction_version, embedding_model, embedding_version, "
-            "extractor_prompt_version, source_pipeline_version "
-            "FROM memory_atoms WHERE session_id = ? ORDER BY start_ms",
-            (session_id,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT atom_id, session_id, source_event_id, kind, text, created_at, start_ms, "
+                "extraction_version, embedding_model, embedding_version, "
+                "extractor_prompt_version, source_pipeline_version "
+                "FROM memory_atoms WHERE session_id = ? ORDER BY start_ms",
+                (session_id,),
+            ).fetchall()
         return [
             MemoryAtom(
                 atom_id=r[0],
@@ -168,15 +183,17 @@ class SqliteAtomStore:
         ]
 
     def get_cursor(self, session_id: str) -> int:
-        row = self._conn.execute(
-            "SELECT last_seq FROM extraction_cursor WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT last_seq FROM extraction_cursor WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
         return row[0] if row is not None else _NO_CURSOR
 
     def set_cursor(self, session_id: str, seq: int) -> None:
-        self._conn.execute(
-            "INSERT OR REPLACE INTO extraction_cursor (session_id, last_seq) VALUES (?, ?)",
-            (session_id, seq),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO extraction_cursor (session_id, last_seq) VALUES (?, ?)",
+                (session_id, seq),
+            )
+            self._conn.commit()
