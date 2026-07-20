@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from ..events.model import CaptureEvent
+from ..events.store import EventStore  # only used for the type annotation in rebuild_from_store
 
 Clock = Callable[[], datetime]
 PREVIEW_MAX_CHARS = 80
@@ -171,6 +172,49 @@ class SessionIndex:
                     new_preview = _preview_of(event.text)
                     if new_preview is not None:
                         existing.preview = new_preview
+
+    def rebuild_from_store(self, event_store: "EventStore") -> None:
+        """Cold-start rebuild from a durable :class:`EventStore`.
+
+        Replays every event in ``event_store`` through :meth:`record`
+        so a fresh :class:`SessionIndex` has the same summaries the
+        live path produced. Idempotent: re-running produces identical
+        state because we wipe the index first (rebuilding onto a
+        non-empty index would double-count). Failure-isolated: a
+        per-session error is logged and the rebuild continues with
+        the next session; a bad event in the durable store must not
+        block every other session.
+
+        Performance: a 100-session history rebuild reads N events
+        per session and folds them under the existing lock; budget
+        is ~2ms per session. Acceptable for a one-shot startup pass.
+        """
+        import logging
+        log = logging.getLogger(__name__)
+        # Cold-start semantics: a rebuild is a "start fresh from the
+        # durable store" operation. Clear the existing summaries so
+        # re-running against the same store (test harness, double
+        # restart) does not double-count events. We hold the same
+        # lock as record() so a concurrent live append either lands
+        # before the wipe (and is wiped) or after (and survives).
+        with self._lock:
+            self._summaries.clear()
+            self._event_count = 0
+            self._recent_event_timestamps.clear()
+        for sid in sorted(event_store.sessions()):
+            try:
+                for ev in event_store.events(sid):
+                    self.record(ev)
+            except Exception:
+                # Defensive: one bad session in the durable store
+                # must not poison the whole rebuild. The live path
+                # will re-populate the missing summary on the next
+                # event append.
+                log.exception(
+                    "session_index_rebuild_session_failed",
+                    extra={"session_id": sid},
+                )
+                continue
 
     # -- readers --------------------------------------------------------------
 

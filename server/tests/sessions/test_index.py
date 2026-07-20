@@ -337,3 +337,102 @@ def test_preview_strips_whitespace_before_truncation():
 
     preview = idx.summary("s1").preview
     assert preview == "short"
+
+
+# ---- rebuild_from_store() --------------------------------------------------
+
+
+def test_rebuild_from_store_populates_summaries_from_event_store():
+    """On a cold start, the index must rebuild from the durable event
+    store. Pre-seed 2 sessions with 3 events each, call rebuild, assert
+    both summaries exist with the right aggregates."""
+    from sense_server.events.store import InMemoryEventStore
+    store = InMemoryEventStore()
+    for seq in range(3):
+        store.append(_ce("s1", seq, text=f"s1-{seq}", created_at=datetime(2026, 7, 1, 12, seq, 0, tzinfo=timezone.utc)))
+    for seq in range(2):
+        store.append(_ce("s2", seq, text=f"s2-{seq}", created_at=datetime(2026, 7, 1, 13, seq, 0, tzinfo=timezone.utc)))
+    idx = SessionIndex()
+    assert idx.total_sessions() == 0  # cold start — empty
+    idx.rebuild_from_store(store)
+    assert idx.total_sessions() == 2
+    s1 = idx.summary("s1")
+    assert s1 is not None
+    assert s1.event_count == 3
+    assert s1.transcript_count == 3
+    assert s1.preview == "s1-0"  # first non-empty wins
+    s2 = idx.summary("s2")
+    assert s2 is not None
+    assert s2.event_count == 2
+    assert s2.transcript_count == 2
+
+
+def test_rebuild_from_store_is_idempotent():
+    """Re-running rebuild_from_store against the same store must
+    produce the same state — no duplicate sessions, identical
+    aggregates. A test harness or a double-restart must be safe."""
+    from sense_server.events.store import InMemoryEventStore
+    store = InMemoryEventStore()
+    for seq in range(3):
+        store.append(_ce("s1", seq, text=f"a{seq}"))
+    idx = SessionIndex()
+    idx.rebuild_from_store(store)
+    s1_before = idx.summary("s1")
+    assert s1_before is not None
+    assert s1_before.event_count == 3
+    # Rebuild again — nothing should change.
+    idx.rebuild_from_store(store)
+    assert idx.total_sessions() == 1
+    s1_after = idx.summary("s1")
+    assert s1_after is not None
+    assert s1_after.event_count == 3
+    assert s1_after.preview == s1_before.preview
+
+
+def test_rebuild_from_store_empty_store_is_noop():
+    """A fresh gateway on a brand-new events.db must not crash on
+    rebuild; the index stays empty and /sessions returns an empty
+    page. The first live event will populate the first summary."""
+    from sense_server.events.store import InMemoryEventStore
+    store = InMemoryEventStore()  # no events
+    idx = SessionIndex()
+    idx.rebuild_from_store(store)
+    assert idx.total_sessions() == 0
+    summaries, next_cursor = idx.list(limit=20)
+    assert summaries == []
+    assert next_cursor is None
+
+
+def test_rebuild_from_store_skips_failing_session():
+    """If one session's events raise during replay, the rebuild
+    continues with the next session. A bad event in the durable
+    store must not poison every other session's summary."""
+    from sense_server.events.store import InMemoryEventStore
+    from sense_server.events.model import CaptureEvent
+    from sense_server.sessions.index import SessionIndex
+
+    class _FlakyEventStore(InMemoryEventStore):
+        """In-memory store that raises when reading the 'bad' session.
+        Keeps the rest of the API identical so the test exercises the
+        rebuild loop, not the store's internals."""
+
+        def events(self, session_id: str):
+            if session_id == "bad":
+                raise RuntimeError("simulated bad session")
+            return super().events(session_id)
+
+    store = _FlakyEventStore()
+    # Good session — three events.
+    for seq in range(3):
+        store.append(_ce("good", seq, text=f"g{seq}"))
+    # Bad session — one event, but the store will raise on read.
+    store.append(_ce("bad", 0, text="b0"))
+    # Second good session — proves the rebuild continued past the failure.
+    store.append(_ce("also_good", 0, text="a0"))
+    idx = SessionIndex()
+    idx.rebuild_from_store(store)
+    assert idx.summary("good") is not None
+    assert idx.summary("good").event_count == 3
+    assert idx.summary("bad") is None
+    assert idx.summary("also_good") is not None
+    assert idx.total_sessions() == 2
