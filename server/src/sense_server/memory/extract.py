@@ -5,9 +5,27 @@ The wearable's transcripts are turned into structured memories by a *pluggable*
 a local model (Gemma/Qwen via Ollama or ``mlx_lm.server``) or a cloud model
 (MiniMax/OpenAI/…). Swapping models is a config change, not a code change.
 
-``LLMExtractor`` owns only the prompt and the *tolerant* parsing of the reply, both
+``LLMExtractor`` owns only the prompt and the *strict* parsing of the reply, both
 of which are pure and unit-tested with a fake model. The concrete OpenAI-compatible
 client lives in :mod:`sense_server.memory.llm`.
+
+Parse contract (strict):
+
+- A valid JSON ``[]`` is the only successful no-memory result.
+- Anything else — non-JSON, JSON that is not an array, an array whose items
+  are not the contracted ``{"kind","text"}`` shape (including the LLM's
+  positional ``["event","text"]`` 2-strings that some chat-tuned models
+  emit) — raises :class:`LLMParseError`.
+- The parser does not touch metrics. The :class:`ExtractionWorker` is the
+  sole owner of the :data:`Metrics.LLM_PARSE_FAILURES_TOTAL` counter and
+  increments it once per failure, tagged with the session id, then leaves
+  the cursor unchanged and re-raises so the next enqueue / reconciliation
+  retries the same events.
+
+The previous tolerant-parser behavior (silently returning ``[]`` for
+malformed replies) caused the live "atoms never form" incident: the
+extractor's cursor advanced past transcripts that the LLM had answered in
+a shape the parser couldn't read.
 """
 
 from __future__ import annotations
@@ -27,6 +45,20 @@ DEFAULT_PROMPT = (
     "self-contained memory written in the third person). If nothing is worth "
     "remembering, return []. Do not include any prose outside the JSON array."
 )
+
+
+class LLMExtractError(Exception):
+    """Base class for all errors raised by :class:`LLMExtractor`."""
+
+
+class LLMParseError(LLMExtractError):
+    """The LLM reply could not be parsed into the contracted shape.
+
+    A subclass of :class:`LLMExtractError` so callers that want to catch
+    the whole family (parse + upstream chat errors) can. The parser does
+    not touch metrics; the worker catches this and increments
+    :data:`Metrics.LLM_PARSE_FAILURES_TOTAL`.
+    """
 
 
 class ExtractedMemory(BaseModel):
@@ -56,27 +88,54 @@ class LLMExtractor:
 
     @staticmethod
     def _parse(reply: str) -> list[ExtractedMemory]:
-        """Tolerantly pull a JSON array of memories out of a model reply.
+        """Strictly parse a model reply into a list of :class:`ExtractedMemory`.
 
-        Handles code fences and surrounding prose, ignores non-object elements and
-        items missing fields, and never raises on a bad completion (returns []).
+        Contract:
+
+        - ``"[]"`` is the only successful empty result (the LLM said:
+          "I looked at this transcript and there is nothing memorable").
+        - Any other shape — non-JSON, JSON that is not an array, an
+          array with at least one non-conforming item, or items
+          missing ``kind`` / ``text`` — raises :class:`LLMParseError`.
+        - A partial-success reply (e.g. a list with one valid dict and
+          one positional 2-string) also raises :class:`LLMParseError`:
+          silently dropping items would let a model that flipped format
+          mid-session look like an empty extraction, advancing the
+          cursor past memory that never got extracted.
+
+        The parser does not own metrics; the
+        :class:`ExtractionWorker` is the sole owner of
+        :data:`Metrics.LLM_PARSE_FAILURES_TOTAL` and increments it
+        once per failure, tagged with the session id.
         """
         match = _JSON_ARRAY.search(reply)
         if match is None:
-            return []
+            raise LLMParseError(
+                f"reply did not contain a JSON array: {reply[:120]!r}"
+            )
         try:
             data = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return []
+        except json.JSONDecodeError as e:
+            raise LLMParseError(f"reply JSON could not be decoded: {e}") from e
         if not isinstance(data, list):
+            raise LLMParseError(
+                f"reply top-level value is not an array: {type(data).__name__}"
+            )
+
+        # An empty array is the explicit "no memory" signal.
+        if not data:
             return []
 
         memories: list[ExtractedMemory] = []
-        for item in data:
+        for i, item in enumerate(data):
             if not isinstance(item, dict):
-                continue
+                raise LLMParseError(
+                    f"reply item {i} is not an object: {type(item).__name__}"
+                )
             try:
                 memories.append(ExtractedMemory(kind=item["kind"], text=item["text"]))
-            except (KeyError, ValidationError):
-                continue
+            except (KeyError, ValidationError) as e:
+                raise LLMParseError(
+                    f"reply item {i} is missing or has invalid fields: {e}"
+                ) from e
         return memories
