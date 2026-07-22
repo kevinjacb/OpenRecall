@@ -6,14 +6,24 @@ binding rules are:
 
   1. ``parse_error is not None``  -> ``INVALID_JSON``
   2. ``NO_MEMORY`` with any atom_ids  -> ``SCHEMA_MISMATCH``
-  3. ``ANSWER`` with empty atom_ids  -> ``NO_ATOM_CITED``
-  4. ``ANSWER`` with any cited id not in the retrieved set
+  3. ``ISSUE_COMMAND`` without a parsed command payload
+     -> ``MISSING_COMMAND_PAYLOAD``
+  4. ``ANSWER`` with empty atom_ids  -> ``NO_ATOM_CITED``
+  5. ``ANSWER`` with any cited id not in the retrieved set
      -> ``CITED_ATOM_NOT_RETRIEVED``
-  5. ``ANSWER`` with confidence outside [0, 1]
+  6. ``ANSWER`` with confidence outside [0, 1]
      -> ``CONFIDENCE_OUT_OF_RANGE``
-  6. otherwise  -> accepted
+  7. otherwise  -> accepted
 
-Every refused action is observable; nothing is dropped silently.
+The ``ISSUE_COMMAND`` branch is intentionally minimal: the generic
+validator only enforces the wire-shape contract (the kind is set
+and a parsed :class:`IssueCommandPayload` is present). The 5-type
+allowlist and per-type param bounds are owned by
+:class:`sense_server.agent.validator_command.StrictCommandValidator`,
+which is the sole authority for command-type / param-bounds policy.
+Splitting the two means a change to bounds does not require a
+generic-validator regression test, and a change to the wire shape
+does not require a command-bounds regression test.
 """
 from __future__ import annotations
 
@@ -70,14 +80,28 @@ class StrictJSONValidator:
                 )
             return ValidatedAction(action=action, rejection=None)
 
-        # 3. ANSWER must cite at least one retrieved atom.
+        # 3. P2-commands: ISSUE_COMMAND skips the answer-style
+        # citation checks (an empty atom_ids is the v2 prompt's
+        # contracted shape for a device action) and instead requires
+        # a parsed IssueCommandPayload. The 5-type allowlist and
+        # per-type param bounds are owned by StrictCommandValidator
+        # — the generic validator does NOT duplicate those rules.
+        if action.kind == AgentActionKind.ISSUE_COMMAND:
+            if action.command is None:
+                return ValidatedAction(
+                    action=action,
+                    rejection=RejectionReason.MISSING_COMMAND_PAYLOAD,
+                )
+            return ValidatedAction(action=action, rejection=None)
+
+        # 4. ANSWER must cite at least one retrieved atom.
         if not action.atom_ids:
             return ValidatedAction(
                 action=action,
                 rejection=RejectionReason.NO_ATOM_CITED,
             )
 
-        # 4. All cited atoms must come from the retrieved set.
+        # 5. All cited atoms must come from the retrieved set.
         cited = set(action.atom_ids)
         if not cited.issubset(retrieved):
             return ValidatedAction(
@@ -85,12 +109,12 @@ class StrictJSONValidator:
                 rejection=RejectionReason.CITED_ATOM_NOT_RETRIEVED,
             )
 
-        # 5. Confidence is bounded.
+        # 6. Confidence is bounded.
         if not (0.0 <= action.confidence <= 1.0):
             return ValidatedAction(
                 action=action,
                 rejection=RejectionReason.CONFIDENCE_OUT_OF_RANGE,
             )
 
-        # 6. Accepted.
+        # 7. Accepted.
         return ValidatedAction(action=action, rejection=None)

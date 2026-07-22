@@ -15,11 +15,13 @@ user-facing message; the audit log carries the rejection reason.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
 
 from sense_server.agent.audit import InMemoryAuditLogger
+from sense_server.agent.capability import ConstantCapabilityProvider
 from sense_server.agent.context import ContextBuilder
 from sense_server.agent.guardrails import ConfidenceGateGuardrails
 from sense_server.agent.guardrails_command import StrictCommandGuardrails
@@ -422,3 +424,145 @@ async def test_no_memory_path_still_works():
     assert result.outcome == PlannerOutcome.REFUSE
     assert result.refusal_reason == RejectionReason.NO_SUPPORTING_MEMORY
     assert result.command_id is None
+
+
+# --- live-wire end-to-end: post-batch-1 expected behavior ------------------
+#
+# The four server fixes in this slice (#1 strict parser, #2 context
+# carve-out, #3 IssueCommandPayload parsing, #4 command-aware
+# validator) make the following live `curl /agent` path work
+# end-to-end: the planner reaches the LLM, the LLM emits the v2
+# issue_command wire shape, the parser keeps the payload, the
+# generic validator passes, and the StrictCommandGuardrails refuses
+# with `capability_unavailable` because the default
+# `ConstantCapabilityProvider` advertises `camera=False`.
+#
+# This test pins that exact result. A future flip of the
+# capability default (or an env-var override) is the ONLY thing
+# that should change the live `curl /agent -d '{"text":"record a 3
+# second video"}'` behavior to `outcome: "issue_command"` with a
+# `command_id`. Until then, the live result is the explicit refusal
+# captured here. If this test ever starts asserting
+# `outcome == ISSUE_COMMAND`, an operator has explicitly enabled
+# camera capture — that is a deliberate configuration change, not
+# a silent default flip.
+
+
+@pytest.mark.asyncio
+async def test_record_video_with_default_capabilities_is_refused_with_capability_unavailable():
+    """End-to-end: the live `curl /agent -d '{"text":"record a 3
+    second video"}'` path, exercised through the real
+    OpenAICompatibleAgentLLM (so the v2 wire shape is actually
+    parsed, not a pre-constructed AgentAction) and the default
+    ConstantCapabilityProvider (so camera=False is the actual
+    production default).
+
+    Post-batch-1 expected result:
+
+    1. Planner reaches the LLM (the empty-retrieval carve-out
+       no longer short-circuits the LLM call for device actions).
+    2. The LLM emits the v2 wire shape; OpenAICompatibleAgentLLM
+       parses the `command` field into an IssueCommandPayload.
+    3. The generic validator passes (issue_command skips the
+       NO_ATOM_CITED check and the payload is non-None).
+    4. The strict command validator passes (record_video with
+       duration_s=3 is in bounds).
+    5. The strict command guardrails REFUSE with
+       `capability_unavailable` because ConstantCapabilityProvider
+       defaults `camera=False`.
+
+    The live result is an explicit refusal with a user-facing
+    message that names the missing capability. A command_id is
+    NOT issued; the device is not asked to do anything it cannot
+    do. The refusal is observable in the audit log.
+
+    If this test starts failing, EITHER the four batch-1 fixes
+    regressed (which would be a code bug), OR the
+    ConstantCapabilityProvider default changed (which would be a
+    deliberate configuration change). Either way, the test
+    forces the change to be explicit.
+    """
+    # The exact v2 wire shape a chat-tuned model emits for
+    # 'record a 3 second video'. The user-facing text is at the
+    # top level; the structured payload is in `command`; confidence
+    # is at the top level.
+    llm_raw_reply = json.dumps({
+        "kind": "issue_command",
+        "text": "",
+        "atom_ids": [],
+        "confidence": 0.92,
+        "command": {
+            "command_type": "record_video",
+            "params": {"duration_s": 3},
+            "idempotency_key": "record_video_3s",
+        },
+    })
+
+    class _ScriptedChat:
+        """A synchronous chat model that returns a fixed reply."""
+
+        def complete(self, system: str, user: str) -> str:
+            return llm_raw_reply
+
+    # Empty retrieval: post-#2 the LLM is not biased against
+    # commands, and the planner is not short-circuited.
+    class _EmptyRetriever:
+        def retrieve(self, *args, **kwargs):
+            return RetrievedContext(
+                atoms=(),
+                retrieval_strategy="sim_recency",
+                scorer_version="v1",
+                index_name="in_memory",
+                index_version="v1",
+                top_score=0.0,
+                lowest_score=0.0,
+                returned_count=0,
+                candidate_count=0,
+                retrieval_latency_ms=10,
+                retrieval_trace_id="trace-empty",
+            )
+
+    signer = CommandSigner.generate()
+    dispatcher = CommandDispatcher(signer, clock=_CallableClock())
+    planner = Planner(
+        retriever=_EmptyRetriever(),
+        context_builder=ContextBuilder(),
+        llm=OpenAICompatibleAgentLLM(_ScriptedChat()),
+        validator=StrictJSONValidator(),
+        guardrails=ConfidenceGateGuardrails(rate_limit_per_min=1000),
+        audit=InMemoryAuditLogger(),
+        metrics=InMemoryMetricsRecorder(),
+        # The default ConstantCapabilityProvider — camera=False
+        # is the production default. If this changes, the
+        # assertion below changes too.
+        capability_provider=ConstantCapabilityProvider(),
+        clock=_CallableClock(),
+        ids=DeterministicIdGenerator(),
+        command_validator=StrictCommandValidator(),
+        command_guardrails=StrictCommandGuardrails(),
+        dispatcher=dispatcher,
+    )
+    result = await planner.plan(_ctx())
+
+    # The planner reached the LLM, parsed the payload, validated
+    # the action, and the guardrails refused with the right
+    # reason. No command was issued.
+    assert result.outcome == PlannerOutcome.REFUSE
+    assert result.command_id is None
+    assert result.command_status is None
+    # The refusal reason is the strict-command-guardrails
+    # CAPABILITY_UNAVAILABLE (not the generic validator's
+    # NO_ATOM_CITED, which would mean the four batch-1 fixes
+    # regressed). The generic RejectionReason set does not have
+    # a code for the command-guardrails' distinct enum, so the
+    # Planner maps it. We assert the user-facing message names
+    # the missing capability so the operator / user can act.
+    assert result.refusal_reason is not None
+    assert result.refusal_message is not None
+    msg = result.refusal_message.lower()
+    assert "camera" in msg, (
+        f"refusal message should name the missing capability "
+        f"('camera'), got: {result.refusal_message!r}"
+    )
+    # And the dispatcher did not issue anything.
+    assert dispatcher.pending() == []

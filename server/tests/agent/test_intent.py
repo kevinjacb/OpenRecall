@@ -10,6 +10,7 @@ import pytest
 from sense_server.contracts.types import (
     AgentAction,
     AgentActionKind,
+    IssueCommandPayload,
     LLMResult,
     Prompt,
 )
@@ -104,6 +105,195 @@ async def test_reason_returns_parse_error_on_unknown_kind():
     llm = OpenAICompatibleAgentLLM(FakeChat(raw))
     result = await llm.reason(_prompt())
     assert result.parsed is None
+
+
+# --- issue_command parsing (P2-commands) -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reason_parses_issue_command_with_payload_from_v2_prompt():
+    """The v2 system prompt contracts the LLM to emit, for a direct
+    command request, exactly this JSON shape:
+
+        {
+          "kind": "issue_command",
+          "text": "",
+          "atom_ids": [],
+          "confidence": 0.85,
+          "command": {
+            "command_type": "record_video",
+            "params": {"duration_s": 3},
+            "idempotency_key": "record_video_3s"
+          }
+        }
+
+    Previously, _parse silently dropped the ``command`` field, so
+    ``AgentAction.command`` was always ``None`` even when the LLM
+    produced the right shape. The Validator then had no payload to
+    validate and the Planner had nothing to dispatch. This test pins
+    the new contract: the command payload is parsed and surfaces on
+    ``AgentAction.command``.
+    """
+    raw = json.dumps({
+        "kind": "issue_command",
+        "text": "",
+        "atom_ids": [],
+        "confidence": 0.85,
+        "command": {
+            "command_type": "record_video",
+            "params": {"duration_s": 3},
+            "idempotency_key": "record_video_3s",
+        },
+    })
+    llm = OpenAICompatibleAgentLLM(FakeChat(raw))
+    result = await llm.reason(_prompt())
+    assert result.parse_error is None, f"unexpected parse error: {result.parse_error}"
+    assert result.parsed is not None
+    assert result.parsed.kind == AgentActionKind.ISSUE_COMMAND
+    # Per the v2 prompt contract: text and atom_ids are empty for
+    # issue_command. The parser must NOT require them to be present.
+    assert result.parsed.text == ""
+    assert result.parsed.atom_ids == ()
+    # The structured payload must be retained.
+    assert result.parsed.command is not None
+    assert result.parsed.command.command_type == "record_video"
+    assert result.parsed.command.params == {"duration_s": 3}
+    assert result.parsed.command.idempotency_key == "record_video_3s"
+    # And it's a fully-validated IssueCommandPayload (frozen, extra=forbid).
+    assert isinstance(result.parsed.command, IssueCommandPayload)
+
+
+@pytest.mark.asyncio
+async def test_reason_parses_issue_command_without_params():
+    """capture_photo, start_audio, and stop_audio have no params.
+    The LLM may omit the field or send ``{}``; both must parse."""
+    raw = json.dumps({
+        "kind": "issue_command",
+        "text": "",
+        "atom_ids": [],
+        "confidence": 0.9,
+        "command": {
+            "command_type": "capture_photo",
+            "params": {},
+            "idempotency_key": "capture_photo_1",
+        },
+    })
+    llm = OpenAICompatibleAgentLLM(FakeChat(raw))
+    result = await llm.reason(_prompt())
+    assert result.parse_error is None
+    assert result.parsed is not None
+    assert result.parsed.command is not None
+    assert result.parsed.command.command_type == "capture_photo"
+    assert result.parsed.command.params == {}
+
+
+@pytest.mark.asyncio
+async def test_reason_parses_issue_command_with_default_params_field():
+    """The v2 prompt says the params field is 'omit if no params'.
+    The parser must accept a missing params field by defaulting to {}."""
+    raw = json.dumps({
+        "kind": "issue_command",
+        "text": "",
+        "atom_ids": [],
+        "confidence": 0.9,
+        "command": {
+            "command_type": "start_audio",
+            "idempotency_key": "start_audio_1",
+        },
+    })
+    llm = OpenAICompatibleAgentLLM(FakeChat(raw))
+    result = await llm.reason(_prompt())
+    assert result.parse_error is None
+    assert result.parsed is not None
+    assert result.parsed.command is not None
+    assert result.parsed.command.params == {}
+
+
+@pytest.mark.asyncio
+async def test_reason_returns_parse_error_when_issue_command_has_no_payload():
+    """A kind=issue_command reply without a ``command`` field is a
+    parse failure — the validator cannot accept a command action
+    without a payload. Returning ``parsed=None`` lets the Validator
+    surface a clear error instead of dispatching a None."""
+    raw = json.dumps({
+        "kind": "issue_command",
+        "text": "",
+        "atom_ids": [],
+        "confidence": 0.85,
+    })
+    llm = OpenAICompatibleAgentLLM(FakeChat(raw))
+    result = await llm.reason(_prompt())
+    assert result.parsed is None
+    assert result.parse_error is not None
+    assert "command" in result.parse_error.lower()
+
+
+@pytest.mark.asyncio
+async def test_reason_returns_parse_error_when_issue_command_has_unknown_type():
+    """The 5-type allowlist is enforced by IssueCommandPayload (the
+    Literal type + the StrictCommandValidator downstream). The parser
+    must surface an unknown command_type as a parse error rather
+    than silently constructing an invalid payload."""
+    raw = json.dumps({
+        "kind": "issue_command",
+        "text": "",
+        "atom_ids": [],
+        "confidence": 0.9,
+        "command": {
+            "command_type": "launch_missiles",
+            "params": {},
+            "idempotency_key": "x",
+        },
+    })
+    llm = OpenAICompatibleAgentLLM(FakeChat(raw))
+    result = await llm.reason(_prompt())
+    assert result.parsed is None
+    assert result.parse_error is not None
+
+
+@pytest.mark.asyncio
+async def test_reason_returns_parse_error_when_issue_command_missing_idempotency_key():
+    """idempotency_key is required (the re-prompt dedup relies on it)."""
+    raw = json.dumps({
+        "kind": "issue_command",
+        "text": "",
+        "atom_ids": [],
+        "confidence": 0.9,
+        "command": {
+            "command_type": "capture_photo",
+            "params": {},
+        },
+    })
+    llm = OpenAICompatibleAgentLLM(FakeChat(raw))
+    result = await llm.reason(_prompt())
+    assert result.parsed is None
+    assert result.parse_error is not None
+
+
+@pytest.mark.asyncio
+async def test_reason_does_not_carry_command_field_on_answer():
+    """An answer reply must NOT carry a command field — the parser
+    must leave AgentAction.command = None for non-command kinds even
+    if the LLM hallucinates one. IssueCommandPayload's extra='forbid'
+    would normally reject extras, but a stray 'command' key on a
+    non-issue_command kind must be silently ignored (the field is
+    optional in the model)."""
+    raw = json.dumps({
+        "kind": "answer",
+        "text": "you said hi",
+        "atom_ids": ["a1"],
+        "confidence": 0.9,
+        "command": {"command_type": "capture_photo", "idempotency_key": "x"},
+    })
+    llm = OpenAICompatibleAgentLLM(FakeChat(raw))
+    result = await llm.reason(_prompt())
+    # We accept either a successful parse with command=None (silent
+    # ignore) OR a parse error (extra='forbid' on IssueCommandPayload
+    # propagated). The contract is: an answer reply is never a
+    # command, period. Pin the stronger behavior.
+    assert result.parsed is not None
+    assert result.parsed.kind == AgentActionKind.ANSWER
+    assert result.parsed.command is None
 
 
 @pytest.mark.asyncio

@@ -140,6 +140,15 @@ class RejectionReason(str, Enum):
     NOT_AUTONOMOUS = "not_autonomous"
     NO_SUPPORTING_MEMORY = "no_supporting_memory"
     UNKNOWN = "unknown"
+    # P2-commands: an issue_command reply reached the validator
+    # without a parsed IssueCommandPayload. The parser is the
+    # primary gate (it raises a parse error if the field is
+    # missing), but a constructed AgentAction or a future parser
+    # regression must not slip through. The generic validator
+    # surfaces this as MISSING_COMMAND_PAYLOAD so the planner's
+    # audit log has a clear reason; the StrictCommandValidator
+    # never sees such an action.
+    MISSING_COMMAND_PAYLOAD = "missing_command_payload"
     # P3: a Proactive trigger is FORBIDDEN from issuing device commands.
     # Enforced inside Planner.plan before _dispatch_command.
     PROACTIVE_TRIGGER_CANNOT_ISSUE_COMMAND = "proactive_trigger_cannot_issue_command"
