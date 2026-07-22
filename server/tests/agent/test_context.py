@@ -62,13 +62,71 @@ def test_context_builder_includes_capabilities_in_system():
 
 
 def test_context_builder_no_supporting_memory_short_circuits():
-    """If retrieval returned no atoms, the system prompt carries the
-    'no supporting memories' line so the LLM is biased toward
-    ``no_memory`` rather than a hallucinated answer."""
+    """If retrieval returned no atoms AND the user is asking a factual
+    question, the system prompt carries the 'no supporting memories'
+    line so the LLM is biased toward ``no_memory`` rather than a
+    hallucinated answer. The carve-out for direct commands is in a
+    separate test.
+    """
     rc = RetrievedContext(atoms=())
     cb = ContextBuilder()
-    prompt = cb.build(UserRequest(request_id="req-test", text="x"), rc, capabilities=CapabilitySet())
+    prompt = cb.build(UserRequest(request_id="req-test", text="what time did I go to the gym?"), rc, capabilities=CapabilitySet())
     assert "no supporting" in prompt.system.lower() or "no relevant" in prompt.system.lower()
+
+
+def test_context_builder_empty_retrieval_preserves_command_carve_out():
+    """Empty retrieval must NOT bias the LLM away from issue_command.
+
+    Previously, ContextBuilder appended 'No relevant memory was
+    retrieved. You must return kind="no_memory".' on every empty
+    retrieval, which short-circuited direct commands like
+    'record a 3 second video' even when the rest of the prompt
+    documented issue_command as the correct path. The new contract:
+
+    - Factual questions with no retrieval → bias toward no_memory.
+    - Device-action requests with no retrieval → bias toward
+      issue_command (an empty retrieval is normal and expected
+      for a /agent request that the user just typed).
+
+    The command carve-out is in the system prompt itself, not just
+    in the appended line, so it survives any future prompt refactor.
+    """
+    rc = RetrievedContext(atoms=())
+    cb = ContextBuilder()
+    prompt = cb.build(UserRequest(request_id="req-test", text="record a 3 second video"), rc, capabilities=CapabilitySet())
+    # The command option is still documented (it was documented in v2
+    # already, but the no-memory line used to contradict it for empty
+    # retrieval). The carve-out is explicit.
+    assert "issue_command" in prompt.system
+    # The no-memory hint is now conditional on a factual question,
+    # not an unconditional instruction. The old line was:
+    #     "No relevant memory was retrieved. You must return kind=\"no_memory\"."
+    # The new wording explicitly carves out device actions.
+    lower = prompt.system.lower()
+    assert "device action" in lower, (
+        "Empty-retrieval directive does not mention device actions; "
+        "direct commands will be short-circuited to no_memory."
+    )
+    # And the no-memory bias is explicitly scoped to factual questions
+    # so the LLM is not biased against commands.
+    assert "factual" in lower, (
+        "No-memory hint is no longer conditional on a factual question."
+    )
+
+
+def test_context_builder_empty_retrieval_command_carve_out_does_not_weaken_factual_questions():
+    """Symmetric guarantee: the carve-out for commands must NOT
+    weaken the no-memory bias for factual questions. The LLM should
+    not start hallucinating answers to 'what time did I eat lunch?'
+    just because we made commands orthogonal to retrieval.
+    """
+    rc = RetrievedContext(atoms=())
+    cb = ContextBuilder()
+    prompt = cb.build(UserRequest(request_id="req-test", text="what time did I eat lunch yesterday?"), rc, capabilities=CapabilitySet())
+    # The no-memory bias is still there for factual questions.
+    assert "no supporting" in prompt.system.lower() or "no relevant" in prompt.system.lower()
+    # And the LLM is still told not to guess.
+    assert "never guess" in prompt.system.lower() or "do not invent" in prompt.system.lower() or "do not guess" in prompt.system.lower()
 
 
 def test_context_builder_prompt_is_pure_for_same_inputs():
