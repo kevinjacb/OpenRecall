@@ -27,6 +27,7 @@ from typing import Optional
 from ..agent.metrics import InMemoryMetricsRecorder
 from ..contracts.metrics import Metrics
 from ..events.store import EventStore
+from .extract import LLMParseError
 from .stages import Pipeline
 from .store import AtomStore
 
@@ -74,6 +75,28 @@ class ExtractionEnqueuer:
     overflow increments :data:`Metrics.EXTRACTION_QUEUE_OVERFLOW_TOTAL`
     and drops the duplicate. Sessions are de-duplicated: enqueuing
     the same session id while it is already pending is a no-op.
+
+    Cross-thread contract:
+
+    The gateway adapter runs ``handle_message`` on a worker thread
+    via ``asyncio.to_thread`` (``gateway/adapter.py``). That worker
+    thread is the producer for the enqueuer; the consumer is the
+    ``ExtractionWorker._run`` task on the event loop. ``asyncio.Queue``
+    is documented as not thread-safe — the queue's internals
+    (``_unfinished_tasks``, ``_finished``, ``_getters``) are
+    manipulated without any locking, and CPython does not provide
+    atomicity for the compound operations. A direct
+    ``self._queue.put_nowait`` from the worker thread races the
+    loop thread on every put.
+
+    The fix: when a loop is bound (via :meth:`bind_loop`, called
+    from :meth:`ExtractionWorker.start`), the producer path uses
+    ``loop.call_soon_threadsafe(self._queue.put_nowait, session_id)``
+    so the actual queue manipulation happens on the loop thread.
+    When no loop is bound (the test-only fallback), the producer
+    path uses ``put_nowait`` directly — this is documented as
+    loop-thread-only and is safe for the unit tests that
+    construct an enqueuer without a worker.
     """
 
     def __init__(
@@ -86,13 +109,85 @@ class ExtractionEnqueuer:
         self._queue: asyncio.Queue[str] = asyncio.Queue(maxsize=capacity)
         self._metrics = metrics
         self._worker: ExtractionWorker | None = None
+        # The loop the consumer (worker._run) runs on. Captured by
+        # bind_loop from worker.start(); None in unit tests that
+        # exercise the enqueuer directly. The cross-thread producer
+        # path uses call_soon_threadsafe when this is set.
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def bound_loop(self) -> asyncio.AbstractEventLoop | None:
+        """The loop the enqueuer is bound to, or None if unbound.
+
+        Set by :meth:`bind_loop` (called from
+        :meth:`ExtractionWorker.start`); consulted by :meth:`enqueue`
+        to decide whether to use the cross-thread-safe
+        ``call_soon_threadsafe`` path or the loop-thread-only
+        direct ``put_nowait`` path. Exposed as a public attribute
+        so the structural regression tests can assert the bind
+        happened.
+        """
+        return self._loop
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Bind the loop the consumer (worker._run) runs on.
+
+        Called from :meth:`ExtractionWorker.start`, which itself
+        runs on the event loop. After this call, the producer
+        path (gateway hot path) can safely call :meth:`enqueue`
+        from any thread: the actual ``asyncio.Queue.put_nowait``
+        happens on the loop thread via ``call_soon_threadsafe``.
+
+        Re-binding to a different loop is a programming error:
+        raises :class:`RuntimeError`. Re-binding to the same
+        loop is a no-op.
+        """
+        if self._loop is None:
+            self._loop = loop
+            return
+        if self._loop is loop:
+            return
+        raise RuntimeError(
+            "ExtractionEnqueuer is already bound to a different loop; "
+            "do not share an enqueuer across loops."
+        )
 
     def attach(self, worker: "ExtractionWorker") -> None:
         """Bind a worker so the enqueuer can call ``enqueue_session``."""
         self._worker = worker
 
     def enqueue(self, session_id: str) -> None:
-        """Enqueue a session for extraction. Drops + counts on overflow."""
+        """Enqueue a session for extraction. Drops + counts on overflow.
+
+        Thread safety:
+
+        - When a loop is bound (the production path), the actual
+          ``asyncio.Queue.put_nowait`` runs on the loop thread via
+          ``loop.call_soon_threadsafe``. Safe to call from any thread.
+        - When no loop is bound (the unit-test fallback), this
+          calls ``put_nowait`` directly. Safe only when called from
+          the loop thread. The basic enqueue/overflow tests use
+          this path; they never call enqueue from a worker thread.
+        """
+        if self._loop is not None:
+            # Cross-thread producer path. The loop will run the
+            # actual put_nowait on its own thread, so the asyncio
+            # queue internals are never touched by the calling
+            # thread. Overflow is detected on the loop thread; we
+            # count it there too.
+            self._loop.call_soon_threadsafe(self._enqueue_on_loop, session_id)
+            return
+        # Loop-thread-only fallback.
+        self._enqueue_on_loop(session_id)
+
+    def _enqueue_on_loop(self, session_id: str) -> None:
+        """The actual put_nowait. Always runs on the loop thread.
+
+        Called either directly (no-loop fallback) or via
+        ``loop.call_soon_threadsafe`` (production path). Overflow
+        is counted here, on the loop thread, so the metric is
+        consistent with the queue state.
+        """
         try:
             self._queue.put_nowait(session_id)
         except asyncio.QueueFull:
@@ -255,10 +350,22 @@ class ExtractionWorker:
     def process_session(self, session_id: str) -> list:
         """Run the pipeline for one session. H7: cursor advances on success only.
 
-        Records the EXTRACTION_LATENCY_MS histogram on every call and
-        increments INDEXING_FAILURES_TOTAL on failure. Returns the
-        atoms that were newly indexed. Raises on failure; callers
-        (reconcile / the queue loop) are responsible for catching.
+        Records the EXTRACTION_LATENCY_MS histogram on every call. On
+        failure, the counter depends on the failure type:
+
+        * :class:`LLMParseError` — the LLM reply did not match the
+          contracted shape. This is a *parse* failure, not an indexing
+          failure, and the metric is
+          :data:`Metrics.LLM_PARSE_FAILURES_TOTAL`. The cursor is
+          left unchanged so the next enqueue / reconciliation retries
+          the same events. Distinct from INDEXING_FAILURES_TOTAL so
+          the dashboard does not conflate "LLM misbehaved" with
+          "embedder/indexer crashed".
+        * Any other exception — embedder / indexer / store failure.
+          Increments :data:`Metrics.INDEXING_FAILURES_TOTAL` as before.
+
+        Returns the atoms that were newly indexed. Raises on failure;
+        callers (reconcile / the queue loop) are responsible for catching.
         """
         start = time.monotonic()
         try:
@@ -295,6 +402,26 @@ class ExtractionWorker:
                 (time.monotonic() - start) * 1000.0,
             )
             return indexed
+        except LLMParseError:
+            # Parse failure is structurally distinct from an indexing
+            # failure. Count it on its own metric (tagged with the
+            # session id) and re-raise. The cursor was not advanced.
+            # NOTE: do NOT also increment INDEXING_FAILURES_TOTAL here
+            # — the two counters must never overlap or the dashboard
+            # conflates "LLM misbehaved" with "embedder/indexer crashed".
+            self._metrics.increment(
+                Metrics.LLM_PARSE_FAILURES_TOTAL,
+                tags={"session_id": session_id},
+            )
+            self._metrics.observe(
+                Metrics.EXTRACTION_LATENCY_MS,
+                (time.monotonic() - start) * 1000.0,
+            )
+            log.warning(
+                "extraction_parse_failed",
+                extra={"session_id": session_id},
+            )
+            raise
         except Exception:
             self._metrics.increment(
                 Metrics.INDEXING_FAILURES_TOTAL,
@@ -343,6 +470,15 @@ class ExtractionWorker:
         if self._task is not None:
             return
         self._stop.clear()
+        # Bind the running loop to the enqueuer so the cross-thread
+        # producer path (gateway hot path → enqueue from a worker
+        # thread created by `asyncio.to_thread`) is safe. The
+        # enqueuer's enqueue() uses loop.call_soon_threadsafe when
+        # bound, so the asyncio.Queue internals are only touched
+        # on the loop thread. The structural regression test
+        # `test_worker_start_binds_the_loop_to_the_enqueuer` pins
+        # this binding.
+        self._enqueuer.bind_loop(asyncio.get_running_loop())
         # Reconcile-on-start (M4.3 reconciliation). The live enqueuer
         # only sees new events from the gateway; any session that
         # accumulated events while the worker was down (e.g. an

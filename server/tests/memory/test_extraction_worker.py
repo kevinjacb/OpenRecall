@@ -24,7 +24,7 @@ from sense_server.events.model import CaptureEvent
 from sense_server.events.store import InMemoryEventStore, SqliteEventStore
 from sense_server.memory.atom import MemoryAtom
 from sense_server.memory.embeddings import Embedder
-from sense_server.memory.extract import ExtractedMemory, Extractor
+from sense_server.memory.extract import ExtractedMemory, Extractor, LLMParseError
 from sense_server.memory.index import InMemoryMemoryIndex
 from sense_server.memory.extraction_worker import (
     ExtractionEnqueuer,
@@ -116,6 +116,289 @@ def test_enqueue_does_not_block():
     assert enq.qsize() == 2
 
 
+# --- cross-thread enqueue: structural regression guard ---------------------
+#
+# The hot path (gateway WebSocket handler) calls
+# `self._enqueuer.enqueue(session_id)` from a worker thread (the
+# thread created by `asyncio.to_thread(handle_message, core, message)`
+# in gateway/adapter.py). `asyncio.Queue.put_nowait` is documented
+# as not thread-safe: it manipulates `_unfinished_tasks`,
+# `_finished`, and the `_getters` deque without any locking or
+# loop handoff. A producer on a non-loop thread races the consumer
+# on the loop thread on every one of those compound operations.
+#
+# The fix: the enqueuer holds the running loop (captured by
+# `bind_loop` from `worker.start()`), and the producer path uses
+# `loop.call_soon_threadsafe(self._queue.put_nowait, session_id)`
+# so the actual queue manipulation happens on the loop thread.
+#
+# The tests below pin the *structure* of that fix (the
+# call_soon_threadsafe handoff exists) rather than try to
+# reproduce the race, which is GIL-scheduling-dependent.
+
+
+@pytest.mark.asyncio
+async def test_enqueue_uses_call_soon_threadsafe_when_loop_is_bound():
+    """Structural regression guard: with a loop bound, ``enqueue``
+    must dispatch the put via ``loop.call_soon_threadsafe``, not
+    call ``self._queue.put_nowait`` directly. We assert this by
+    wrapping the loop's ``call_soon_threadsafe`` and confirming
+    the producer path goes through it. If a future refactor
+    regresses the call_soon_threadsafe handoff (e.g. someone
+    "optimizes" by calling put_nowait directly on a non-loop
+    thread), this test fails.
+
+    The test is a structural pin, not a race reproduction. The
+    asyncio.Queue thread-safety defect is documented in the
+    asyncio docs and visible in CPython's source; reproducing it
+    empirically is GIL-scheduling-dependent and not useful as a
+    regression gate.
+    """
+    enq = ExtractionEnqueuer(capacity=10)
+    loop = asyncio.get_running_loop()
+    enq.bind_loop(loop)
+
+    # Wrap the loop's call_soon_threadsafe so we can count the
+    # handoffs. The wrapper must preserve the original signature
+    # (callback, *args) so the enqueuer's call site is unchanged.
+    handoff_count = 0
+    real_call_soon_threadsafe = loop.call_soon_threadsafe
+
+    def counting_call_soon_threadsafe(callback, *args):
+        nonlocal handoff_count
+        handoff_count += 1
+        return real_call_soon_threadsafe(callback, *args)
+
+    loop.call_soon_threadsafe = counting_call_soon_threadsafe
+    try:
+        # Call enqueue from the loop thread (still cross-thread
+        # safe to call even from the loop thread once the
+        # call_soon_threadsafe path is in place).
+        enq.enqueue("s1")
+        # Yield to the loop so the call_soon_threadsafe callback
+        # actually runs.
+        await asyncio.sleep(0)
+    finally:
+        loop.call_soon_threadsafe = real_call_soon_threadsafe
+
+    assert handoff_count == 1, (
+        "enqueue() did not go through loop.call_soon_threadsafe; "
+        "the cross-thread producer path regressed to direct "
+        "asyncio.Queue.put_nowait from a non-loop thread."
+    )
+    # And the item actually landed in the queue.
+    assert enq.qsize() == 1
+
+
+def test_enqueue_uses_call_soon_threadsafe_from_non_loop_thread():
+    """Same structural pin, but called from a worker thread (the
+    actual production path: `asyncio.to_thread(handle_message, ...)`
+    in gateway/adapter.py). On a worker thread there is no
+    get_running_loop(), so any code that does
+    `asyncio.get_event_loop()` or `asyncio.get_running_loop()`
+    would raise. The fix's contract: enqueue is callable from
+    any thread when a loop is bound, and goes through
+    call_soon_threadsafe.
+
+    The test driver runs a small event loop, binds it to the
+    enqueuer, spawns a worker thread that calls enqueue (without
+    any get_running_loop() call — that would raise on a non-loop
+    thread), then verifies the item landed in the queue. The
+    worker thread does NOT touch the loop directly; the
+    enqueuer's call_soon_threadsafe is the only loop handoff.
+    """
+    import threading as _t
+
+    enq = ExtractionEnqueuer(capacity=10)
+    producer_done = _t.Event()
+    producer_error: list[BaseException] = []
+
+    def producer() -> None:
+        try:
+            enq.enqueue("from-worker-thread")
+        except BaseException as e:
+            producer_error.append(e)
+        finally:
+            producer_done.set()
+
+    async def driver() -> None:
+        loop = asyncio.get_running_loop()
+        enq.bind_loop(loop)
+        t = _t.Thread(target=producer, daemon=True)
+        t.start()
+        # Wait for the producer to call enqueue and return. The
+        # actual put_nowait runs on the loop thread via
+        # call_soon_threadsafe; yield to let it land.
+        await asyncio.get_running_loop().run_in_executor(
+            None, producer_done.wait, 1.0
+        )
+        # Give the loop one more tick to process the call_soon_threadsafe.
+        await asyncio.sleep(0)
+
+    asyncio.run(driver())
+    assert producer_error == [], (
+        f"producer thread raised: {producer_error[0]!r}"
+    )
+    assert enq.qsize() == 1, (
+        f"expected 1 item in queue after cross-thread enqueue, "
+        f"got {enq.qsize()}"
+    )
+
+
+def test_enqueue_from_non_loop_thread_uses_call_soon_threadsafe():
+    """Stronger version of the above: wrap the bound loop's
+    call_soon_threadsafe and confirm the producer thread went
+    through it exactly once per enqueue. This is the structural
+    regression guard against the documented asyncio.Queue
+    thread-safety defect.
+
+    The counter increments for every call_soon_threadsafe (the
+    counting wrapper doesn't filter), so we sample the counter
+    around the producer's enqueue call: the delta is the
+    enqueue-related handoff. (Other call_soon_threadsafe calls
+    in the test, e.g. ``run_in_executor`` scheduling the
+    producer_done.wait, are sampled out of the delta window.)
+    """
+    import threading as _t
+
+    enq = ExtractionEnqueuer(capacity=10)
+    handoff_count = 0
+    handoff_lock = _t.Lock()
+    producer_error: list[BaseException] = []
+    producer_enqueued = _t.Event()
+
+    def producer() -> None:
+        try:
+            with handoff_lock:
+                before = handoff_count
+            enq.enqueue("s1")
+            with handoff_lock:
+                after = handoff_count
+            # The enqueue handoff is the only thing that happens
+            # between `before` and `after` on this thread.
+            assert after == before + 1, (
+                f"enqueue did not call call_soon_threadsafe exactly "
+                f"once; before={before}, after={after}"
+            )
+        except BaseException as e:
+            producer_error.append(e)
+        finally:
+            producer_enqueued.set()
+
+    async def driver() -> None:
+        loop = asyncio.get_running_loop()
+        enq.bind_loop(loop)
+        real = loop.call_soon_threadsafe
+
+        def counting(cb, *args):
+            nonlocal handoff_count
+            with handoff_lock:
+                handoff_count += 1
+            return real(cb, *args)
+
+        loop.call_soon_threadsafe = counting
+        try:
+            t = _t.Thread(target=producer, daemon=True)
+            t.start()
+            # Wait for the producer to finish its enqueue + assert.
+            await asyncio.get_running_loop().run_in_executor(
+                None, producer_enqueued.wait, 1.0
+            )
+            # Let the queued put_nowait run on the loop thread.
+            await asyncio.sleep(0)
+        finally:
+            loop.call_soon_threadsafe = real
+
+    asyncio.run(driver())
+    assert producer_error == [], (
+        f"producer thread raised: {producer_error[0]!r}"
+    )
+    assert enq.qsize() == 1
+
+
+def test_enqueue_falls_back_to_direct_put_when_no_loop_is_bound():
+    """Without a bound loop, enqueue uses the direct put_nowait
+    path. This preserves the existing test ergonomics (construct
+    an enqueuer, call enqueue, assert qsize) for the basic
+    enqueue/overflow tests, and is the documented "loop-thread
+    only" contract for the no-loop path. The cross-thread
+    contract requires bind_loop; this test pins that the
+    no-loop fallback is a separate, documented code path.
+    """
+    enq = ExtractionEnqueuer(capacity=10)
+    assert enq.bound_loop is None
+    enq.enqueue("s1")
+    enq.enqueue("s1")
+    assert enq.qsize() == 2
+
+
+def test_worker_start_binds_the_loop_to_the_enqueuer():
+    """``ExtractionWorker.start()`` runs on the event loop. It
+    must capture the running loop and bind it to its enqueuer so
+    the cross-thread producer path (gateway/adapter.py:
+    ``asyncio.to_thread(handle_message, core, message)``) is
+    safe. The bind is the seam that makes the structural
+    regression test above meaningful in production: without the
+    bind, the enqueuer would silently fall back to the
+    unsafe direct put_nowait path.
+    """
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    metrics = InMemoryMetricsRecorder()
+    enq = ExtractionEnqueuer(capacity=10, metrics=metrics)
+    w = _build_worker(events, atoms, idx, HappyEmbedder(), metrics=metrics)
+    w.replace_enqueuer(enq)
+    assert enq.bound_loop is None  # not bound yet
+
+    async def driver() -> None:
+        await w.start()
+        try:
+            assert enq.bound_loop is asyncio.get_running_loop()
+        finally:
+            await w.stop()
+
+    asyncio.run(driver())
+
+
+@pytest.mark.asyncio
+async def test_enqueue_uses_call_soon_threadsafe_end_to_end_after_worker_start():
+    """End-to-end structural pin: after worker.start(), the
+    enqueuer has the loop bound, and a producer calling
+    enqueue() goes through call_soon_threadsafe. This is the
+    production path: gateway hot path → enqueue → loop drain
+    → process_session.
+    """
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    metrics = InMemoryMetricsRecorder()
+    enq = ExtractionEnqueuer(capacity=10, metrics=metrics)
+    w = _build_worker(events, atoms, idx, HappyEmbedder(), metrics=metrics)
+    w.replace_enqueuer(enq)
+    await w.start()
+    try:
+        loop = asyncio.get_running_loop()
+        handoff_count = 0
+        real = loop.call_soon_threadsafe
+
+        def counting(cb, *args):
+            nonlocal handoff_count
+            handoff_count += 1
+            return real(cb, *args)
+
+        loop.call_soon_threadsafe = counting
+        try:
+            enq.enqueue("s1")
+            await asyncio.sleep(0)  # let the queued put_nowait run
+        finally:
+            loop.call_soon_threadsafe = real
+        assert handoff_count == 1
+        assert enq.qsize() == 1
+    finally:
+        await w.stop()
+
+
 def test_enqueue_overflow_is_counted_and_dropped():
     metrics = InMemoryMetricsRecorder()
     enq = ExtractionEnqueuer(capacity=1, metrics=metrics)
@@ -184,6 +467,150 @@ def test_worker_records_indexing_failures_metric():
         w.process_session("s1")
     assert metrics.counter(
         Metrics.INDEXING_FAILURES_TOTAL, tags={"session_id": "s1"}
+    ) == 1
+
+
+class MalformedExtractor:
+    """Always emit a malformed reply so the strict parser raises LLMParseError.
+
+    Used to pin the H7 invariant for parse failures specifically:
+    a malformed LLM response must not advance the cursor.
+    """
+
+    def __init__(self, payload: str = '["event", "Went to the gym this morning."]') -> None:
+        self._payload = payload
+
+    def extract(self, text: str) -> list[ExtractedMemory]:
+        # The real LLMExtractor raises LLMParseError from _parse when
+        # the reply is malformed. We mirror that contract here so the
+        # worker test exercises the same exception path.
+        raise LLMParseError(f"malformed extraction reply: {self._payload!r}")
+
+
+def test_worker_does_not_advance_cursor_on_parse_failure():
+    """H7 (parse-failure branch): a malformed LLM reply must leave the
+    cursor where it was, so the next enqueue / reconciliation retries
+    the same events. This is the bug that caused the live 0-atom
+    incident: the parser silently returned [] and the worker advanced
+    the cursor past events that were never extracted.
+    """
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    events.append(_event(0))
+    events.append(_event(1))
+
+    def clock() -> datetime:
+        return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
+    pipeline = Pipeline(
+        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=HappyEmbedder()),
+        indexing=IndexingStage(index=idx),
+        store=atoms,
+    )
+    w = ExtractionWorker(
+        events=events, atoms=atoms, pipeline=pipeline,
+        metrics=InMemoryMetricsRecorder(),
+    )
+
+    with pytest.raises(LLMParseError):
+        w.process_session("s1")
+
+    # Cursor was NOT advanced: next retry sees the same events.
+    assert atoms.get_cursor("s1") == -1
+    # Nothing was indexed or persisted.
+    assert idx.search("s1", [1.0, 0.0, 0.0], 10) == []
+    assert atoms.atoms("s1") == []
+
+
+def test_worker_increments_llm_parse_failures_metric_on_parse_failure():
+    """A parse failure must increment LLM_PARSE_FAILURES_TOTAL exactly
+    once, tagged with the session_id, so the silent loss becomes
+    observable. The metric is owned by the worker (not the parser)
+    so a future parser refactor cannot accidentally double-count.
+    """
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    events.append(_event(0))
+    metrics = InMemoryMetricsRecorder()
+
+    def clock() -> datetime:
+        return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
+    pipeline = Pipeline(
+        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=HappyEmbedder()),
+        indexing=IndexingStage(index=idx),
+        store=atoms,
+    )
+    w = ExtractionWorker(
+        events=events, atoms=atoms, pipeline=pipeline,
+        metrics=metrics,
+    )
+
+    with pytest.raises(LLMParseError):
+        w.process_session("s1")
+
+    assert metrics.counter(
+        Metrics.LLM_PARSE_FAILURES_TOTAL, tags={"session_id": "s1"}
+    ) == 1
+    # Parse failure is structurally distinct from an indexing failure.
+    # Both counters must NOT be incremented for the same failure —
+    # otherwise the dashboard conflates "LLM misbehaved" with
+    # "embedder/indexer crashed".
+    assert metrics.counter(
+        Metrics.INDEXING_FAILURES_TOTAL, tags={"session_id": "s1"}
+    ) == 0
+
+
+def test_worker_parse_failure_is_self_healing_on_retry():
+    """After a parse failure, replacing the extractor with a working one
+    and re-enqueuing the same session must process every event the
+    previous attempt dropped. This is the operator's recovery story:
+    fix the prompt / model / wrapper, re-enqueue, no manual cursor
+    surgery.
+    """
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    events.append(_event(0))
+    events.append(_event(1))
+    metrics = InMemoryMetricsRecorder()
+
+    def clock() -> datetime:
+        return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
+    pipeline = Pipeline(
+        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=HappyEmbedder()),
+        indexing=IndexingStage(index=idx),
+        store=atoms,
+    )
+    w = ExtractionWorker(
+        events=events, atoms=atoms, pipeline=pipeline,
+        metrics=metrics,
+    )
+
+    with pytest.raises(LLMParseError):
+        w.process_session("s1")
+    assert atoms.get_cursor("s1") == -1
+    assert metrics.counter(
+        Metrics.LLM_PARSE_FAILURES_TOTAL, tags={"session_id": "s1"}
+    ) == 1
+
+    # Operator swaps the extractor (or fixes the model wrapper).
+    pipeline._extraction = ExtractionStage(
+        extractor=FixedExtractor(), clock=clock
+    )
+
+    indexed = w.process_session("s1")
+    assert len(indexed) == 2
+    assert atoms.get_cursor("s1") == 1
+    # The metric was not double-counted on the successful retry.
+    assert metrics.counter(
+        Metrics.LLM_PARSE_FAILURES_TOTAL, tags={"session_id": "s1"}
     ) == 1
 
 
