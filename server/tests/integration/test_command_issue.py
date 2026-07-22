@@ -328,16 +328,21 @@ async def test_G12_dispatch_and_refusal_both_audited():
     )
     status1, body1 = await _post_agent(app, {"session_id": "s1", "text": "ok"})
     assert status1 == 200
-    # Trigger a refusal.
-    status2, body2 = await _post_agent(app, {"session_id": "s2", "text": "unknown"})
-    # Update the LLM to refuse
+    # The first call dispatched (ISSUE_COMMAND). For the second call,
+    # the LLM is scripted to return no_memory — the answer guardrails
+    # then map that to NO_SUPPORTING_MEMORY. (Previously a planner-side
+    # short-circuit on empty retrieval handled the refusal without
+    # calling the LLM, but that short-circuit was removed in batch-1
+    # to admit direct commands on a cold index. Factual-question
+    # safety is now at the prompt + guardrails level.)
     llm.set_response({"kind": "no_memory", "text": "", "atom_ids": [], "confidence": 0.9})
+    status2, body2 = await _post_agent(app, {"session_id": "s2", "text": "unknown"})
     assert status2 == 200
     # Check the audit log has at least one dispatch + one refusal.
     entries = audit.entries
     # The first call dispatched (ISSUE_COMMAND); the second call had
-    # no retrieved atoms (different session) so it short-circuits to
-    # REFUSE with NO_SUPPORTING_MEMORY.
+    # the LLM return no_memory, which the answer guardrails mapped
+    # to REFUSE with NO_SUPPORTING_MEMORY.
     outcomes = [e["outcome"] for e in entries]
     assert "issue_command" in outcomes, f"missing dispatch in audit: {outcomes}"
     assert "refuse" in outcomes, f"missing refusal in audit: {outcomes}"

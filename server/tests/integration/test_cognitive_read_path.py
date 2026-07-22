@@ -267,13 +267,23 @@ async def test_G3_confidence_band_on_response(stack):
 
 
 @pytest.mark.asyncio
-async def test_G4_short_circuit_when_no_memory(stack):
-    """G4: with no events ever ingested, /agent refuses without calling the LLM."""
+async def test_G4_empty_retrieval_refuses(stack):
+    """G4: with no events ever ingested, /agent refuses. The
+    refusal is enforced by the prompt contract (v2 no-memory
+    directive) plus the answer guardrails' NO_SUPPORTING_MEMORY
+    mapping, not by a planner-side short-circuit. The LLM IS
+    called (the prompt is the safety net for factual questions
+    and the entry point for direct device actions on a cold
+    index)."""
     _, body = await _post(stack, "/agent", {"session_id": "s_unknown", "text": "anything?"})
     assert body["outcome"] == "refuse"
     assert body["refusal_reason"] is not None
-    # The LLM is NOT called when there are no supporting atoms.
-    assert stack["agent_llm"]._chat.calls == 0
+    # The LLM IS called when there are no supporting atoms.
+    # (Previously a planner-side short-circuit skipped the LLM,
+    # but that short-circuit was removed in batch-1 to admit
+    # direct commands on a cold index. Factual-question safety
+    # is preserved by the v2 prompt + answer guardrails.)
+    assert stack["agent_llm"]._chat.calls == 1
 
 
 @pytest.mark.asyncio

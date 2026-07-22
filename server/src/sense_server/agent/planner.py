@@ -3,18 +3,23 @@
 The Planner orchestrates the read path AND the command path:
 
   1. RETRIEVE — call :class:`Retriever` for relevant atoms.
-  2. SHORT-CIRCUIT — if no atoms, refuse with NO_SUPPORTING_MEMORY
-     (don't bother the LLM with a guaranteed failure).
-  3. BUILD CONTEXT — call :class:`ContextBuilder` with the trigger,
-     retrieved atoms, and capabilities.
-  4. REASON — call the async :class:`AgentLLM` (H4 — doesn't block).
-  5. VALIDATE — strict JSON schema + provenance enforcement.
-  6. GUARDRAIL — confidence-gated autonomy + rate limit.
-  7. DISPATCH (P2-commands) — if the LLM emitted ISSUE_COMMAND, run
+  2. BUILD CONTEXT — call :class:`ContextBuilder` with the trigger,
+     retrieved atoms, and capabilities. The v2 system prompt (see
+     :mod:`agent.context`) carves out device actions from the
+     empty-retrieval no-memory directive, so direct commands reach
+     the LLM even on a cold index.
+  3. REASON — call the async :class:`AgentLLM` (H4 — doesn't block).
+  4. VALIDATE — strict JSON schema + provenance enforcement.
+  5. GUARDRAIL — confidence-gated autonomy + rate limit. The
+     answer guardrails map a `no_memory` LLM reply to
+     `NO_SUPPORTING_MEMORY`, preserving factual-question safety
+     at the LLM+guardrails level rather than a planner-side
+     short-circuit.
+  6. DISPATCH (P2-commands) — if the LLM emitted ISSUE_COMMAND, run
      the command through CommandValidator + CommandGuardrails +
      CommandDispatcher.issue. Carry the command_id back to the caller
      so the Android UI can watch its lifecycle.
-  8. AUDIT — best-effort write to the durable log (H3 — failure does
+  7. AUDIT — best-effort write to the durable log (H3 — failure does
      not lose the response).
 
 The Planner is **stateless** (INV-1): every call takes the same
@@ -109,31 +114,30 @@ class Planner:
         retrieval_latency = int((time.monotonic() - t0) * 1000)
         self._metrics.observe(Metrics.RETRIEVAL_LATENCY_MS, retrieval_latency)
 
-        if not retrieved.atoms:
-            # 2. SHORT-CIRCUIT — refuse without bothering the LLM
-            result = self._build_result(
-                ctx, retrieved,
-                outcome=PlannerOutcome.REFUSE,
-                guarded=GuardedAction(
-                    outcome=_REFUSE,
-                    action=AgentAction(
-                        kind=AgentActionKind.NO_MEMORY,
-                        text="",
-                        atom_ids=(),
-                        confidence=0.0,
-                    ),
-                    refusal_reason=RejectionReason.NO_SUPPORTING_MEMORY,
-                    refusal_message="No relevant memory found.",
-                ),
-                retrieval_latency_ms=retrieval_latency,
-                llm_latency_ms=0,
-                validator_latency_ms=0,
-                guardrails_latency_ms=0,
-            )
-            self._safe_audit(result, prompt=None, ctx=ctx)
-            return result
+        # P2-commands: do NOT short-circuit on empty retrieval. The
+        # previous short-circuit saved one LLM call per empty-retrieval
+        # POST /agent, but it was wrong for direct device-action
+        # requests: a `/agent -d '{"text":"record a 3 second video"}'`
+        # from a fresh session has no atoms yet, and the LLM is the
+        # only place that can recognize it as a device action and
+        # emit issue_command. Short-circuiting the LLM meant every
+        # direct command on a cold index was refused.
+        #
+        # Factual-question safety is preserved at the prompt level:
+        # the v2 system prompt (see agent/context.py) explicitly tells
+        # the LLM that empty retrieval is a no-memory signal for
+        # FACTUAL questions but is normal/expected for DEVICE actions.
+        # The answer guardrails then map a `no_memory` LLM reply to
+        # `NO_SUPPORTING_MEMORY` exactly as before, so the audit log
+        # and the operator-visible refusal are unchanged for the
+        # factual-question path.
+        #
+        # The cost is one LLM call per empty-retrieval request. The
+        # empty-retrieval case is a fresh session or a fresh gateway,
+        # not the steady state; the call is async and runs in the
+        # background like every other LLM call.
 
-        # 3. BUILD CONTEXT
+        # 2. BUILD CONTEXT
         capabilities = self._caps.capabilities()
         # P3: pass the Trigger envelope. The ContextBuilder is
         # source-agnostic; for UserRequest it uses trigger.text, for

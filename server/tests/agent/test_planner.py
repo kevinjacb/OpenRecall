@@ -120,13 +120,30 @@ async def test_planner_returns_answer_with_cited_atoms():
 
 @pytest.mark.asyncio
 async def test_planner_refuses_when_no_retrieved_atoms():
-    llm = FakeAgentLLM()
+    """Empty retrieval is refused with NO_SUPPORTING_MEMORY, with the
+    no-memory direction owned by the v2 prompt + answer guardrails
+    rather than a planner-side short-circuit (which was removed
+    in batch-1 to make room for direct device-action admission on
+    a cold index)."""
+    # The LLM is now called on empty retrieval. The v2 prompt
+    # tells it to return no_memory for factual questions, which
+    # the answer guardrails then map to NO_SUPPORTING_MEMORY.
+    llm = FakeAgentLLM(
+        parsed=AgentAction(
+            kind=AgentActionKind.NO_MEMORY,
+            text="",
+            atom_ids=(),
+            confidence=0.5,
+        )
+    )
     p = _planner(FakeRetriever(atoms=()), llm)
     result = await p.plan(_ctx())
     assert result.outcome == PlannerOutcome.REFUSE
     assert result.refusal_reason == RejectionReason.NO_SUPPORTING_MEMORY
-    # The LLM is NOT called when there are no supporting atoms.
-    assert llm.calls == []
+    # The LLM IS called when there are no supporting atoms; the
+    # factual-question safety lives at the prompt + guardrails
+    # level, not in a planner-side short-circuit.
+    assert len(llm.calls) == 1
 
 
 @pytest.mark.asyncio
