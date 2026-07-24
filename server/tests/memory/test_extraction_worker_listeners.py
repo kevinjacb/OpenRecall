@@ -261,3 +261,140 @@ def test_listener_runs_when_process_session_called_from_a_thread():
         f"ran outside an event loop: {[str(w.message) for w in leaked]}"
     )
     assert seen == ["s1"]
+
+
+@pytest.mark.asyncio
+async def test_listener_does_not_block_worker_run_loop():
+    """Regression guard for the production-path bug: the worker thread
+    used to block on listener execution because ``process_session`` is
+    called from ``_run`` via ``asyncio.to_thread(self._safe_process, ...)``,
+    and the worker thread has no running loop. The dispatch then fell
+    into a fallback that ran the listener on a transient loop in the
+    same thread — blocking the worker for the full listener duration.
+
+    With N sessions and a slow listener, the queue loop must drain in
+    O(listener_time) — not O(N * listener_time) — because the listener
+    is offloaded to the main event loop, not serialised on the worker
+    thread.
+
+    Without this test, the production-path bug is silent: the
+    no-loop-fallback test above exercises the same code path as a
+    one-shot reconcile call, not the steady-state queue loop. Both
+    paths share ``process_session``, so the queue loop's blocking is
+    invisible in the existing test suite.
+    """
+    import time
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    metrics = InMemoryMetricsRecorder()
+    enq = ExtractionEnqueuer(capacity=20, metrics=metrics)
+    worker = _build_worker(events, atoms, idx, metrics, enq)
+
+    listener_started: list[tuple[str, float]] = []
+    listener_done: list[tuple[str, float]] = []
+    n_listeners = 3
+    listener_seconds = 0.5  # shorter for fast tests; principle is the same
+    all_done = asyncio.Event()
+
+    async def slow_listener(c: SessionCompletion) -> None:
+        listener_started.append((c.session_id, time.monotonic()))
+        await asyncio.sleep(listener_seconds)
+        listener_done.append((c.session_id, time.monotonic()))
+        if len(listener_done) == n_listeners:
+            all_done.set()
+
+    worker.add_listener(slow_listener)
+
+    # Simulate worker.start()'s loop binding + reconcile + start. We
+    # only need the loop binding for this test (the reconcile sweep
+    # would require a populated event store with prior state).
+    enq.bind_loop(asyncio.get_running_loop())
+    run_task = asyncio.create_task(worker._run())
+
+    try:
+        # Enqueue N sessions quickly. The queue is drained by _run.
+        for i in range(n_listeners):
+            events.append(_event(0, f"s{i}", "hello"))
+            enq.enqueue(f"s{i}")
+
+        # Wait for all listeners to complete. With the fix, this is
+        # ~listener_seconds. Without the fix, this is ~N*listener_seconds
+        # because the worker thread is serialised behind each listener.
+        t0 = time.monotonic()
+        await asyncio.wait_for(all_done.wait(), timeout=10.0)
+        elapsed = time.monotonic() - t0
+
+        # All N listeners fired.
+        assert len(listener_done) == n_listeners
+        assert sorted(s for s, _ in listener_done) == [
+            f"s{i}" for i in range(n_listeners)
+        ]
+        # The listeners ran in parallel on the main loop, not serialised
+        # on the worker thread. Allow generous slack for CI; the bug
+        # is ~N*listener_seconds (1.5s for N=3) vs the fix ~listener_seconds
+        # (0.5s). A 1.2s threshold catches the regression and forgives
+        # cold-start overhead.
+        assert elapsed < 1.2, (
+            f"listeners blocked the worker thread: "
+            f"{n_listeners} sessions with a {listener_seconds}s listener "
+            f"took {elapsed:.2f}s (expected < 1.2s). "
+            f"listener_done times: {listener_done}"
+        )
+    finally:
+        # Stop the worker's _run loop and let it drain.
+        enq.enqueue("__stop__")  # any session id; _safe_process will run
+        # Cancel cleanly.
+        run_task.cancel()
+        try:
+            await run_task
+        except asyncio.CancelledError:
+            pass
+
+
+class EmptyExtractor:
+    """Always returns no memories — the LLM said 'nothing memorable' ([])."""
+    def extract(self, text: str) -> list[ExtractedMemory]:
+        return []
+
+
+async def test_listener_not_invoked_when_no_new_atoms_extracted():
+    """A batch that extracts NO new memories (the LLM returned [] for noise
+    / fragments) must NOT fire listeners — there is nothing new to be
+    proactive about. Firing on every empty batch floods the planner with LLM
+    calls (contention on the shared model → proactive_plan_timeout). The
+    cursor still advances (the pipeline succeeded).
+    """
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    metrics = InMemoryMetricsRecorder()
+    enq = ExtractionEnqueuer(capacity=10, metrics=metrics)
+
+    def clock() -> datetime:
+        return datetime(2026, 7, 19, 12, 0, 0, tzinfo=timezone.utc)
+    pipeline = Pipeline(
+        extraction=ExtractionStage(extractor=EmptyExtractor(), clock=clock),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=HappyEmbedder()),
+        indexing=IndexingStage(index=idx),
+        store=atoms,
+    )
+    worker = ExtractionWorker(
+        events=events, atoms=atoms, pipeline=pipeline, metrics=metrics, enqueuer=enq,
+    )
+
+    seen: list[SessionCompletion] = []
+
+    async def listener(c: SessionCompletion) -> None:
+        seen.append(c)
+
+    worker.add_listener(listener)
+    events.append(_event(0, "s1", "hello"))
+    events.append(_event(1, "s1", "world"))
+    worker.process_session("s1")
+    await _drain_listeners()
+
+    assert seen == [], "listener must not fire when no new atoms were extracted"
+    # The cursor still advanced (the pipeline succeeded; nothing to retry).
+    assert atoms.get_cursor("s1") == 1
