@@ -39,6 +39,25 @@ class FakeChat:
         return self.reply
 
 
+# --- prompt regression guard -------------------------------------------------
+
+
+def test_default_prompt_pins_object_schema_against_positional_arrays():
+    """The prompt must instruct the model to emit {kind,text} OBJECTS, not
+    positional 2-string arrays. qwen2.5:7b emits ["fact","..."] without this
+    guidance, which the strict parser rejects (extraction_parse_failed) and
+    the cursor sticks (the 459-events-behind storm). This pins the fix against
+    a regression that silently re-weakens the prompt.
+    """
+    from sense_server.memory.extract import DEFAULT_PROMPT
+
+    assert '"kind"' in DEFAULT_PROMPT
+    assert '"text"' in DEFAULT_PROMPT
+    assert "flat array of strings" in DEFAULT_PROMPT
+    # An explicit worked example anchors the shape for small chat-tuned models.
+    assert '[{"kind"' in DEFAULT_PROMPT
+
+
 # --- happy paths -------------------------------------------------------------
 
 

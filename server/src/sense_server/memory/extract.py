@@ -40,10 +40,13 @@ _JSON_ARRAY = re.compile(r"\[.*\]", re.DOTALL)
 
 DEFAULT_PROMPT = (
     "You extract durable, factual memories from a short transcript of someone's day. "
-    "Return ONLY a JSON array; each element is an object with string fields "
-    '"kind" (e.g. fact, task, preference, event) and "text" (a concise, '
-    "self-contained memory written in the third person). If nothing is worth "
-    "remembering, return []. Do not include any prose outside the JSON array."
+    "Respond with ONLY a JSON array — no prose, no code fences. Each element MUST be a "
+    "JSON object with exactly two string fields: \"kind\" (one of: fact, task, "
+    "preference, event) and \"text\" (a concise, self-contained memory written in the "
+    'third person). Example: [{"kind":"fact","text":"Sarah is moving to Austin next '
+    'month."}]. Never return a flat array of strings like ["fact","some text"] — each '
+    "element must be an object with \"kind\" and \"text\" keys. If nothing is worth "
+    "remembering, return []."
 )
 
 
