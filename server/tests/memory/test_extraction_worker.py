@@ -92,7 +92,7 @@ def _build_worker(
     def clock() -> datetime:
         return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
     pipeline = Pipeline(
-        extraction=ExtractionStage(extractor=FixedExtractor(), clock=clock),
+        extraction=ExtractionStage(window_ms=1000, extractor=FixedExtractor(), clock=clock),
         version_stamp=VersionStampStage(),
         embedding=EmbeddingStage(embedder=embedder),
         indexing=IndexingStage(index=idx),
@@ -503,7 +503,7 @@ def test_worker_does_not_advance_cursor_on_parse_failure():
     def clock() -> datetime:
         return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
     pipeline = Pipeline(
-        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        extraction=ExtractionStage(window_ms=1000, extractor=MalformedExtractor(), clock=clock),
         version_stamp=VersionStampStage(),
         embedding=EmbeddingStage(embedder=HappyEmbedder()),
         indexing=IndexingStage(index=idx),
@@ -539,7 +539,7 @@ def test_worker_increments_llm_parse_failures_metric_on_parse_failure():
     def clock() -> datetime:
         return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
     pipeline = Pipeline(
-        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        extraction=ExtractionStage(window_ms=1000, extractor=MalformedExtractor(), clock=clock),
         version_stamp=VersionStampStage(),
         embedding=EmbeddingStage(embedder=HappyEmbedder()),
         indexing=IndexingStage(index=idx),
@@ -582,7 +582,7 @@ def test_worker_parse_failure_is_self_healing_on_retry():
     def clock() -> datetime:
         return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
     pipeline = Pipeline(
-        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        extraction=ExtractionStage(window_ms=1000, extractor=MalformedExtractor(), clock=clock),
         version_stamp=VersionStampStage(),
         embedding=EmbeddingStage(embedder=HappyEmbedder()),
         indexing=IndexingStage(index=idx),
@@ -602,7 +602,7 @@ def test_worker_parse_failure_is_self_healing_on_retry():
 
     # Operator swaps the extractor (or fixes the model wrapper).
     pipeline._extraction = ExtractionStage(
-        extractor=FixedExtractor(), clock=clock
+        window_ms=1000, extractor=FixedExtractor(), clock=clock
     )
 
     indexed = w.process_session("s1")
@@ -629,7 +629,7 @@ def test_worker_logs_parse_error_detail_on_parse_failure(caplog):
     def clock() -> datetime:
         return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
     pipeline = Pipeline(
-        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        extraction=ExtractionStage(window_ms=1000, extractor=MalformedExtractor(), clock=clock),
         version_stamp=VersionStampStage(),
         embedding=EmbeddingStage(embedder=HappyEmbedder()),
         indexing=IndexingStage(index=idx),
@@ -662,7 +662,7 @@ def test_worker_dead_letters_after_max_consecutive_parse_failures():
     def clock() -> datetime:
         return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
     pipeline = Pipeline(
-        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        extraction=ExtractionStage(window_ms=1000, extractor=MalformedExtractor(), clock=clock),
         version_stamp=VersionStampStage(),
         embedding=EmbeddingStage(embedder=HappyEmbedder()),
         indexing=IndexingStage(index=idx),
@@ -704,7 +704,7 @@ def test_worker_resets_parse_failure_count_on_success():
     def clock() -> datetime:
         return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
     pipeline = Pipeline(
-        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        extraction=ExtractionStage(window_ms=1000, extractor=MalformedExtractor(), clock=clock),
         version_stamp=VersionStampStage(),
         embedding=EmbeddingStage(embedder=HappyEmbedder()),
         indexing=IndexingStage(index=idx),
@@ -720,14 +720,14 @@ def test_worker_resets_parse_failure_count_on_success():
             w.process_session("s1")
     assert atoms.get_cursor("s1") == -1
     # Fix the extractor; success advances the cursor and resets the counter.
-    pipeline._extraction = ExtractionStage(extractor=FixedExtractor(), clock=clock)
+    pipeline._extraction = ExtractionStage(window_ms=1000, extractor=FixedExtractor(), clock=clock)
     w.process_session("s1")
     assert atoms.get_cursor("s1") == 3
     # More events land; extractor breaks again. Only 1 failure since the
     # reset, so it must raise (not dead-letter) and leave the cursor put.
     events.append(_event(4))
     events.append(_event(5))
-    pipeline._extraction = ExtractionStage(extractor=MalformedExtractor(), clock=clock)
+    pipeline._extraction = ExtractionStage(window_ms=1000, extractor=MalformedExtractor(), clock=clock)
     with pytest.raises(LLMParseError):
         w.process_session("s1")
     assert atoms.get_cursor("s1") == 3
@@ -905,7 +905,7 @@ async def test_worker_start_reconciles_against_sqlite_event_store(tmp_path):
     metrics = InMemoryMetricsRecorder()
     enq = ExtractionEnqueuer(capacity=10, metrics=metrics)
     pipeline = Pipeline(
-        extraction=ExtractionStage(extractor=FixedExtractor(), clock=lambda: datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)),
+        extraction=ExtractionStage(window_ms=1000, extractor=FixedExtractor(), clock=lambda: datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)),
         version_stamp=VersionStampStage(),
         embedding=EmbeddingStage(embedder=HappyEmbedder()),
         indexing=IndexingStage(index=idx),
@@ -942,7 +942,7 @@ async def test_worker_start_reconciles_against_sqlite_event_store(tmp_path):
     atoms2 = SqliteAtomStore(atoms_db)
     enq2 = ExtractionEnqueuer(capacity=10, metrics=metrics)
     pipeline2 = Pipeline(
-        extraction=ExtractionStage(extractor=FixedExtractor(), clock=lambda: datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)),
+        extraction=ExtractionStage(window_ms=1000, extractor=FixedExtractor(), clock=lambda: datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)),
         version_stamp=VersionStampStage(),
         embedding=EmbeddingStage(embedder=HappyEmbedder()),
         indexing=IndexingStage(index=idx),
@@ -979,7 +979,7 @@ def test_safe_process_does_not_count_parse_failure_as_indexing_failure():
     def clock() -> datetime:
         return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
     pipeline = Pipeline(
-        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        extraction=ExtractionStage(window_ms=1000, extractor=MalformedExtractor(), clock=clock),
         version_stamp=VersionStampStage(),
         embedding=EmbeddingStage(embedder=HappyEmbedder()),
         indexing=IndexingStage(index=idx),
@@ -1011,7 +1011,7 @@ def test_reconcile_does_not_count_parse_failure_as_indexing_failure():
     def clock() -> datetime:
         return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
     pipeline = Pipeline(
-        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        extraction=ExtractionStage(window_ms=1000, extractor=MalformedExtractor(), clock=clock),
         version_stamp=VersionStampStage(),
         embedding=EmbeddingStage(embedder=HappyEmbedder()),
         indexing=IndexingStage(index=idx),
