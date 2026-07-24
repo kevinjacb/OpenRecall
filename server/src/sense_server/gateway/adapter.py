@@ -244,8 +244,8 @@ async def serve(
                     continue
                 for reply in replies:
                     await ws.send(reply)
-        except GatewayError:
-            logger.warning("protocol error from %s — closing 1002", peer)
+        except GatewayError as exc:
+            logger.warning("protocol error from %s — closing 1002: %s", peer, exc)
             await ws.close(code=1002, reason="protocol error")  # 1002 == protocol error
         except ConnectionClosed:
             pass  # client went away (possibly mid-transcribe) — a normal disconnect

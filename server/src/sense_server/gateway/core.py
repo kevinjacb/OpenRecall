@@ -150,7 +150,19 @@ class GatewayCore:
 
     def on_audio(self, data: bytes) -> list[Outbound]:
         if self._pipeline is None or self._session_id is None:
-            raise GatewayError("audio received before hello")
+            # Defense-in-depth against the relay's hello/audio race (see
+            # RelaySession): a binary frame can arrive just before `hello`
+            # on a fresh/reconnected WebSocket. Tearing the link down for one
+            # reordered frame is harsh and turns a transient race into a
+            # reconnect death-loop. Drop the frame with a loud WARNING (never
+            # silent) and let `hello` establish the pipeline; the live-stream
+            # reassembler anchors at the first packet it does see, so a few
+            # dropped head frames cost nothing on a fresh stream.
+            logger.warning(
+                "audio before hello — dropping %d byte frame (session not opened yet)",
+                len(data),
+            )
+            return []
 
         packet = AudioPacket.parse(data)
         logger.info(

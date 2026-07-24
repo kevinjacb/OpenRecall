@@ -11,10 +11,8 @@ involved here; it is reserved for end-of-day video retrieval.
 
 import struct
 
-import pytest
-
 from sense_server.events.store import InMemoryEventStore
-from sense_server.gateway.core import GatewayCore, GatewayError
+from sense_server.gateway.core import GatewayCore
 from sense_server.ingest.audio_packet import PacketType, VadState
 from sense_server.ingest.pipeline import AudioIngestPipeline
 from sense_server.ingest.reassembler import SessionReassembler
@@ -128,10 +126,21 @@ def test_bye_flushes_buffered_subwindow_audio_into_a_transcript():
     assert out == []  # no buffered audio left
 
 
-def test_audio_before_hello_is_a_protocol_violation():
+def test_audio_before_hello_drops_the_frame_without_closing():
+    """A binary frame that wins the hello/audio race is dropped, not fatal.
+
+    The relay gates audio on `hello` (see RelaySession), but the server stays
+    robust to a one-off reordered frame: it returns no outbound, leaves the
+    pipeline unopened, and lets the subsequent `hello` establish the stream.
+    Tearing the link down (the old raise-GatewayError behaviour) turned a
+    transient race into a reconnect death-loop. The drop is logged at WARNING
+    so it is never silent.
+    """
     core = make_core()
-    with pytest.raises(GatewayError):
-        core.on_audio(audio_bytes(0, n_frames=5))
+    assert core.on_audio(audio_bytes(0, n_frames=5)) == []
+    # The pipeline is still unopened, so a real hello still works normally.
+    out = core.on_control(Hello(session_id="s1", start_seq=0))
+    assert isinstance(out[0], Ack)
 
 
 # ---- persistence: transcripts become durable §F capture events ----------------
