@@ -963,3 +963,65 @@ async def test_worker_start_reconciles_against_sqlite_event_store(tmp_path):
         assert len(atoms2.atoms("session-B")) == 2
     finally:
         await w2.stop()
+
+
+def test_safe_process_does_not_count_parse_failure_as_indexing_failure():
+    """The _run-path wrapper must not double-count a parse failure as
+    INDEXING_FAILURES_TOTAL — process_session already counted it as
+    LLM_PARSE_FAILURES_TOTAL. The dashboard must not conflate the two.
+    """
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    events.append(_event(0))
+    metrics = InMemoryMetricsRecorder()
+
+    def clock() -> datetime:
+        return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
+    pipeline = Pipeline(
+        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=HappyEmbedder()),
+        indexing=IndexingStage(index=idx),
+        store=atoms,
+    )
+    w = ExtractionWorker(events=events, atoms=atoms, pipeline=pipeline, metrics=metrics)
+    with pytest.raises(LLMParseError):
+        w._safe_process("s1")
+    assert metrics.counter(
+        Metrics.LLM_PARSE_FAILURES_TOTAL, tags={"session_id": "s1"}
+    ) == 1
+    assert metrics.counter(
+        Metrics.INDEXING_FAILURES_TOTAL, tags={"session_id": "s1"}
+    ) == 0
+
+
+def test_reconcile_does_not_count_parse_failure_as_indexing_failure():
+    """reconcile must not double-count a parse failure as an indexing
+    failure either — process_session already counted it. Per-session
+    failure isolation still holds (the parse failure is swallowed and
+    the sweep continues).
+    """
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    events.append(_event(0))
+    metrics = InMemoryMetricsRecorder()
+
+    def clock() -> datetime:
+        return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
+    pipeline = Pipeline(
+        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=HappyEmbedder()),
+        indexing=IndexingStage(index=idx),
+        store=atoms,
+    )
+    w = ExtractionWorker(events=events, atoms=atoms, pipeline=pipeline, metrics=metrics)
+    w.reconcile()  # swallows per-session failures
+    assert metrics.counter(
+        Metrics.LLM_PARSE_FAILURES_TOTAL, tags={"session_id": "s1"}
+    ) == 1
+    assert metrics.counter(
+        Metrics.INDEXING_FAILURES_TOTAL, tags={"session_id": "s1"}
+    ) == 0

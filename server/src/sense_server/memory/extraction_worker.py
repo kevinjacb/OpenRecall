@@ -578,6 +578,11 @@ class ExtractionWorker:
         for sid in sorted(sessions):
             try:
                 indexed.extend(self.process_session(sid))
+            except LLMParseError:
+                # Already counted as LLM_PARSE_FAILURES_TOTAL in
+                # process_session. Don't double-count as an indexing
+                # failure; just skip this session and keep going.
+                continue
             except Exception:
                 self._metrics.increment(
                     Metrics.INDEXING_FAILURES_TOTAL,
@@ -657,6 +662,13 @@ class ExtractionWorker:
                 Metrics.EXTRACTION_LATENCY_MS,
                 (time.monotonic() - start) * 1000.0,
             )
+        except LLMParseError:
+            # Already counted as LLM_PARSE_FAILURES_TOTAL (and latency
+            # observed) inside process_session. Do NOT also count it as
+            # an indexing failure — the two counters must never overlap
+            # or the dashboard conflates "LLM misbehaved" with
+            # "embedder/indexer crashed".
+            raise
         except Exception:
             self._metrics.increment(
                 Metrics.INDEXING_FAILURES_TOTAL,
