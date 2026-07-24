@@ -234,3 +234,29 @@ async def test_engine_set_ws_sender_swaps_target():
     await engine.on_session_completion(_completion("s1"))
     assert sender_a.sent == []
     assert len(sender_b.sent) == 1
+
+
+# --- plan timeout config ----------------------------------------------------
+
+
+def test_plan_timeout_from_env_defaults_to_8s():
+    from sense_server.agent.proactive import (
+        plan_timeout_from_env, DEFAULT_PLAN_TIMEOUT_S,
+    )
+    assert DEFAULT_PLAN_TIMEOUT_S == 8.0
+    assert plan_timeout_from_env({}) == 8.0
+
+
+def test_plan_timeout_from_env_reads_override():
+    from sense_server.agent.proactive import plan_timeout_from_env
+    assert plan_timeout_from_env({"SENSE_PROACTIVE_PLAN_TIMEOUT_S": "5.0"}) == 5.0
+
+
+def test_plan_timeout_from_env_rejects_nonpositive_and_nonnumeric():
+    from sense_server.agent.proactive import plan_timeout_from_env
+    with pytest.raises(ValueError):
+        plan_timeout_from_env({"SENSE_PROACTIVE_PLAN_TIMEOUT_S": "0"})
+    with pytest.raises(ValueError):
+        plan_timeout_from_env({"SENSE_PROACTIVE_PLAN_TIMEOUT_S": "-1"})
+    with pytest.raises(ValueError):
+        plan_timeout_from_env({"SENSE_PROACTIVE_PLAN_TIMEOUT_S": "notanum"})

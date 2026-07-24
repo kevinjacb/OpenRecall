@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Protocol, runtime_checkable
+from typing import Mapping, Protocol, runtime_checkable
 
 from ..contracts.clock import Clock
 from ..contracts.id_generator import IdGenerator
@@ -28,6 +28,36 @@ from .metrics import InMemoryMetricsRecorder
 from .planner import Planner
 
 log = logging.getLogger(__name__)
+
+
+DEFAULT_PLAN_TIMEOUT_S = 8.0
+ENV_PROACTIVE_PLAN_TIMEOUT_S = "SENSE_PROACTIVE_PLAN_TIMEOUT_S"
+
+
+def plan_timeout_from_env(
+    env: Mapping[str, str], default: float = DEFAULT_PLAN_TIMEOUT_S
+) -> float:
+    """Read ``SENSE_PROACTIVE_PLAN_TIMEOUT_S``, validating it is > 0.
+
+    The previous hard-coded 2.0s was an SLA, not a model-grounded budget:
+    a cold local 7B model loads in ~2.1s, so every cold proactive call
+    timed out before generating (``proactive_plan_timeout``). 8.0s fits a
+    cold load + generation on modest hardware while still bounding a
+    stuck planner. Operators can lower/raise it per model without a
+    code change.
+    """
+    raw = env.get(ENV_PROACTIVE_PLAN_TIMEOUT_S)
+    if not raw:
+        return default
+    try:
+        val = float(raw)
+    except ValueError as e:
+        raise ValueError(
+            f"{ENV_PROACTIVE_PLAN_TIMEOUT_S}={raw!r} is not a valid float"
+        ) from e
+    if val <= 0:
+        raise ValueError(f"{ENV_PROACTIVE_PLAN_TIMEOUT_S}={val} must be > 0")
+    return val
 
 
 @runtime_checkable

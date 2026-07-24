@@ -614,6 +614,128 @@ def test_worker_parse_failure_is_self_healing_on_retry():
     ) == 1
 
 
+def test_worker_logs_parse_error_detail_on_parse_failure(caplog):
+    """extraction_parse_failed must carry the parse error string (which
+    includes the raw reply shape) so an operator can see WHY extraction
+    failed. Without it the warning is unactionable.
+    """
+    import logging
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    events.append(_event(0))
+    metrics = InMemoryMetricsRecorder()
+
+    def clock() -> datetime:
+        return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
+    pipeline = Pipeline(
+        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=HappyEmbedder()),
+        indexing=IndexingStage(index=idx),
+        store=atoms,
+    )
+    w = ExtractionWorker(events=events, atoms=atoms, pipeline=pipeline, metrics=metrics)
+    with caplog.at_level(logging.WARNING, logger="sense_server.memory.extraction_worker"):
+        with pytest.raises(LLMParseError):
+            w.process_session("s1")
+    records = [r for r in caplog.records if "extraction_parse_failed" in r.message]
+    assert records, "expected an extraction_parse_failed warning"
+    # The MalformedExtractor raises LLMParseError("malformed extraction reply: ...").
+    assert "malformed extraction reply" in getattr(records[0], "error", "")
+
+
+def test_worker_dead_letters_after_max_consecutive_parse_failures():
+    """After N consecutive parse failures on the same session, the worker
+    advances the cursor past the stuck batch (dead-letter) and stops
+    retrying it on every new event. Without this, a structurally
+    non-conforming model leaves the cursor stuck forever and re-runs the
+    whole backlog on every enqueue (the 459-events-behind storm).
+    """
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    events.append(_event(0))
+    events.append(_event(1))
+    metrics = InMemoryMetricsRecorder()
+
+    def clock() -> datetime:
+        return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
+    pipeline = Pipeline(
+        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=HappyEmbedder()),
+        indexing=IndexingStage(index=idx),
+        store=atoms,
+    )
+    w = ExtractionWorker(
+        events=events, atoms=atoms, pipeline=pipeline,
+        metrics=metrics, max_parse_failures=3,
+    )
+    # First N-1 attempts raise and leave the cursor stuck.
+    for _ in range(2):
+        with pytest.raises(LLMParseError):
+            w.process_session("s1")
+    assert atoms.get_cursor("s1") == -1
+    # Nth attempt dead-letters: no raise, cursor advances past the batch.
+    result = w.process_session("s1")
+    assert result == []
+    assert atoms.get_cursor("s1") == 1
+    assert metrics.counter(
+        Metrics.EXTRACTION_DEAD_LETTER_TOTAL, tags={"session_id": "s1"}
+    ) == 1
+    assert metrics.counter(
+        Metrics.LLM_PARSE_FAILURES_TOTAL, tags={"session_id": "s1"}
+    ) == 3
+
+
+def test_worker_resets_parse_failure_count_on_success():
+    """A successful extraction resets the consecutive-failure counter, so a
+    later transient failure does not immediately dead-letter a batch that
+    had previously failed a few times then recovered.
+    """
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    for s in (0, 1, 2, 3):
+        events.append(_event(s))
+    metrics = InMemoryMetricsRecorder()
+
+    def clock() -> datetime:
+        return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
+    pipeline = Pipeline(
+        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=HappyEmbedder()),
+        indexing=IndexingStage(index=idx),
+        store=atoms,
+    )
+    w = ExtractionWorker(
+        events=events, atoms=atoms, pipeline=pipeline,
+        metrics=metrics, max_parse_failures=3,
+    )
+    # Two consecutive failures: count=2, cursor stuck.
+    for _ in range(2):
+        with pytest.raises(LLMParseError):
+            w.process_session("s1")
+    assert atoms.get_cursor("s1") == -1
+    # Fix the extractor; success advances the cursor and resets the counter.
+    pipeline._extraction = ExtractionStage(extractor=FixedExtractor(), clock=clock)
+    w.process_session("s1")
+    assert atoms.get_cursor("s1") == 3
+    # More events land; extractor breaks again. Only 1 failure since the
+    # reset, so it must raise (not dead-letter) and leave the cursor put.
+    events.append(_event(4))
+    events.append(_event(5))
+    pipeline._extraction = ExtractionStage(extractor=MalformedExtractor(), clock=clock)
+    with pytest.raises(LLMParseError):
+        w.process_session("s1")
+    assert atoms.get_cursor("s1") == 3
+    assert metrics.counter(
+        Metrics.EXTRACTION_DEAD_LETTER_TOTAL, tags={"session_id": "s1"}
+    ) == 0
+
+
 def test_worker_records_extraction_latency():
     events = InMemoryEventStore()
     atoms = InMemoryAtomStore()
@@ -841,3 +963,65 @@ async def test_worker_start_reconciles_against_sqlite_event_store(tmp_path):
         assert len(atoms2.atoms("session-B")) == 2
     finally:
         await w2.stop()
+
+
+def test_safe_process_does_not_count_parse_failure_as_indexing_failure():
+    """The _run-path wrapper must not double-count a parse failure as
+    INDEXING_FAILURES_TOTAL — process_session already counted it as
+    LLM_PARSE_FAILURES_TOTAL. The dashboard must not conflate the two.
+    """
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    events.append(_event(0))
+    metrics = InMemoryMetricsRecorder()
+
+    def clock() -> datetime:
+        return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
+    pipeline = Pipeline(
+        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=HappyEmbedder()),
+        indexing=IndexingStage(index=idx),
+        store=atoms,
+    )
+    w = ExtractionWorker(events=events, atoms=atoms, pipeline=pipeline, metrics=metrics)
+    with pytest.raises(LLMParseError):
+        w._safe_process("s1")
+    assert metrics.counter(
+        Metrics.LLM_PARSE_FAILURES_TOTAL, tags={"session_id": "s1"}
+    ) == 1
+    assert metrics.counter(
+        Metrics.INDEXING_FAILURES_TOTAL, tags={"session_id": "s1"}
+    ) == 0
+
+
+def test_reconcile_does_not_count_parse_failure_as_indexing_failure():
+    """reconcile must not double-count a parse failure as an indexing
+    failure either — process_session already counted it. Per-session
+    failure isolation still holds (the parse failure is swallowed and
+    the sweep continues).
+    """
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    events.append(_event(0))
+    metrics = InMemoryMetricsRecorder()
+
+    def clock() -> datetime:
+        return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
+    pipeline = Pipeline(
+        extraction=ExtractionStage(extractor=MalformedExtractor(), clock=clock),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=HappyEmbedder()),
+        indexing=IndexingStage(index=idx),
+        store=atoms,
+    )
+    w = ExtractionWorker(events=events, atoms=atoms, pipeline=pipeline, metrics=metrics)
+    w.reconcile()  # swallows per-session failures
+    assert metrics.counter(
+        Metrics.LLM_PARSE_FAILURES_TOTAL, tags={"session_id": "s1"}
+    ) == 1
+    assert metrics.counter(
+        Metrics.INDEXING_FAILURES_TOTAL, tags={"session_id": "s1"}
+    ) == 0

@@ -38,6 +38,7 @@ class Metrics:
     INDEXING_FAILURES_TOTAL:         Final = "indexing_failures_total"
     EXTRACTION_QUEUE_OVERFLOW_TOTAL: Final = "extraction_queue_overflow_total"
     LLM_PARSE_FAILURES_TOTAL:        Final = "llm_parse_failures_total"
+    EXTRACTION_DEAD_LETTER_TOTAL:   Final = "extraction_dead_letter_total"
 
     # P3 proactive trigger
     PROACTIVE_DELIVERED_TOTAL:          Final = "proactive_delivered_total"
