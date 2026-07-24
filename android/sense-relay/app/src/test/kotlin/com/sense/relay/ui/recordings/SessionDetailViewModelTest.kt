@@ -26,7 +26,9 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 /**
  * Pins [SessionDetailViewModel]'s progressive emission: the summary lands
@@ -128,5 +130,37 @@ class SessionDetailViewModelTest {
         testScheduler.advanceUntilIdle()
         // Summary still stands; the timeline just doesn't fill in.
         assertIs<SessionDetailUiState.LoadedSummary>(vm.state.value)
+    }
+
+    @Test fun onRefreshReFetchesSummaryAndEventsAndTogglesIsRefreshing() = runTest(dispatcher) {
+        // The per-session flows are one-shot; onRefresh bumps a revision that
+        // re-collects them from scratch, so new server data lands. Using
+        // MutableStateFlow for both means each (re-)collection replays the
+        // current value — updating the value before the refresh simulates
+        // new server data the re-fetch picks up.
+        val summaryFlow = MutableStateFlow<Outcome<SessionDetails>>(
+            Outcome.Success(SessionDetails(summary("s1"), emptyList())),
+        )
+        val eventsFlow = MutableStateFlow<Outcome<List<CaptureEvent>>>(
+            Outcome.Success(listOf(chunk("e1", 1))),
+        )
+        val vm = SessionDetailViewModel(SessionId("s1"), FakeDetailRepo(summaryFlow, eventsFlow))
+        backgroundScope.launch { vm.state.toList(mutableListOf()) }
+        testScheduler.advanceUntilIdle()
+        val before = assertIs<SessionDetailUiState.Loaded>(vm.state.value)
+        assertEquals(1, before.events.size)
+        assertFalse(vm.isRefreshing.value, "not refreshing before the gesture")
+
+        // New server data; a pull-to-refresh re-fetches.
+        summaryFlow.value = Outcome.Success(SessionDetails(summary("s1-v2"), emptyList()))
+        eventsFlow.value = Outcome.Success(listOf(chunk("e1", 1), chunk("e2", 2)))
+        vm.onRefresh()
+        assertTrue(vm.isRefreshing.value, "refresh flag set immediately")
+        testScheduler.advanceUntilIdle()
+
+        val after = assertIs<SessionDetailUiState.Loaded>(vm.state.value)
+        assertEquals("s1-v2", after.summary.id.value, "summary re-fetched")
+        assertEquals(2, after.events.size, "events re-fetched")
+        assertFalse(vm.isRefreshing.value, "refresh flag cleared after the re-fetch")
     }
 }

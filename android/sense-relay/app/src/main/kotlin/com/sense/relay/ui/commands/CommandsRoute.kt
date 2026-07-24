@@ -32,6 +32,7 @@ fun CommandsRoute(modifier: Modifier = Modifier) {
         },
     )
     val state by vm.state.collectAsState()
+    val isRefreshing by vm.isRefreshing.collectAsState()
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.startPolling() }
     LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { vm.stopPolling() }
@@ -40,6 +41,8 @@ fun CommandsRoute(modifier: Modifier = Modifier) {
         state = state,
         onAck = { id -> scope.launch { vm.ack(id) } },
         onRetry = { scope.launch { vm.refresh() } },
+        isRefreshing = isRefreshing,
+        onRefresh = vm::onRefresh,
         modifier = modifier,
     )
 }

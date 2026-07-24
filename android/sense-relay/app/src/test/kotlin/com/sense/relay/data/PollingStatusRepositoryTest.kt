@@ -187,4 +187,55 @@ class PollingStatusRepositoryTest {
         val success = assertIs<Outcome.Success<ServerStatus>>(emitted)
         assertEquals(status(3), success.value)
     }
+
+    @Test fun refreshFetchesImmediatelyOutOfCycle() = runTest {
+        // The poll loop has not advanced (no testScheduler advance), so without
+        // a refresh the cache would still hold the first poll's value. A
+        // refresh() must run one fetch right now and publish the new value.
+        val owner = FakeOwner()
+        var count = 0
+        val repo = PollingStatusRepository(
+            fetch = { count++; Outcome.Success(status(count)) },
+            lifecycle = owner.lifecycle,
+            delayFn = { delay(it) },
+            scope = backgroundScope,
+        )
+        owner.registry.currentState = Lifecycle.State.STARTED
+        testScheduler.runCurrent()
+        assertEquals(1, count, "first poll on start")
+        val before = (repo.latest as Outcome.Success).value.activeSessions
+
+        repo.refresh()  // out-of-cycle fetch, no advanceTimeBy
+        testScheduler.runCurrent()
+
+        assertEquals(2, count, "refresh() triggered an extra fetch immediately")
+        val after = (repo.latest as Outcome.Success).value.activeSessions
+        assertEquals(2, after, "the refresh's result was published")
+        assertTrue(after != before)
+    }
+
+    @Test fun refreshSwallowsAThrowingFetchAndKeepsCache() = runTest {
+        val owner = FakeOwner()
+        var count = 0
+        val repo = PollingStatusRepository(
+            fetch = {
+                count++
+                if (count == 2) throw IOException("boom")
+                Outcome.Success(status(count))
+            },
+            lifecycle = owner.lifecycle,
+            delayFn = { delay(it) },
+            scope = backgroundScope,
+        )
+        owner.registry.currentState = Lifecycle.State.STARTED
+        testScheduler.runCurrent()
+        val first = repo.latest
+        assertIs<Outcome.Success<ServerStatus>>(first)
+
+        repo.refresh()  // the 2nd fetch throws
+        testScheduler.runCurrent()
+
+        assertEquals(first, repo.latest, "a thrown refresh leaves the cache as-is")
+        assertIs<Outcome.Success<ServerStatus>>(repo.latest)
+    }
 }

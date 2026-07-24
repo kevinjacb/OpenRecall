@@ -12,11 +12,18 @@ import com.sense.relay.ble.SensorLink
 import com.sense.relay.data.RepositoryModule
 import com.sense.relay.net.ServerSocket
 import com.sense.relay.net.wsGatewayUrl
+import com.sense.relay.relay.Backoff
 import com.sense.relay.relay.DeviceState
 import com.sense.relay.relay.RelayConnectionState
 import com.sense.relay.relay.RelayController
 import com.sense.relay.relay.ServerState
 import com.sense.relay.store.ServerConfig
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.util.UUID
 
@@ -37,7 +44,17 @@ import java.util.UUID
  * capture that generation and ignore callbacks from a prior generation —
  * crucially the async `SensorLink.stop()` → `onDisconnected` (fired on the
  * GATT thread after `stop()` returns) of the OLD sensor, which would
- * otherwise call `teardown()` on the NEW session and `stopSelf()` the service.
+ * otherwise call [softDrop] on the NEW session.
+ *
+ * **Auto-reconnect (P-refresh):** a transient BLE/WS drop no longer `stopSelf`s
+ * the service. [softDrop] stops the current link and [scheduleReconnect]
+ * publishes [RelayConnectionState.Reconnecting], then re-runs the scan path
+ * after an exponential [Backoff] (1s→2s→4s→8s→30s, ~6 attempts). A successful
+ * reconnect resets the backoff counter; after the cap, the service publishes
+ * [RelayConnectionState.Failed] and stops retrying — the manual "Retry
+ * connection" button (which re-launches this service via [com.sense.relay.relay.RelayStarter])
+ * is the escape hatch. Re-provision during backoff cancels the retry (the
+ * stale generation guard).
  */
 class RelayService : Service() {
 
@@ -64,6 +81,23 @@ class RelayService : Service() {
     @Volatile
     private var generation = 0
 
+    /**
+     * Auto-reconnect attempt counter for the current [generation]. Reset to 0
+     * on every `onStartCommand` (a fresh provisioning run starts the backoff
+     * schedule over). Incremented each time [scheduleReconnect] fires a retry.
+     */
+    @Volatile
+    private var reconnectAttempt = 0
+
+    /** The in-flight reconnect coroutine, if any. Cancelled before scheduling a
+     *  new one (a second drop while a retry is pending supersedes it) and on
+     *  re-provision / destroy. */
+    private var reconnectJob: Job? = null
+
+    /** Scope for reconnect coroutines. A [SupervisorJob] so one failed retry
+     *  doesn't cancel siblings; cancelled in [onDestroy]. */
+    private val serviceScope = CoroutineScope(SupervisorJob())
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val urlExtra = intent?.getStringExtra("server_url")
         val tokenExtra = intent?.getStringExtra("token")
@@ -85,6 +119,10 @@ class RelayService : Service() {
         startForeground(1, buildNotification())
 
         val gen = ++generation
+        // A fresh provisioning run cancels any in-flight auto-reconnect and
+        // resets the backoff schedule.
+        reconnectJob?.cancel(); reconnectJob = null
+        reconnectAttempt = 0
         // Re-provision: if we're already running (a re-delivery with new
         // server_url/token), tear down the prior session/sensor/socket before
         // re-initializing. The per-call listeners below capture `gen`, so the
@@ -131,7 +169,10 @@ class RelayService : Service() {
         }
         override fun onAudio(packet: ByteArray) {
             if (stale()) return
-            execute(session.onDeviceAudio(packet))
+            // onDeviceAudio holds audio until `hello` has been sent (see
+            // RelaySession), so this is safe to call before the socket's
+            // onOpen fires — it returns no actions until start() flushes.
+            session.onDeviceAudio(packet).forEach(::execute)
         }
         override fun onCommandAck(payload: ByteArray) {
             if (stale()) return
@@ -139,10 +180,13 @@ class RelayService : Service() {
         }
         override fun onDisconnected(reason: String) {
             if (stale()) return
-            Log.w(TAG, "device disconnected: $reason"); teardown()
-            // Publish to RelayController: device down + connection idle.
+            Log.w(TAG, "device disconnected: $reason")
+            // Publish to RelayController: device down. The connection state
+            // is set by [softDrop] (Reconnecting, or Failed once the backoff
+            // cap is hit) — NOT Idle, so the UI offers "Retry connection"
+            // while auto-reconnect is in progress.
             RelayController.updateDevice(DeviceState.Disconnected(reason))
-            RelayController.updateConnection(RelayConnectionState.Idle)
+            softDrop(gen, reason)
         }
     }
 
@@ -155,6 +199,9 @@ class RelayService : Service() {
             // Publish to RelayController: server authenticated + relay
             // is Live. `sinceMs` is 0 on first connect; later phases
             // will track elapsed time and re-publish.
+            // A successful reconnect resets the backoff schedule so the next
+            // drop starts the retry count over.
+            reconnectAttempt = 0
             RelayController.updateServer(ServerState.Authenticated)
             RelayController.updateConnection(
                 RelayConnectionState.Live(sessionId = session.sessionId, sinceMs = 0L)
@@ -167,10 +214,11 @@ class RelayService : Service() {
         }
         override fun onClosed(reason: String) {
             if (stale()) return
-            Log.w(TAG, "socket closed: $reason"); teardown()
-            // Publish to RelayController: socket failed + server unreachable.
-            RelayController.updateConnection(RelayConnectionState.Failed(reason))
+            Log.w(TAG, "socket closed: $reason")
+            // Publish to RelayController: server unreachable; [softDrop] sets
+            // the connection state (Reconnecting / Failed).
             RelayController.updateServer(ServerState.Unreachable(reason))
+            softDrop(gen, reason)
         }
     }
 
@@ -188,14 +236,67 @@ class RelayService : Service() {
         }
     }
 
-    private fun teardown() {
-        runCatching { session.stop().forEach(::execute) }
+    /**
+     * Transient drop (BLE or WS): stop the current link WITHOUT `stopSelf`, then
+     * schedule an auto-reconnect with backoff. The service stays alive so the
+     * retry can re-scan / re-open the socket. Generation-guarded via [gen] — a
+     * re-provision during the drop cancels the retry (the stale listener's
+     * `softDrop` is a no-op once [generation] has moved on).
+     *
+     * After the backoff cap ([Backoff.MAX_ATTEMPTS]) is hit, [scheduleReconnect]
+     * publishes a terminal [RelayConnectionState.Failed] and stops retrying —
+     * the manual "Retry connection" button (which re-launches this service) is
+     * the escape hatch.
+     */
+    private fun softDrop(gen: Int, reason: String) {
+        if (gen != generation) return
+        // Stop the current link so the retry starts clean. session.stop()
+        // flushes any pending server-bound frames; sensor.stop() cancels the
+        // BLE scan/GATT. NOT stopSelf — the service must outlive the drop.
+        runCatching { if (::session.isInitialized) session.stop().forEach(::execute) }
         socket?.close(); socket = null
-        sensor.stop()
-        stopSelf()
+        if (::sensor.isInitialized) runCatching { sensor.stop() }
+        scheduleReconnect(gen, reason)
+    }
+
+    /**
+     * Publish [Reconnecting] and, after the backoff delay, re-run the scan
+     * path (fresh sensor + `start()`). [onConnected] re-opens the socket; a
+     * further drop re-enters [softDrop] with an incremented attempt. After
+     * [Backoff.MAX_ATTEMPTS], publish [Failed] and stop retrying.
+     */
+    private fun scheduleReconnect(gen: Int, reason: String) {
+        if (gen != generation) return
+        if (Backoff.shouldGiveUp(reconnectAttempt)) {
+            Log.w(TAG, "reconnect gave up after $reconnectAttempt attempts: $reason")
+            RelayController.updateConnection(RelayConnectionState.Failed(reason))
+            return
+        }
+        val delayMs = Backoff.nextBackoffMs(reconnectAttempt)
+        Log.i(TAG, "reconnect attempt $reconnectAttempt in ${delayMs}ms")
+        RelayController.updateConnection(RelayConnectionState.Reconnecting(delayMs))
+        val attempt = reconnectAttempt
+        reconnectAttempt++
+        // A second drop while a retry is pending supersedes it.
+        reconnectJob?.cancel()
+        reconnectJob = serviceScope.launch {
+            delay(delayMs)
+            if (gen != generation) return@launch  // re-provisioned mid-backoff
+            // Re-run the scan path with the SAME generation's listener, so the
+            // new sensor's callbacks stay non-stale (and share the backoff
+            // counter). onConnected re-opens the socket; a further drop
+            // re-enters softDrop with `attempt+1`.
+            sensor = SensorLink(this@RelayService, sensorListener(gen))
+            RelayController.updateDevice(DeviceState.Scanning)
+            RelayController.updateConnection(RelayConnectionState.BleScanning)
+            sensor.start()
+            Log.i(TAG, "reconnect attempt $attempt started (scanning)")
+        }
     }
 
     override fun onDestroy() {
+        reconnectJob?.cancel()
+        serviceScope.cancel()
         socket?.close()
         if (::sensor.isInitialized) sensor.stop()
         super.onDestroy()

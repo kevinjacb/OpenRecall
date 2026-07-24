@@ -280,6 +280,64 @@ class SessionRepositoryImplTest {
         assertIs<Outcome.Failure>(repo.observeSessionEvents(SessionId("s1")).first())
     }
 
+    @Test fun refreshSessionsResetsToPageOne() = runTest {
+        // After loading two pages (a,b then c,d), a refresh resets to page 1:
+        // the accumulated list is cleared, the cursor returns to null, and the
+        // first fetch uses a null cursor (page 1), not the prior "c1".
+        val api = FakeSessionApi().apply {
+            queued.add(page(listOf("a", "b"), "c1"))
+            queued.add(page(listOf("c", "d"), null))
+        }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+        repo.loadMoreSessions()
+        assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+        assertEquals(2, api.listCalls.size, "two loads before refresh")
+
+        // Re-queue page 1 (the deque is consumed destructively).
+        api.queued.add(page(listOf("a2", "b2"), "c1"))
+        repo.refreshSessions()
+
+        val p = assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+        assertEquals(listOf("a2", "b2"), p.items.map { it.id.value }, "refresh re-served page 1")
+        assertEquals("c1", p.nextCursor)
+        // The refresh's fetch used a null cursor (page 1), not the prior "c1".
+        assertEquals(20 to null, api.listCalls.last(), "refresh fetches page 1 (null cursor)")
+    }
+
+    @Test fun refreshSessionsClearsPriorInlineLoadError() = runTest {
+        // A paging failure surfaces an inline error while the list is kept.
+        // A refresh must clear that error (and re-fetch from page 1), so a
+        // pull-to-refresh is the recovery path for an inline "Retry" row.
+        val api = FakeSessionApi().apply { queued.add(page(listOf("a", "b"), "c1")) }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+
+        api.listError = IOException("down")
+        repo.loadMoreSessions()
+        assertIs<com.sense.relay.core.model.ApiError.Unreachable>(repo.observeLoadErrors().first())
+
+        // Recovery: refresh re-fetches page 1 and clears the inline error.
+        api.listError = null
+        api.queued.add(page(listOf("a2"), null))
+        repo.refreshSessions()
+
+        assertEquals(null, repo.observeLoadErrors().first(), "refresh clears the inline error")
+        val p = assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+        assertEquals(listOf("a2"), p.items.map { it.id.value })
+    }
+
+    @Test fun refreshSessionsOnEmptyApiEmitsErrorNotCrash() = runTest {
+        // A refresh with no queued page (the api's deque is empty → throws)
+        // and no accumulated data surfaces a full-screen Error, not a crash.
+        // The pre-fetch Loading state is transient and not observable after a
+        // synchronous runTest, so we assert the terminal Error outcome.
+        val api = FakeSessionApi() // no queued pages
+        val repo = SessionRepositoryImpl(api)
+        repo.refreshSessions()
+        assertIs<PagedResult.Error>(repo.current())
+    }
+
     @Test fun securityExceptionMapsToUnauthorized() = runTest {
         val api = FakeSessionApi().apply { detailError = SecurityException("401") }
         val repo = SessionRepositoryImpl(api)

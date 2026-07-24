@@ -17,10 +17,10 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import okhttp3.OkHttpClient
 import org.junit.After
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class MemoryViewModelTest {
@@ -87,6 +87,52 @@ class MemoryViewModelTest {
         advanceUntilIdle()
         assertEquals("hello", vm.state.value.lastQuery)
     }
+
+    @Test
+    fun `onRefresh re-runs the last search even after the query box is cleared`() = runTest(dispatcher) {
+        val api = CountingMemoryApi(searchAtoms = listOf(
+            MemoryAtom("a1", "s1", "fact", "hello", "2026-07-07", 0, "e1", "transcript", "v1", "bge", "v1"),
+        ))
+        val vm = MemoryViewModel(MemoryRepository(api))
+        vm.onQueryChanged("hello")
+        vm.search()
+        advanceUntilIdle()
+        assertEquals(1, api.searchCalls, "initial search ran once")
+
+        // Clear the query box; lastQuery is still "hello". A pull-to-refresh
+        // must re-run the last search (not be a no-op on the empty box).
+        vm.onQueryChanged("")
+        vm.onRefresh()
+        advanceUntilIdle()
+        assertEquals(2, api.searchCalls, "onRefresh re-ran the last search")
+        assertEquals("hello", vm.state.value.lastQuery, "lastQuery preserved")
+        assertEquals(1, vm.state.value.atoms.size, "atoms re-populated")
+    }
+
+    @Test
+    fun `onRefresh re-loads the last session when no search was run`() = runTest(dispatcher) {
+        val api = CountingMemoryApi(sessionAtoms = listOf(
+            MemoryAtom("a1", "s1", "fact", "hello", "2026-07-07", 0, "e1", "transcript", "v1", "bge", "v1"),
+        ))
+        val vm = MemoryViewModel(MemoryRepository(api))
+        vm.loadSession("s1")
+        advanceUntilIdle()
+        assertEquals(1, api.sessionCalls, "initial session load ran once")
+
+        vm.onRefresh()
+        advanceUntilIdle()
+        assertEquals(2, api.sessionCalls, "onRefresh re-loaded the last session")
+    }
+
+    @Test
+    fun `onRefresh is a no-op when nothing has been loaded yet`() = runTest(dispatcher) {
+        val api = CountingMemoryApi()
+        val vm = MemoryViewModel(MemoryRepository(api))
+        vm.onRefresh()
+        advanceUntilIdle()
+        assertEquals(0, api.searchCalls, "no search without a last query")
+        assertEquals(0, api.sessionCalls, "no session load without a last session")
+    }
 }
 
 private class StubMemoryApi(
@@ -118,6 +164,35 @@ private class FailingMemoryApi : MemoryApi("http://test", "t", OkHttpClient()) {
         throw HttpApiError(ErrorCode.INTERNAL_ERROR, 500, "boom")
     override suspend fun sessionAtoms(sessionId: String): SessionMemoryResponseDto =
         throw HttpApiError(ErrorCode.INTERNAL_ERROR, 500, "boom")
+}
+
+private class CountingMemoryApi(
+    val searchAtoms: List<MemoryAtom> = emptyList(),
+    val sessionAtoms: List<MemoryAtom> = emptyList(),
+) : MemoryApi("http://test", "t", OkHttpClient()) {
+    var searchCalls = 0
+    var sessionCalls = 0
+    override suspend fun search(query: String, sessionId: String?, limit: Int): MemorySearchResponseDto {
+        searchCalls++
+        return MemorySearchResponseDto(
+            schema_version = "v1",
+            request_id = "r",
+            retrieval_trace_id = "t",
+            audit_id = "a",
+            query = query,
+            atoms = searchAtoms.map { it.toDto() },
+            returned_count = searchAtoms.size,
+        )
+    }
+    override suspend fun sessionAtoms(sessionId: String): SessionMemoryResponseDto {
+        sessionCalls++
+        return SessionMemoryResponseDto(
+            schema_version = "v1",
+            session_id = sessionId,
+            atoms = sessionAtoms.map { it.toDto() },
+            returned_count = sessionAtoms.size,
+        )
+    }
 }
 
 private fun MemoryAtom.toDto() = com.sense.relay.http.dto.MemoryAtomDto(

@@ -95,6 +95,54 @@ class RecordingsViewModelTest {
         assertIs<RecordingsUiState.Empty>(vm.state.value)
     }
 
+    @Test fun onRefreshResetsToPageOneAndTogglesIsRefreshing() = runTest(dispatcher) {
+        // After loading two pages (a,b then c,d), a pull-to-refresh resets to
+        // page 1: the accumulated list is cleared and page 1 (a,b) is re-served.
+        // The Fake re-serves from its queuedOriginal snapshot, so no re-queue
+        // is needed.
+        val repo = FakeSessionRepository()
+        repo.queue(listOf(summary("a"), summary("b")), nextCursor = "c1")
+        repo.queue(listOf(summary("c"), summary("d")), nextCursor = null)
+        val vm = RecordingsViewModel(repo)
+        backgroundScope.launch { vm.state.toList(mutableListOf()) }
+        testScheduler.advanceUntilIdle()
+        vm.onLoadMore() // load page 2
+        testScheduler.advanceUntilIdle()
+        assertEquals(4, (vm.state.value as RecordingsUiState.Loaded).items.size)
+
+        assertFalse(vm.isRefreshing.value, "not refreshing before the gesture")
+        vm.onRefresh()
+        // While in flight, the flag is set.
+        testScheduler.advanceUntilIdle()
+
+        val loaded = assertIs<RecordingsUiState.Loaded>(vm.state.value)
+        assertEquals(
+            listOf("a", "b"),
+            loaded.items.map { it.id.value },
+            "refresh reset the list to page 1",
+        )
+        assertTrue(loaded.canLoadMore, "page-1 cursor c1 is non-null again")
+        assertFalse(vm.isRefreshing.value, "isRefreshing cleared after the refresh completes")
+    }
+
+    @Test fun onRefreshIsNoOpWhileALoadIsInFlight() = runTest(dispatcher) {
+        // A refresh during an in-flight loadMore must not double-fetch: the
+        // second onRefresh is a no-op (the flag guard), so the repo's
+        // refreshSessions is called at most once.
+        val repo = FakeSessionRepository()
+        repo.queue(listOf(summary("a")), nextCursor = "c1")
+        val vm = RecordingsViewModel(repo)
+        backgroundScope.launch { vm.state.toList(mutableListOf()) }
+        testScheduler.advanceUntilIdle()
+        val refreshesBefore = repo.refreshCount
+
+        vm.onLoadMore() // in flight, not yet advanced
+        vm.onRefresh()  // must be skipped
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(refreshesBefore, repo.refreshCount, "refresh skipped while a load is in flight")
+    }
+
     @Test fun pagingErrorSurfacesAsInlineLoadErrorKeepingTheList() = runTest(dispatcher) {
         // A paging failure (items already loaded) must NOT replace the list
         // with a full-screen error: the items stay and the error is a side-

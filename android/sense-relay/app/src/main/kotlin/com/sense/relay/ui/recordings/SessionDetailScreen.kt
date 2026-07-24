@@ -8,9 +8,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -45,7 +47,14 @@ fun SessionDetailRoute(id: SessionId, onBack: () -> Unit, modifier: Modifier = M
         },
     )
     val state by vm.state.collectAsState()
-    SessionDetailScreen(state = state, onBack = onBack, modifier = modifier)
+    val isRefreshing by vm.isRefreshing.collectAsState()
+    SessionDetailScreen(
+        state = state,
+        isRefreshing = isRefreshing,
+        onRefresh = vm::onRefresh,
+        onBack = onBack,
+        modifier = modifier,
+    )
 }
 
 /**
@@ -53,10 +62,15 @@ fun SessionDetailRoute(id: SessionId, onBack: () -> Unit, modifier: Modifier = M
  * the progressive body: summary [MetricCard], then the event timeline. New
  * events arriving grow the [LazyColumn] without a full re-render (the events
  * come in via a new [SessionDetailUiState.Loaded]).
+ *
+ * The body is wrapped in a [PullToRefreshBox] so a pull-down gesture re-
+ * fetches the session summary + event timeline.
  */
 @Composable
 fun SessionDetailScreen(
     state: SessionDetailUiState,
+    isRefreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -71,41 +85,62 @@ fun SessionDetailScreen(
                     Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center,
                 ) {
-                    EmptyState(title = "Couldn't load session", body = state.reason)
+                    EmptyState(
+                        title = "Couldn't load session",
+                        body = state.reason,
+                        ctaLabel = "Try again",
+                        onCta = onRefresh,
+                    )
                 }
-                is SessionDetailUiState.LoadedSummary -> Body(state.summary, events = null)
-                is SessionDetailUiState.Loaded -> Body(state.summary, events = state.events)
+                is SessionDetailUiState.LoadedSummary -> Body(
+                    state.summary, events = null, isRefreshing = isRefreshing, onRefresh = onRefresh,
+                )
+                is SessionDetailUiState.Loaded -> Body(
+                    state.summary, events = state.events, isRefreshing = isRefreshing, onRefresh = onRefresh,
+                )
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun Body(summary: SessionSummary, events: List<CaptureEvent>?) {
+private fun Body(
+    summary: SessionSummary,
+    events: List<CaptureEvent>?,
+    isRefreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
+) {
     // The timeline is keyed by the stable event id (NOT the design system's
     // `timeline()` helper, which keys by title and would crash a LazyColumn
     // on two transcripts with identical text).
-    LazyColumn(
+    PullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = onRefresh,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(Spacing.md),
-        verticalArrangement = Arrangement.spacedBy(Spacing.sm),
     ) {
-        item(key = "summary") {
-            MetricCard(
-                title = "Duration",
-                value = formatHmMs(summary.durationMs),
-                subtitle = "${summary.transcriptCount} transcripts",
-            )
-        }
-        when {
-            events == null -> item(key = "events-loading") { LoadingCard() }
-            events.isEmpty() -> item(key = "events-empty") {
-                EmptyState(
-                    title = "No events",
-                    body = "This session has no transcript events yet.",
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(Spacing.md),
+            verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+        ) {
+            item(key = "summary") {
+                MetricCard(
+                    title = "Duration",
+                    value = formatHmMs(summary.durationMs),
+                    subtitle = "${summary.transcriptCount} transcripts",
                 )
             }
-            else -> items(events, key = { it.id }) { event -> EventRow(event) }
+            when {
+                events == null -> item(key = "events-loading") { LoadingCard() }
+                events.isEmpty() -> item(key = "events-empty") {
+                    EmptyState(
+                        title = "No events",
+                        body = "This session has no transcript events yet.",
+                    )
+                }
+                else -> items(events, key = { it.id }) { event -> EventRow(event) }
+            }
         }
     }
 }

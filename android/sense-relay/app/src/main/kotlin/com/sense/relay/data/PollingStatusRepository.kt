@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.filterNotNull
@@ -94,6 +95,26 @@ class PollingStatusRepository(
     private fun stop() {
         job?.cancel()
         job = null
+    }
+
+    /**
+     * Force one fetch right now, on the poller's scope/dispatcher, and publish
+     * the result. Used by pull-to-refresh so a gesture re-fetches `/status`
+     * without waiting for the next 2s tick. Runs on [scope] (so the blocking
+     * OkHttp call stays off the caller's dispatcher) and awaits completion so
+     * the caller can toggle a refresh spinner around it. A thrown fetch is
+     * swallowed exactly like the loop does — the cache simply stays as-is.
+     */
+    override suspend fun refresh() {
+        scope.async {
+            try {
+                cached.value = fetch()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                // Mirror the loop: keep the cache as-is on a thrown fetch.
+            }
+        }.await()
     }
 
     override fun observeStatus(): Flow<Outcome<ServerStatus>> = cached.filterNotNull()

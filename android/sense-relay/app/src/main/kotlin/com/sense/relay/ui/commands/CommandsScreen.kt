@@ -10,8 +10,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,27 +40,38 @@ import java.time.Instant
  *    most recent failure row (only if a failure exists)
  *  - Ready empty: EmptyState body only
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CommandsScreen(
     state: CommandsViewModel.UiState,
     onAck: (commandId: String) -> Unit,
     onRetry: () -> Unit,
+    isRefreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
     modifier: Modifier = Modifier,
     now: Instant = Instant.now(),
 ) {
     Column(modifier = modifier.fillMaxSize()) {
         SenseTopBar(state = TopBarState(title = "Commands"))
-        when (state) {
-            is CommandsViewModel.UiState.Loading -> LoadingPlaceholder()
-            is CommandsViewModel.UiState.Error -> ErrorContent(
-                message = state.message,
-                onRetry = onRetry,
-            )
-            is CommandsViewModel.UiState.Ready -> ReadyContent(
-                commands = state.commands,
-                onAck = onAck,
-                now = now,
-            )
+        // Pull-to-refresh wraps the content: a pull-down re-fetches the
+        // active-command list via [CommandsViewModel.onRefresh].
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = onRefresh,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            when (state) {
+                is CommandsViewModel.UiState.Loading -> LoadingPlaceholder()
+                is CommandsViewModel.UiState.Error -> ErrorContent(
+                    message = state.message,
+                    onRetry = onRetry,
+                )
+                is CommandsViewModel.UiState.Ready -> ReadyContent(
+                    commands = state.commands,
+                    onAck = onAck,
+                    now = now,
+                )
+            }
         }
     }
 }

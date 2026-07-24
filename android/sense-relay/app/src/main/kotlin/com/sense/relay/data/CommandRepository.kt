@@ -71,6 +71,10 @@ class CommandsViewModel(
     private val _state = MutableStateFlow<UiState>(UiState.Loading)
     val state: StateFlow<UiState> = _state.asStateFlow()
 
+    private val _isRefreshing = MutableStateFlow(false)
+    /** True while a pull-to-refresh re-fetch is in flight; drives the spinner. */
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
     /**
      * Dedicated scope for the polling job. We use a private
      * `SupervisorJob` + an injected [pollDispatcher] (defaulting to
@@ -92,6 +96,24 @@ class CommandsViewModel(
             _state.value = UiState.Ready(cmds)
         } catch (e: Exception) {
             _state.value = UiState.Error(e.message ?: "failed to load commands")
+        }
+    }
+
+    /**
+     * Pull-to-refresh entry point (non-suspend, safe to call from a Composable
+     * callback). Launches [refresh] on [pollScope] and toggles [isRefreshing]
+     * around it so the [androidx.compose.material3.pulltorefresh.PullToRefreshBox]
+     * spinner shows for the gesture. No-op if a refresh is already in flight.
+     */
+    fun onRefresh() {
+        if (_isRefreshing.value) return
+        _isRefreshing.value = true
+        pollScope.launch {
+            try {
+                refresh()
+            } finally {
+                _isRefreshing.value = false
+            }
         }
     }
 

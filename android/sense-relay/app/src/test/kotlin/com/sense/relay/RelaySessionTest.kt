@@ -32,10 +32,48 @@ class RelaySessionTest {
     }
 
     @Test
-    fun device_audio_is_forwarded_verbatim_as_binary() {
+    fun device_audio_is_forwarded_verbatim_as_binary_once_started() {
+        val session = RelaySession("s")
+        session.start()  // hello; discard
         val packet = byteArrayOf(0x11, 0x22, 0x33)
-        val action = RelaySession("s").onDeviceAudio(packet)
+        val action = session.onDeviceAudio(packet).single()
         assertContentEquals(packet, (action as RelayAction.SendServerBinary).data)
+    }
+
+    @Test
+    fun audio_arriving_before_start_is_held_then_flushed_after_hello() {
+        val session = RelaySession("s")
+        val p1 = byteArrayOf(0x01)
+        val p2 = byteArrayOf(0x02)
+        // Audio arrives before the socket is open / hello sent (the GATT
+        // thread can race ahead of the WS reader thread's onOpen). It must
+        // be held, not forwarded — else the server sees binary before hello
+        // and closes 1002 ("audio received before hello").
+        assertTrue(session.onDeviceAudio(p1).isEmpty())
+        assertTrue(session.onDeviceAudio(p2).isEmpty())
+
+        // start() emits hello FIRST, then the held audio in arrival order.
+        val actions = session.start()
+        assertEquals("hello", field((actions[0] as RelayAction.SendServerText).text, "type"))
+        assertContentEquals(p1, (actions[1] as RelayAction.SendServerBinary).data)
+        assertContentEquals(p2, (actions[2] as RelayAction.SendServerBinary).data)
+
+        // After start, audio is forwarded immediately again.
+        val p3 = byteArrayOf(0x03)
+        assertContentEquals(p3, (session.onDeviceAudio(p3).single() as RelayAction.SendServerBinary).data)
+    }
+
+    @Test
+    fun stop_drops_held_audio_so_a_reconnect_start_emits_only_hello() {
+        val session = RelaySession("s")
+        session.onDeviceAudio(byteArrayOf(0x01))  // held, never flushed
+        session.stop()  // bye; held audio dropped, started reset
+
+        // A reconnect reuses the same RelaySession: start() must emit only
+        // hello, not stale audio from the dropped link.
+        val actions = session.start()
+        assertEquals(1, actions.size)
+        assertEquals("hello", field((actions.single() as RelayAction.SendServerText).text, "type"))
     }
 
     @Test

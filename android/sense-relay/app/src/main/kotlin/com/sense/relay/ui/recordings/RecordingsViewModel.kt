@@ -8,8 +8,10 @@ import com.sense.relay.core.ui.toDisplayMessage
 import com.sense.relay.data.SessionRepository
 import com.sense.relay.domain.model.SessionSummary
 import com.sense.relay.data.httpApiError
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -58,6 +60,10 @@ class RecordingsViewModel(
     @Volatile
     private var loading = false
 
+    private val _isRefreshing = MutableStateFlow(false)
+    /** True while a pull-to-refresh is in flight; drives the refresh spinner. */
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
     init {
         loadMore()
     }
@@ -69,6 +75,26 @@ class RecordingsViewModel(
         val s = state.value
         if (s is RecordingsUiState.Loaded && !s.canLoadMore && s.loadError == null) return
         loadMore()
+    }
+
+    /**
+     * Pull-to-refresh / the "update" option on Recordings: reset to page 1 and
+     * re-fetch (the newest sessions land at the top). No-op if a load or a
+     * refresh is already in flight — the repository's own [Mutex] serializes
+     * them, and the flag prevents overlapping spinners.
+     */
+    fun onRefresh() {
+        if (loading || _isRefreshing.value) return
+        _isRefreshing.value = true
+        loading = true
+        viewModelScope.launch {
+            try {
+                repo.refreshSessions()
+            } finally {
+                loading = false
+                _isRefreshing.value = false
+            }
+        }
     }
 
     private fun loadMore() {

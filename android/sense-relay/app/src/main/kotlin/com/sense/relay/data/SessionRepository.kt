@@ -37,6 +37,13 @@ interface SessionRepository {
      *  call after the list is [PagedResult.Exhausted] is a no-op. */
     suspend fun loadMoreSessions()
 
+    /** Reset to page 1 and re-fetch (a pull-to-refresh / "update" gesture).
+     *  Clears the accumulated list + cursor + exhaustion, emits
+     *  [PagedResult.Loading], then loads the first page. Default is a
+     *  no-op so fakes that don't model pagination stay compatible; the
+     *  real impl + [FakeSessionRepository] override it. */
+    suspend fun refreshSessions() {}
+
     /** Per-session detail (summary + events). Emits once on
      *  subscribe; Phase 5 backs this with `GET /sessions/{id}`. */
     fun observeSession(id: SessionId): Flow<Outcome<SessionDetails>>
@@ -85,12 +92,21 @@ class FakeSessionRepository : SessionRepository {
     private val queued = ArrayDeque<QueuedPage>()
     private val accumulated = mutableListOf<SessionSummary>()
     private var exhausted = false
+    /** Test-only: how many times [refreshSessions] has been called. */
+    internal var refreshCount = 0
+        private set
+    // Snapshot of every page ever queued, so refreshSessions() can re-serve
+    // the same scripted pages from the start (a fake's "queued" deque is
+    // consumed destructively by loadMoreSessions).
+    private val queuedOriginal = mutableListOf<QueuedPage>()
 
     private val pages = MutableStateFlow<PagedResult<SessionSummary>>(PagedResult.Loading)
 
     /** Test-only: enqueue a page to be served on the next loadMore. */
     fun queue(items: List<SessionSummary>, nextCursor: String?) {
-        queued.addLast(QueuedPage(items, nextCursor))
+        val page = QueuedPage(items, nextCursor)
+        queued.addLast(page)
+        queuedOriginal.add(page)
     }
 
     override fun observeSessions(): Flow<PagedResult<SessionSummary>> = pages.asStateFlow()
@@ -129,6 +145,17 @@ class FakeSessionRepository : SessionRepository {
             // no-ops; the data is still on the wire for the UI.
             exhausted = true
         }
+    }
+
+    override suspend fun refreshSessions() {
+        refreshCount++
+        accumulated.clear()
+        exhausted = false
+        queued.clear()
+        queued.addAll(queuedOriginal)
+        pages.value = PagedResult.Loading
+        if (queuedOriginal.isEmpty()) return
+        loadMoreSessions()
     }
 
     override fun observeSession(id: SessionId): Flow<Outcome<SessionDetails>> =

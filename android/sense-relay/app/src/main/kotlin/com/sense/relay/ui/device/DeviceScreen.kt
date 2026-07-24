@@ -7,6 +7,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -42,40 +46,87 @@ fun DeviceRoute(modifier: Modifier = Modifier) {
                     relayController = RepositoryModule.repos.relayController,
                     statusRepo = RepositoryModule.repos.status,
                     deviceRepo = RepositoryModule.repos.device,
+                    relayStarter = RepositoryModule.repos.relayStarter,
                 )
             }
         },
     )
     val state by vm.state.collectAsState()
-    DeviceScreen(state = state, modifier = modifier)
+    val isRefreshing by vm.isRefreshing.collectAsState()
+    DeviceScreen(
+        state = state,
+        isRefreshing = isRefreshing,
+        onRefresh = vm::onRefresh,
+        onRetryConnection = vm::onRetryConnection,
+        modifier = modifier,
+    )
 }
 
 /**
  * Stateless Device content. A scrollable column of [SectionHeader] +
  * [InfoRow] groups (Device / Relay / Server), topped by a [ConnectionBadge]
- * for the composite state. Diagnostic — no editing, no actions.
+ * for the composite state. Diagnostic — no editing, but a "Retry connection"
+ * button when the link has dropped and a pull-to-refresh to re-poll.
+ *
+ * Wrapped in a [PullToRefreshBox]: a pull-down forces a status poll + a
+ * relay state re-emit.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DeviceScreen(state: DeviceUiState, modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(Spacing.md),
-        verticalArrangement = Arrangement.spacedBy(Spacing.md),
+fun DeviceScreen(
+    state: DeviceUiState,
+    isRefreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
+    onRetryConnection: () -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
+    PullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = onRefresh,
+        modifier = modifier.fillMaxSize(),
     ) {
-        ConnectionBadge(state = compositeLabel(state.relay), tone = compositeTone(state.relay))
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(Spacing.md),
+            verticalArrangement = Arrangement.spacedBy(Spacing.md),
+        ) {
+            ConnectionBadge(state = compositeLabel(state.relay), tone = compositeTone(state.relay))
 
-        SectionHeader(title = "Device")
-        DeviceRows(state.relay, state.device)
+            if (shouldOfferRetry(state.relay)) {
+                Button(
+                    onClick = onRetryConnection,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Retry connection") }
+            }
 
-        SectionHeader(title = "Relay")
-        RelayRows(state.relay)
+            SectionHeader(title = "Device")
+            DeviceRows(state.relay, state.device)
 
-        SectionHeader(title = "Server")
-        ServerRows(state.server)
+            SectionHeader(title = "Relay")
+            RelayRows(state.relay)
+
+            SectionHeader(title = "Server")
+            ServerRows(state.server)
+        }
     }
 }
+
+/**
+ * Whether the relay link is stopped-but-recoverable, where a manual "Retry
+ * connection" is worth offering. Shown when the connection is
+ * [RelayConnectionState.Failed] (terminal) or [RelayConnectionState.Idle]
+ * (never started / stopped itself), OR when the BLE device is
+ * [DeviceState.Disconnected]. Active states (Scanning/Connecting/Live/
+ * Reconnecting) hide it — the system is already trying.
+ */
+private fun shouldOfferRetry(relay: RelayState): Boolean =
+    when (relay.connection) {
+        is RelayConnectionState.Failed, RelayConnectionState.Idle -> true
+        is RelayConnectionState.Reconnecting -> false
+        else -> relay.device is DeviceState.Disconnected
+    }
 
 @Composable
 private fun DeviceRows(relay: RelayState, device: DeviceSummary) {

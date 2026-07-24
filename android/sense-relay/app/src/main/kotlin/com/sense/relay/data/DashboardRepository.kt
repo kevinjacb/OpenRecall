@@ -25,6 +25,12 @@ interface DashboardRepository {
      *  the first status poll returns (the other two sources are hot and
      *  have a value immediately). */
     fun observe(): StateFlow<DashboardState>
+
+    /** Pull-to-refresh: force an immediate status poll AND reset the session
+     *  list to page 1. The [observe] stream re-emits as each child refresh
+     *  publishes its new value. Default is a no-op so fakes stay compatible;
+     *  [DashboardRepositoryImpl] overrides it. */
+    suspend fun refresh() {}
 }
 
 /**
@@ -61,6 +67,16 @@ class DashboardRepositoryImpl(
             .stateIn(scope, SharingStarted.WhileSubscribed(5_000), DashboardState.Loading)
 
     override fun observe(): StateFlow<DashboardState> = flow
+
+    override suspend fun refresh() {
+        // Order: refresh the status first (cheap, immediate), then reset the
+        // session list to page 1. Both publish into the combined [flow], so
+        // the Home screen re-emits as each child refresh lands. Relays run
+        // concurrently to the relay controller; we don't touch it here (the
+        // manual "Retry connection" action handles relay re-provisioning).
+        statusRepo.refresh()
+        sessionRepo.refreshSessions()
+    }
 }
 
 /** The first [RECENT_SESSION_COUNT] items of a paged list, or empty for any

@@ -5,6 +5,7 @@ import com.sense.relay.data.DashboardRepository
 import com.sense.relay.data.DashboardState
 import com.sense.relay.domain.model.ServerStatus
 import com.sense.relay.relay.RelayState
+import com.sense.relay.relay.RelayStarter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,7 +20,9 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 /**
  * Pins [HomeViewModel]'s 1:1 mapping from [DashboardState] to
@@ -40,7 +43,14 @@ class HomeViewModelTest {
     private class FakeDashboardRepository(
         val flow: MutableStateFlow<DashboardState>,
     ) : DashboardRepository {
+        var refreshCount = 0
         override fun observe(): StateFlow<DashboardState> = flow
+        override suspend fun refresh() { refreshCount++ }
+    }
+
+    private class FakeRelayStarter : RelayStarter {
+        var startCount = 0
+        override fun start() { startCount++ }
     }
 
     private fun loaded() = DashboardState.Loaded(
@@ -56,14 +66,14 @@ class HomeViewModelTest {
 
     @Test fun initialStateIsLoading() = runTest(dispatcher) {
         val repo = FakeDashboardRepository(MutableStateFlow(DashboardState.Loading))
-        val vm = HomeViewModel(repo)
+        val vm = HomeViewModel(repo, FakeRelayStarter())
         // Before anyone collects, the stateIn seed is Loading.
         assertEquals(HomeUiState.Loading, vm.state.value)
     }
 
     @Test fun mapsLoadedFromRepository() = runTest(dispatcher) {
         val flow = MutableStateFlow<DashboardState>(DashboardState.Loading)
-        val vm = HomeViewModel(FakeDashboardRepository(flow))
+        val vm = HomeViewModel(FakeDashboardRepository(flow), FakeRelayStarter())
         val seen = mutableListOf<HomeUiState>()
         val job = backgroundScope.launch { vm.state.toList(seen) }
 
@@ -77,7 +87,7 @@ class HomeViewModelTest {
 
     @Test fun mapsFailedFromRepository() = runTest(dispatcher) {
         val flow = MutableStateFlow<DashboardState>(DashboardState.Loading)
-        val vm = HomeViewModel(FakeDashboardRepository(flow))
+        val vm = HomeViewModel(FakeDashboardRepository(flow), FakeRelayStarter())
         val job = backgroundScope.launch { vm.state.toList(mutableListOf()) }
 
         flow.value = DashboardState.Failed("boom")
@@ -86,5 +96,26 @@ class HomeViewModelTest {
         val ui = assertIs<HomeUiState.Failed>(vm.state.value)
         assertEquals("boom", ui.reason)
         job.cancel()
+    }
+
+    @Test fun onRefreshCallsDashboardRefreshAndTogglesIsRefreshing() = runTest(dispatcher) {
+        val repo = FakeDashboardRepository(MutableStateFlow(DashboardState.Loading))
+        val vm = HomeViewModel(repo, FakeRelayStarter())
+        assertFalse(vm.isRefreshing.value, "not refreshing before the gesture")
+
+        vm.onRefresh()
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(1, repo.refreshCount, "dashboard.refresh() invoked once")
+        assertFalse(vm.isRefreshing.value, "isRefreshing cleared after the refresh completes")
+    }
+
+    @Test fun onRetryConnectionCallsRelayStarter() = runTest(dispatcher) {
+        val starter = FakeRelayStarter()
+        val vm = HomeViewModel(FakeDashboardRepository(MutableStateFlow(DashboardState.Loading)), starter)
+
+        vm.onRetryConnection()
+
+        assertEquals(1, starter.startCount, "relayStarter.start() invoked once")
     }
 }

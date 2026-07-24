@@ -68,6 +68,35 @@ class SessionRepositoryImpl(
 
     override suspend fun loadMoreSessions() = loadMutex.withLock {
         if (exhausted) return@withLock
+        fetchPage()
+    }
+
+    /**
+     * Pull-to-refresh / "update": reset to page 1 and re-fetch. Clears the
+     * accumulated list, the cursor, exhaustion, and any inline paging
+     * error; emits [PagedResult.Loading] so the UI can show the spinner;
+     * then loads the first page. The cursor returns to `null` because
+     * `started` is cleared, so [fetchPage] asks the server for page 1.
+     * Held under the same [loadMutex] as [loadMoreSessions] so a refresh
+     * can't race an in-flight page load.
+     */
+    override suspend fun refreshSessions() = loadMutex.withLock {
+        accumulated.clear()
+        cursor = null
+        started = false
+        exhausted = false
+        loadErrors.value = null
+        pages.value = PagedResult.Loading
+        fetchPage()
+    }
+
+    /**
+     * Fetch the next page (page 1 when `started == false`, else the page at
+     * `cursor`) and fold the result into [pages]/[accumulated]/[loadErrors].
+     * Extracted from [loadMoreSessions] so [refreshSessions] shares the exact
+     * same fetch + error-classification path. Caller holds [loadMutex].
+     */
+    private suspend fun fetchPage() {
         try {
             val page = api.listSessions(PAGE_SIZE, if (started) cursor else null)
             started = true
@@ -95,7 +124,7 @@ class SessionRepositoryImpl(
                     pages.value = PagedResult.Page(accumulated.toList(), null)
                 }
                 exhausted = true
-                return@withLock
+                return
             }
             accumulated.addAll(items)
             cursor = page.nextCursor

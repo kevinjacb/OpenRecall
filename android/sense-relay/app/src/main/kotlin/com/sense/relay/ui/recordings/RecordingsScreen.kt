@@ -14,9 +14,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -50,10 +52,13 @@ fun RecordingsRoute(onOpen: (SessionId) -> Unit, modifier: Modifier = Modifier) 
         },
     )
     val state by vm.state.collectAsState()
+    val isRefreshing by vm.isRefreshing.collectAsState()
     RecordingsScreen(
         state = state,
+        isRefreshing = isRefreshing,
         onOpen = onOpen,
         onLoadMore = vm::onLoadMore,
+        onRefresh = vm::onRefresh,
         modifier = modifier,
     )
 }
@@ -62,31 +67,44 @@ fun RecordingsRoute(onOpen: (SessionId) -> Unit, modifier: Modifier = Modifier) 
  * Stateless Recordings content. A single [LazyColumn] of session rows;
  * when the last row is reached, [onLoadMore] fires (cursor pagination).
  * Loading is a centered spinner; Empty/Error are calm [EmptyState]s.
+ *
+ * The whole screen is wrapped in a [PullToRefreshBox]: a pull-down gesture
+ * resets the list to page 1 (the "update" option — newest sessions land at
+ * the top) regardless of which branch is showing.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecordingsScreen(
     state: RecordingsUiState,
+    isRefreshing: Boolean = false,
     onOpen: (SessionId) -> Unit,
     onLoadMore: () -> Unit,
+    onRefresh: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    when (state) {
-        is RecordingsUiState.Loading -> Centered(modifier) { CircularProgressIndicator() }
-        is RecordingsUiState.Empty -> Centered(modifier) {
-            EmptyState(
-                title = "No recordings yet",
-                body = "Sessions from your Sense device will appear here.",
-            )
+    PullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = onRefresh,
+        modifier = modifier.fillMaxSize(),
+    ) {
+        when (state) {
+            is RecordingsUiState.Loading -> Centered(Modifier) { CircularProgressIndicator() }
+            is RecordingsUiState.Empty -> Centered(Modifier) {
+                EmptyState(
+                    title = "No recordings yet",
+                    body = "Sessions from your Sense device will appear here.",
+                )
+            }
+            is RecordingsUiState.Error -> Centered(Modifier) {
+                EmptyState(
+                    title = "Couldn't load recordings",
+                    body = state.reason,
+                    ctaLabel = "Try again",
+                    onCta = onRefresh,
+                )
+            }
+            is RecordingsUiState.Loaded -> LoadedList(state, onOpen, onLoadMore, Modifier)
         }
-        is RecordingsUiState.Error -> Centered(modifier) {
-            EmptyState(
-                title = "Couldn't load recordings",
-                body = state.reason,
-                ctaLabel = "Try again",
-                onCta = onLoadMore,
-            )
-        }
-        is RecordingsUiState.Loaded -> LoadedList(state, onOpen, onLoadMore, modifier)
     }
 }
 

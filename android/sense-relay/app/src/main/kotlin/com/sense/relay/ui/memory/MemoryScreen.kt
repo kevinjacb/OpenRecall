@@ -16,12 +16,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,12 +53,15 @@ import com.sense.relay.ui.design.TopBarState
  * `com.sense.relay.http.dto.*`. The architectural invariant test
  * (`ArchitecturalInvariantsTest`) enforces this.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MemoryScreen(
     state: MemoryState,
     onQueryChanged: (String) -> Unit,
     onSearch: () -> Unit,
     onAtomTap: (String) -> Unit,
+    isRefreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
@@ -66,11 +71,19 @@ fun MemoryScreen(
             onQueryChanged = onQueryChanged,
             onSearch = onSearch,
         )
-        when {
-            state.loading -> LoadingState()
-            state.errorMessage != null -> ErrorState(message = state.errorMessage)
-            state.atoms.isEmpty() -> EmptyMemoryState(query = state.lastQuery)
-            else -> AtomList(atoms = state.atoms, onAtomTap = onAtomTap)
+        // Pull-to-refresh wraps the result region: a pull-down re-runs the
+        // last action (the last search, or the deep-link session load).
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = onRefresh,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            when {
+                state.loading -> LoadingState()
+                state.errorMessage != null -> ErrorState(message = state.errorMessage)
+                state.atoms.isEmpty() -> EmptyMemoryState(query = state.lastQuery)
+                else -> AtomList(atoms = state.atoms, onAtomTap = onAtomTap)
+            }
         }
     }
 }

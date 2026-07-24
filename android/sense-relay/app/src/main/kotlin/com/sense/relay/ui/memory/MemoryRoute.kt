@@ -36,11 +36,14 @@ fun MemoryRoute(modifier: Modifier = Modifier) {
         },
     )
     val state by vm.state.collectAsState()
+    val isRefreshing by vm.isRefreshing.collectAsState()
     MemoryScreen(
         state = state,
         onQueryChanged = vm::onQueryChanged,
         onSearch = vm::search,
         onAtomTap = { /* TODO: navigate to AtomDetail in a follow-up slice */ },
+        isRefreshing = isRefreshing,
+        onRefresh = vm::onRefresh,
         modifier = modifier,
     )
 }

@@ -25,13 +25,36 @@ import java.util.Base64
  */
 class RelaySession(val sessionId: String, private val startSeq: Int = 0) {
 
-    /** Both links are up (device connected, socket open): open the server session. */
-    fun start(): List<RelayAction> =
-        listOf(RelayAction.SendServerText(Hello(sessionId, startSeq).encode()))
+    /**
+     * True once [start] has emitted `hello` for the current link. The BLE
+     * (GATT) thread can deliver [onDeviceAudio] before the WS reader thread
+     * fires `onOpen` → [start], and OkHttp transmits any pre-`onOpen` sends in
+     * FIFO order — so ungated audio would reach the server *before* `hello`
+     * and the server would close 1002 ("audio received before hello"). We hold
+     * such audio here and flush it after `hello` so `hello` is always first.
+     */
+    private var started = false
+    private val pendingAudio = ArrayDeque<ByteArray>()
 
-    /** A §C.6 audio packet notified by the device — forward verbatim to the server. */
-    fun onDeviceAudio(packet: ByteArray): RelayAction =
-        RelayAction.SendServerBinary(packet)
+    /** Both links are up (device connected, socket open): open the server session. */
+    fun start(): List<RelayAction> {
+        started = true
+        val hello = RelayAction.SendServerText(Hello(sessionId, startSeq).encode())
+        val flushed = pendingAudio.map { RelayAction.SendServerBinary(it) }
+        pendingAudio.clear()
+        return listOf(hello) + flushed
+    }
+
+    /**
+     * A §C.6 audio packet notified by the device — forward verbatim to the server.
+     *
+     * Before [start] has run (the socket-open/hello race window), the packet is
+     * held in [pendingAudio] and nothing is sent; [start] flushes it after
+     * `hello`. After [start], packets are forwarded immediately.
+     */
+    fun onDeviceAudio(packet: ByteArray): List<RelayAction> =
+        if (started) listOf(RelayAction.SendServerBinary(packet))
+        else { pendingAudio.addLast(packet); emptyList() }
 
     /** A §E text frame from the server. */
     fun onServerMessage(text: String): List<RelayAction> =
@@ -83,9 +106,14 @@ class RelaySession(val sessionId: String, private val startSeq: Int = 0) {
         return RelayAction.SendServerText(CommandAck(sessionId, commandId).encode())
     }
 
-    /** Tear down: tell the server the session is closing so it flushes. */
-    fun stop(): List<RelayAction> =
-        listOf(RelayAction.SendServerText(Bye(sessionId).encode()))
+    /** Tear down: tell the server the session is closing so it flushes. Resets the
+     *  hello/audio gate so a reconnect (same instance, re-[start]) drops any audio
+     *  held against the dead link and re-arms the hold for the next link. */
+    fun stop(): List<RelayAction> {
+        started = false
+        pendingAudio.clear()
+        return listOf(RelayAction.SendServerText(Bye(sessionId).encode()))
+    }
 
     // The device verifies over the raw payload bytes, so the relay reconstructs the
     // on-wire frame: [decoded 64-byte signature][canonical payload JSON bytes].

@@ -10,6 +10,7 @@ import com.sense.relay.relay.DeviceState
 import com.sense.relay.relay.RelayConnectionState
 import com.sense.relay.relay.RelayController
 import com.sense.relay.relay.RelayState
+import com.sense.relay.relay.RelayStarter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -28,6 +29,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 
@@ -62,13 +64,20 @@ class DeviceViewModelTest {
     /** Status source backed by a StateFlow (replays its current value). */
     private class StateStatusRepository(initial: Outcome<ServerStatus>) : StatusRepository {
         val flow = MutableStateFlow(initial)
+        var refreshCount = 0
         override fun observeStatus(): Flow<Outcome<ServerStatus>> = flow
+        override suspend fun refresh() { refreshCount++ }
     }
 
     /** Status source that NEVER emits (a cold flow that suspends forever) —
      *  mirrors the production pre-first-poll silence so the seed is visible. */
     private object SilentStatusRepository : StatusRepository {
         override fun observeStatus(): Flow<Outcome<ServerStatus>> = flow { /* never emits */ }
+    }
+
+    private class FakeRelayStarter : RelayStarter {
+        var startCount = 0
+        override fun start() { startCount++ }
     }
 
     private class FakeDeviceRepository(initial: DeviceSummary) : DeviceRepository {
@@ -95,6 +104,7 @@ class DeviceViewModelTest {
             RelayController,
             SilentStatusRepository,
             FakeDeviceRepository(DeviceSummary(null, null, null)),
+            FakeRelayStarter(),
         )
         subscribe(backgroundScope, vm)
         testScheduler.advanceUntilIdle()
@@ -113,6 +123,7 @@ class DeviceViewModelTest {
             RelayController,
             status,
             FakeDeviceRepository(DeviceSummary(null, null, null)),
+            FakeRelayStarter(),
         )
         subscribe(backgroundScope, vm)
         testScheduler.advanceUntilIdle()
@@ -128,7 +139,7 @@ class DeviceViewModelTest {
     @Test fun relayChangeUpdatesRelayWhileServerUnchanged() = runTest(dispatcher) {
         val status = StateStatusRepository(Outcome.Success(status(1)))
         val device = FakeDeviceRepository(DeviceSummary(null, null, null))
-        val vm = DeviceViewModel(RelayController, status, device)
+        val vm = DeviceViewModel(RelayController, status, device, FakeRelayStarter())
         subscribe(backgroundScope, vm)
         testScheduler.advanceUntilIdle()
 
@@ -147,7 +158,7 @@ class DeviceViewModelTest {
     @Test fun deviceLastSeenFlowsThroughFromDeviceRepository() = runTest(dispatcher) {
         val status = StateStatusRepository(Outcome.Success(status(1)))
         val device = FakeDeviceRepository(DeviceSummary(null, null, null))
-        val vm = DeviceViewModel(RelayController, status, device)
+        val vm = DeviceViewModel(RelayController, status, device, FakeRelayStarter())
         subscribe(backgroundScope, vm)
         testScheduler.advanceUntilIdle()
 
@@ -165,6 +176,7 @@ class DeviceViewModelTest {
             RelayController,
             status,
             FakeDeviceRepository(DeviceSummary(null, null, null)),
+            FakeRelayStarter(),
         )
         subscribe(backgroundScope, vm)
         RelayController.updateConnection(RelayConnectionState.Live("sx", 100))
@@ -172,5 +184,36 @@ class DeviceViewModelTest {
         val s = vm.state.value
         assertEquals("sx", (s.relay.connection as RelayConnectionState.Live).sessionId)
         assertEquals(7, (s.server as Outcome.Success).value.activeSessions)
+    }
+
+    @Test fun onRefreshForcesStatusPollAndTogglesIsRefreshing() = runTest(dispatcher) {
+        val status = StateStatusRepository(Outcome.Success(status(1)))
+        val vm = DeviceViewModel(
+            RelayController,
+            status,
+            FakeDeviceRepository(DeviceSummary(null, null, null)),
+            FakeRelayStarter(),
+        )
+        subscribe(backgroundScope, vm)
+        testScheduler.advanceUntilIdle()
+        assertFalse(vm.isRefreshing.value, "not refreshing before the gesture")
+
+        vm.onRefresh()
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(1, status.refreshCount, "status.refresh() invoked once")
+        assertFalse(vm.isRefreshing.value, "isRefreshing cleared after the refresh")
+    }
+
+    @Test fun onRetryConnectionCallsRelayStarter() = runTest(dispatcher) {
+        val starter = FakeRelayStarter()
+        val vm = DeviceViewModel(
+            RelayController,
+            StateStatusRepository(Outcome.Success(status(1))),
+            FakeDeviceRepository(DeviceSummary(null, null, null)),
+            starter,
+        )
+        vm.onRetryConnection()
+        assertEquals(1, starter.startCount, "relayStarter.start() invoked once")
     }
 }

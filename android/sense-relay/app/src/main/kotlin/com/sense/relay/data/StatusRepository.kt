@@ -18,4 +18,14 @@ interface StatusRepository {
      * has to wrap the flow in a try/catch.
      */
     fun observeStatus(): Flow<Outcome<ServerStatus>>
+
+    /**
+     * Force an immediate poll out-of-cycle (e.g. a pull-to-refresh gesture).
+     * Default is a no-op so fakes that don't model polling stay compatible;
+     * [PollingStatusRepository] overrides it to run one fetch right away and
+     * publish the result, without waiting for the next interval tick.
+     *
+     * Suspending so a caller can await completion to toggle a refresh spinner.
+     */
+    suspend fun refresh() {}
 }

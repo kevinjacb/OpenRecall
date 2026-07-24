@@ -11,6 +11,8 @@ import com.sense.relay.http.dto.SessionDetailsDto
 import com.sense.relay.http.dto.SessionsPageDto
 import com.sense.relay.http.dto.toDomain
 import com.sense.relay.relay.RelayController
+import com.sense.relay.relay.IntentRelayStarter
+import com.sense.relay.relay.RelayStarter
 import com.sense.relay.store.ServerConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -55,6 +57,10 @@ object RepositoryModule {
         val chatHistoryStore: ChatHistoryStore,
         // P1 memory-browse user-facing surface (MemoryScreen):
         val memoryRepository: MemoryRepository,
+        // The "Retry connection" escape hatch — re-launches the foreground
+        // RelayService from its last-good config so a dropped link can be
+        // recovered without re-running the setup wizard.
+        val relayStarter: RelayStarter,
     )
 
     lateinit var repos: Repositories
@@ -128,6 +134,7 @@ object RepositoryModule {
             },
         )
         val device = DeviceRepositoryImpl(RelayController)
+        val relayStarter = IntentRelayStarter(app)
         repos = Repositories(
             configuration = configuration,
             session = session,
@@ -139,6 +146,7 @@ object RepositoryModule {
             agentRepository = agentRepository,
             chatHistoryStore = chatHistoryStore,
             memoryRepository = memoryRepository,
+            relayStarter = relayStarter,
         )
     }
 }

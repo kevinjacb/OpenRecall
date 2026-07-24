@@ -42,7 +42,9 @@ class DashboardRepositoryTest {
 
     private class FakeStatusRepository(initial: Outcome<ServerStatus>) : StatusRepository {
         val flow = MutableStateFlow(initial)
+        var refreshCount = 0
         override fun observeStatus(): Flow<Outcome<ServerStatus>> = flow
+        override suspend fun refresh() { refreshCount++ }
     }
 
     private fun status(active: Int) = ServerStatus(
@@ -157,5 +159,22 @@ class DashboardRepositoryTest {
         }
         val l = assertIs<DashboardState.Loaded>(updated)
         assertTrue((l.server as Outcome.Success).value.activeSessions == 9)
+    }
+
+    @Test fun refreshDelegatesToBothChildren() = runBlocking {
+        // A pull-to-refresh on Home fans out: one immediate status poll AND a
+        // reset-to-page-1 of the session list. Both children's refresh must
+        // be invoked exactly once.
+        RelayController.reset()
+        val fakeStatus = FakeStatusRepository(Outcome.Success(status(1)))
+        val fakeSession = FakeSessionRepository()
+        val repo = DashboardRepositoryImpl(RelayController, fakeStatus, fakeSession, scope)
+        // Let the combined flow go Loaded first so we're past the seed.
+        withTimeout(2000) { repo.observe().filter { it is DashboardState.Loaded }.first() }
+
+        repo.refresh()
+
+        assertEquals(1, fakeStatus.refreshCount, "status refreshed once")
+        assertEquals(1, fakeSession.refreshCount, "sessions refreshed once")
     }
 }

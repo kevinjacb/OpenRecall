@@ -9,10 +9,15 @@ import com.sense.relay.domain.model.CaptureEvent
 import com.sense.relay.domain.model.SessionDetails
 import com.sense.relay.domain.model.SessionId
 import com.sense.relay.domain.model.SessionSummary
-import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 
@@ -41,24 +46,59 @@ sealed interface SessionDetailUiState {
  * Error policy: a summary failure is [SessionDetailUiState.Failed] (nothing
  * to show); an events failure keeps [SessionDetailUiState.LoadedSummary] (the
  * summary still renders, the timeline just stays empty).
+ *
+ * Refresh: the underlying per-session flows are one-shot cold flows (each
+ * `GET` emits once). [onRefresh] bumps a [revision] trigger that
+ * [flatMapLatest] uses to cancel the in-flight collection and re-collect the
+ * two flows from scratch — re-fetching summary + events. The [isRefreshing]
+ * flag is cleared on the new collection's first emission (summary landed) so
+ * the pull-to-refresh spinner dismisses as soon as the refresh produces a
+ * new state.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class SessionDetailViewModel(
-    id: SessionId,
-    repo: SessionRepository,
+    private val id: SessionId,
+    private val repo: SessionRepository,
 ) : ViewModel() {
 
-    // Flow is covariant, so a non-null events flow binds to a nullable-typed
-    // one; `onStart { emit(null) }` then seeds a "pending" tick so `combine`
-    // fires as soon as the summary lands (events still null → LoadedSummary).
-    private val eventsOrPending: Flow<Outcome<List<CaptureEvent>>?> =
-        repo.observeSessionEvents(id)
+    // Bumped by [onRefresh] to re-collect the one-shot per-session flows.
+    private val revision = MutableStateFlow(0)
 
-    val state: StateFlow<SessionDetailUiState> = combine(
-        repo.observeSession(id),
-        eventsOrPending.onStart { emit(null) },
-    ) { summary, events ->
-        reduce(summary, events)
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SessionDetailUiState.Loading)
+    private val _isRefreshing = MutableStateFlow(false)
+    /** True while a pull-to-refresh re-fetch is in flight. */
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
+    val state: StateFlow<SessionDetailUiState> = revision
+        .flatMapLatest {
+            // Flow is covariant, so a non-null events flow binds to a nullable-
+            // typed one; `onStart { emit(null) }` then seeds a "pending" tick so
+            // `combine` fires as soon as the summary lands (events still null
+            // → LoadedSummary). The explicit nullable element type MUST be on
+            // the bare flow before `onStart` — inlining drops the annotation,
+            // `onStart` infers a non-null element, and `emit(null)` won't compile.
+            val eventsOrPending: Flow<Outcome<List<CaptureEvent>>?> = repo.observeSessionEvents(id)
+            combine(
+                repo.observeSession(id),
+                eventsOrPending.onStart { emit(null) },
+            ) { summary, events -> reduce(summary, events) }
+                // Clear the refresh flag on the first emission of this (re-)
+                // collection — the summary fetch has landed, the spinner can
+                // dismiss. A no-op for the initial collection (flag is false).
+                .onEach { if (_isRefreshing.value) _isRefreshing.value = false }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SessionDetailUiState.Loading)
+
+    /**
+     * Pull-to-refresh: re-fetch the session summary + event timeline. Bumps
+     * [revision] so [flatMapLatest] cancels the current collection and re-
+     * collects the one-shot flows from scratch. No-op if a refresh is already
+     * in flight.
+     */
+    fun onRefresh() {
+        if (_isRefreshing.value) return
+        _isRefreshing.value = true
+        revision.value = revision.value + 1
+    }
 }
 
 private fun reduce(
