@@ -265,12 +265,16 @@ class ExtractionWorker:
     def add_listener(
         self, listener: Callable[[SessionCompletion], Awaitable[None]]
     ) -> None:
-        """Register a listener to be called after every successful extraction.
+        """Register a listener to be called after a successful extraction
+        that produced new atoms.
 
         Listeners are awaited sequentially in registration order.
         Exceptions are caught, logged, and counted as
         ``EXTRACTION_LISTENER_FAILURE_TOTAL`` — they never block the
-        worker or other listeners.
+        worker or other listeners. A batch that extracts no new memories
+        (the LLM returned ``[]``) does NOT dispatch — there is nothing
+        new to react to, and dispatching on every empty batch would
+        flood listeners (and contend on the shared LLM model).
         """
         self._listeners.append(listener)
 
@@ -540,10 +544,16 @@ class ExtractionWorker:
         self._atoms.set_cursor(session_id, last_pending_seq)
         # A successful extraction resets the consecutive-failure counter.
         self._parse_failures.pop(session_id, None)
-        # 4. P3: dispatch to listeners after the cursor advances.
-        #    H7: only after success. Listener failures are caught,
-        #    logged, and counted as EXTRACTION_LISTENER_FAILURE_TOTAL.
-        if pending:
+        # 4. P3: dispatch to listeners ONLY when new atoms were indexed.
+        #    A batch that extracted no memories (the LLM returned [] for
+        #    noise / fragments) has nothing to be proactive about —
+        #    dispatching on every empty batch floods the planner with LLM
+        #    calls, which contend with the extraction worker on the shared
+        #    model and push planner calls past their timeout
+        #    (proactive_plan_timeout). H7: only after success. Listener
+        #    failures are caught, logged, and counted as
+        #    EXTRACTION_LISTENER_FAILURE_TOTAL.
+        if indexed:
             completion = SessionCompletion(
                 session_id=session_id,
                 completed_at=datetime.now(tz=timezone.utc),
