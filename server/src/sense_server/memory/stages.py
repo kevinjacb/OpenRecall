@@ -35,35 +35,84 @@ Clock = Callable[[], datetime]
 class ExtractionStage:
     """Stage 1: events -> atom candidates.
 
-    Calls the injected :class:`Extractor` on each event's text and
-    produces one :class:`MemoryAtom` per extracted memory. The atom's
-    ``start_ms`` and ``source_event_id`` come from the event; the
-    ``created_at`` comes from the injected clock.
+    Groups ordered events into time windows (at most ``window_ms`` of span
+    from the first event's ``start_ms``), joins each window's text into one
+    transcript, and calls the extractor **once per window** — not once per
+    event. The streaming transcriber emits one transcript per 1-second audio
+    hop, so per-event extraction fed the LLM fragments in isolation
+    ("and send it to my phone now.") and it returned ``[]`` for nearly every
+    hop; memories that span multiple hops (the common case) never formed.
+    Windowing lets the model see a coherent ~60s slice of conversation.
+
+    Every atom produced by a window is attributed to the window's **last**
+    event: ``source_event_id`` and ``start_ms`` are the last event's, and
+    ``atom_id`` is ``"{last.event_id}:{index}"``. This keeps ids deterministic
+    for a given set of events + ``window_ms``, so :class:`AtomStore.append`
+    (idempotent on ``atom_id``) and worker re-runs stay safe. The cursor /
+    H7 invariant is unchanged — the worker still advances the cursor to the
+    last processed event seq only after extraction + indexing succeed.
     """
 
-    def __init__(self, extractor: Extractor, clock: Clock) -> None:
+    def __init__(
+        self, extractor: Extractor, clock: Clock, window_ms: int = 60_000,
+    ) -> None:
+        if window_ms <= 0:
+            raise ValueError("window_ms must be > 0")
         self._extractor = extractor
         self._clock = clock
+        self._window_ms = window_ms
 
     def run(
         self, session_id: str, events: Iterable[CaptureEvent]
     ) -> list[MemoryAtom]:
         now = self._clock()
         atoms: list[MemoryAtom] = []
-        for event in events:
-            for index, memory in enumerate(self._extractor.extract(event.text)):
+        for window in self._windows(list(events)):
+            joined = " ".join(e.text for e in window)
+            last = window[-1]
+            for index, memory in enumerate(self._extractor.extract(joined)):
                 atoms.append(
                     MemoryAtom(
-                        atom_id=f"{event.event_id}:{index}",
+                        atom_id=f"{last.event_id}:{index}",
                         session_id=session_id,
-                        source_event_id=event.event_id,
+                        source_event_id=last.event_id,
                         kind=memory.kind,
                         text=memory.text,
                         created_at=now,
-                        start_ms=event.start_ms,
+                        start_ms=last.start_ms,
                     )
                 )
         return atoms
+
+    def _windows(
+        self, events: list[CaptureEvent]
+    ) -> list[list[CaptureEvent]]:
+        """Group events ordered by ``start_ms`` into windows of at most
+        ``window_ms`` span. A window starts at an event's ``start_ms`` and
+        includes every following event whose ``start_ms`` is within
+        ``window_ms`` of it; the next event past that boundary starts a new
+        window. Silence gaps (no events for a stretch) simply shrink a
+        window rather than forcing a split — only elapsed span from the
+        window's first event matters, so a conversation starting mid-minute
+        groups correctly instead of being cleaved at a wall-clock boundary.
+        """
+        windows: list[list[CaptureEvent]] = []
+        current: list[CaptureEvent] = []
+        window_start_ms: int | None = None
+        for event in events:
+            if (
+                window_start_ms is None
+                or event.start_ms - window_start_ms >= self._window_ms
+            ):
+                if current:
+                    windows.append(current)
+                current = [event]
+                window_start_ms = event.start_ms
+            else:
+                current.append(event)
+        if current:
+            windows.append(current)
+        return windows
 
 
 class VersionStampStage:

@@ -102,7 +102,7 @@ def _build_worker(
     def clock() -> datetime:
         return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
     pipeline = Pipeline(
-        extraction=ExtractionStage(extractor=_FixedExtractor(), clock=clock),
+        extraction=ExtractionStage(window_ms=1000, extractor=_FixedExtractor(), clock=clock),
         version_stamp=VersionStampStage(),
         embedding=EmbeddingStage(embedder=embedder or _TokenBagEmbedder()),
         indexing=IndexingStage(index=idx),

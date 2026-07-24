@@ -71,28 +71,68 @@ def _event(seq: int, session_id: str = "s1", text: str = "hello") -> CaptureEven
 
 # --- stage 1: extraction ------------------------------------------------------
 
-
-def test_extraction_stage_produces_atoms_per_event():
-    def clock() -> datetime:
-        return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
-    stage = ExtractionStage(extractor=FixedExtractor(), clock=clock)
-    atoms = stage.run("s1", [_event(0), _event(1)])
-    assert len(atoms) == 2
-    assert all(isinstance(a, MemoryAtom) for a in atoms)
-    assert atoms[0].source_event_id == "s1:0"
-    assert atoms[1].source_event_id == "s1:1"
+FIXED = datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
 
 
-def test_extraction_stage_respects_event_count():
-    """An event that yields no memories still produces no atom (and that's fine)."""
-    def clock() -> datetime:
-        return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
+def test_extraction_stage_joins_same_window_events_into_one_extract_call():
+    """Events within one 60s window are joined into a single transcript and
+    the extractor is called once. Atoms are attributed to the window's last
+    event. This is the fix for per-event extraction on 1-second fragments,
+    where the LLM saw each hop in isolation and returned []."""
+    stage = ExtractionStage(extractor=FixedExtractor(), clock=lambda: FIXED)
+    atoms = stage.run("s1", [_event(0, text="so basically"), _event(1, text="I was saying")])
+    # one window -> one extract call -> one atom (FixedExtractor echoes joined text)
+    assert len(atoms) == 1
+    assert atoms[0].text == "so basically I was saying"
+    assert atoms[0].source_event_id == "s1:1"  # window's last event
+    assert atoms[0].start_ms == 1000
+    assert atoms[0].atom_id == "s1:1:0"  # deterministic
+
+
+def test_extraction_stage_splits_events_across_windows():
+    """Events whose start_ms spans past window_ms from the first event start
+    a new window, each producing its own extract call."""
+    # window_ms=2000: event 0 (0ms), 1 (1000ms) -> W1; event 2 (2000ms) -> W2
+    stage = ExtractionStage(extractor=FixedExtractor(), clock=lambda: FIXED, window_ms=2000)
+    atoms = stage.run("s1", [_event(0, text="a"), _event(1, text="b"), _event(2, text="c")])
+    assert [a.text for a in atoms] == ["a b", "c"]
+    assert [a.source_event_id for a in atoms] == ["s1:1", "s1:2"]
+    assert [a.atom_id for a in atoms] == ["s1:1:0", "s1:2:0"]
+
+
+def test_extraction_stage_window_ms_default_is_60s():
+    assert ExtractionStage(extractor=FixedExtractor(), clock=lambda: FIXED)._window_ms == 60_000
+
+
+def test_extraction_stage_rejects_nonpositive_window_ms():
+    with pytest.raises(ValueError):
+        ExtractionStage(extractor=FixedExtractor(), clock=lambda: FIXED, window_ms=0)
+
+
+def test_extraction_stage_empty_events_returns_empty():
+    stage = ExtractionStage(extractor=FixedExtractor(), clock=lambda: FIXED)
+    assert stage.run("s1", []) == []
+
+
+def test_extraction_stage_window_yielding_no_memories_returns_no_atoms():
+    """A window whose joined text yields [] produces no atom. The worker
+    still advances the cursor past it; the stage just returns fewer atoms."""
+    stage = ExtractionStage(extractor=FixedExtractor(memories=[]), clock=lambda: FIXED)
+    assert stage.run("s1", [_event(0, text="noise"), _event(1, text="noise")]) == []
+
+
+def test_extraction_stage_multiple_memories_in_a_window_indexed_by_position():
+    """Two memories from one window get atom_ids {last}:{0} and {last}:{1}."""
     stage = ExtractionStage(
-        extractor=FixedExtractor(memories=[ExtractedMemory(kind="fact", text="only this")]),
-        clock=clock,
+        extractor=FixedExtractor(memories=[
+            ExtractedMemory(kind="fact", text="one"),
+            ExtractedMemory(kind="task", text="two"),
+        ]),
+        clock=lambda: FIXED,
     )
-    atoms = stage.run("s1", [_event(0, text="ignored"), _event(1, text="ignored")])
-    assert len(atoms) == 2  # one memory per event by default; both same content
+    atoms = stage.run("s1", [_event(0, text="x"), _event(1, text="y")])
+    assert [a.atom_id for a in atoms] == ["s1:1:0", "s1:1:1"]
+    assert [a.kind for a in atoms] == ["fact", "task"]
 
 
 # --- stage 2: version-stamp ---------------------------------------------------
