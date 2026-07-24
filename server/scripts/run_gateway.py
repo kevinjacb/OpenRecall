@@ -218,7 +218,7 @@ def main() -> None:
     # 2s timeout, every drop counted. The placeholder ws_sender is
     # replaced on every WebSocket connect in serve() via
     # ProactiveTriggerEngine.set_ws_sender.
-    from sense_server.agent.proactive import ProactiveTriggerEngine
+    from sense_server.agent.proactive import ProactiveTriggerEngine, plan_timeout_from_env
 
     class _PlaceholderWsSender:
         """No-op ws_sender. Replaced on every WebSocket connect. If a
@@ -237,7 +237,7 @@ def main() -> None:
         clock=SystemClock(),
         metrics=metrics,
         ids=UuidIdGenerator(),
-        plan_timeout_s=2.0,
+        plan_timeout_s=plan_timeout_from_env(__import__("os").environ),
     )
 
     token = load_or_create_token(args.token_file)
