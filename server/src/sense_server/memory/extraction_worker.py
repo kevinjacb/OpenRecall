@@ -232,6 +232,7 @@ class ExtractionWorker:
         metrics: InMemoryMetricsRecorder,
         enqueuer: ExtractionEnqueuer | None = None,
         listeners: list[Callable[[SessionCompletion], Awaitable[None]]] | None = None,
+        max_parse_failures: int = 5,
     ) -> None:
         self._events = events
         self._atoms = atoms
@@ -246,6 +247,13 @@ class ExtractionWorker:
         # calls remove_listener during dispatch doesn't mutate the
         # iteration (no skip, no RuntimeError).
         self._listeners: list[Callable[[SessionCompletion], Awaitable[None]]] = list(listeners or [])
+        # In-memory consecutive-parse-failure counter for dead-lettering.
+        # Resets on a successful extraction; lives only in memory (a
+        # restart re-collects up to max_parse_failures failures before
+        # dead-lettering again). Kept out of the schema to avoid a
+        # migration for this bounded, transient state.
+        self._parse_failures: dict[str, int] = {}
+        self._max_parse_failures = max_parse_failures
 
     # --- public API -------------------------------------------------------
 
@@ -278,33 +286,54 @@ class ExtractionWorker:
     def _dispatch_listeners(self, completion: SessionCompletion) -> None:
         """Schedule each registered listener to run after the cursor advance.
 
-        Fire-and-forget on the running event loop (if any). Each
-        listener is a coroutine; exceptions are caught, logged, and
-        counted — never re-raised. Snapshot iteration so a listener
-        that calls remove_listener during dispatch is safe.
+        Fire-and-forget on the main event loop (if bound) so a slow
+        listener does not block the worker thread that called
+        :meth:`process_session`. Each listener is a coroutine;
+        exceptions are caught, logged, and counted — never re-raised.
+        Snapshot iteration so a listener that calls
+        :meth:`remove_listener` during dispatch is safe.
 
-        No-loop fallback: ``process_session`` is also called from
-        :meth:`start`'s reconcile sweep, which runs on a worker
-        thread via ``asyncio.to_thread`` — there is no event loop
-        on that thread. In that case we run the listener on a
-        transient loop in the same thread. (The previous fallback
-        ``listener(completion).close()`` created the coroutine and
-        immediately discarded it, leaking a
-        ``RuntimeWarning: coroutine '...' was never awaited`` and
-        silently dropping the proactive trigger. The reconcile
-        sweep is the first production caller of this fallback
-        path; before M4.3 the queue loop was the only caller and
-        always had a loop, so the broken fallback was
-        untested-and-unused.)
+        The worker thread that runs :meth:`process_session` from
+        ``_run`` via ``asyncio.to_thread`` has no running event loop
+        of its own. Scheduling the listener there with
+        ``asyncio.run`` blocks the worker thread for the full
+        listener duration (e.g. 2s planner timeout), serialising the
+        worker's main drain loop. The proactive listener is also
+        written to run on the main event loop (its ``asyncio.Event``,
+        ``asyncio.to_thread``-based LLM call, and the drain task all
+        live there). So we route to the **bound loop** —
+        ``self._enqueuer.bound_loop`` — the main loop bound by
+        :meth:`start` via ``enqueuer.bind_loop``.
+
+        Dispatch precedence:
+
+        1. **Running loop** — if :meth:`process_session` was called
+           on a thread that already has an event loop running
+           (e.g. in-process direct calls from a test), dispatch
+           directly on it. Original M4 behavior.
+        2. **Bound loop** — if no running loop but the enqueuer
+           has a bound loop (the main event loop bound by
+           :meth:`start`), use ``call_soon_threadsafe`` to schedule
+           on it. This is the production queue-loop path
+           (``_run`` → ``to_thread(_safe_process)`` →
+           ``process_session`` → ``_dispatch_listeners``). Routing
+           to the bound loop runs the listener on the main loop,
+           where the planner's ``asyncio.to_thread`` executor, the
+           ws_sender's ``asyncio.Event``, and the drain task all
+           live. The worker thread is unblocked immediately.
+        3. **No loop** — the reconcile sweep runs before
+           :meth:`start` binds the loop, on a thread that has no
+           loop. Drive the listener on a transient loop in this
+           thread. (The original no-loop fallback
+           ``listener(completion).close()`` created the coroutine
+           and immediately discarded it, leaking a
+           ``RuntimeWarning: coroutine '...' was never awaited``.)
         """
         # Detect a running loop ONCE, before creating any coroutine.
         # We must not call `listener(completion)` speculatively and
         # then discard the coroutine if there is no loop — that
         # leaks a `RuntimeWarning: coroutine ... was never awaited`
-        # from Python's GC. (The original fallback did exactly that,
-        # hence the warning. The proactive trigger also silently
-        # dropped in production until M4.3 added a test that
-        # exercises the no-loop path.)
+        # from Python's GC.
         try:
             running_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -312,11 +341,13 @@ class ExtractionWorker:
 
         for listener in list(self._listeners):
             if running_loop is not None:
-                # Fire-and-forget on the existing loop. Exceptions
-                # are caught by the done-callback.
+                # In-process dispatch: running loop is available.
+                # Fire-and-forget; exceptions caught by done-callback.
                 task = running_loop.create_task(listener(completion))
 
-                def _safe(t: asyncio.Task, sid: str = completion.session_id) -> None:
+                def _safe(
+                    t: asyncio.Task, sid: str = completion.session_id,
+                ) -> None:
                     try:
                         t.result()
                     except Exception:
@@ -330,11 +361,37 @@ class ExtractionWorker:
                         )
 
                 task.add_done_callback(_safe)
+            elif self._enqueuer.bound_loop is not None:
+                # Off-thread dispatch (production queue-loop path).
+                # `call_soon_threadsafe` is thread-safe and returns
+                # immediately — the worker thread is unblocked.
+                try:
+                    self._enqueuer.bound_loop.call_soon_threadsafe(
+                        self._schedule_listener, listener, completion,
+                    )
+                except RuntimeError:
+                    # Loop is closed (server shutdown). Drop with a
+                    # counter — we cannot run the listener on a
+                    # closed loop.
+                    self._metrics.increment(
+                        Metrics.EXTRACTION_LISTENER_FAILURE_TOTAL,
+                        tags={
+                            "session_id": completion.session_id,
+                            "reason": "loop_closed",
+                        },
+                    )
+                    log.exception(
+                        "extraction_listener_failed",
+                        extra={
+                            "session_id": completion.session_id,
+                            "reason": "loop_closed",
+                        },
+                    )
             else:
-                # No running loop (e.g. process_session called from
-                # a worker thread by `asyncio.to_thread` in start()).
-                # `asyncio.run` creates a transient loop, drives the
-                # coroutine to completion, and tears the loop down.
+                # No running loop, no bound loop — reconcile sweep.
+                # Drive the listener on a transient loop in this
+                # thread. Best-effort: a listener failure is
+                # counted and logged.
                 try:
                     asyncio.run(listener(completion))
                 except Exception:
@@ -346,6 +403,35 @@ class ExtractionWorker:
                         "extraction_listener_failed",
                         extra={"session_id": completion.session_id},
                     )
+
+    def _schedule_listener(
+        self,
+        listener: Callable[[SessionCompletion], Awaitable[None]],
+        completion: SessionCompletion,
+    ) -> None:
+        """Runs on the main event loop. Schedules the listener as a
+        task and attaches a done-callback for exception counting.
+        Called via ``call_soon_threadsafe`` from the worker thread
+        so the worker thread is unblocked immediately.
+        """
+        task = asyncio.create_task(listener(completion))
+
+        def _safe(
+            t: asyncio.Task, sid: str = completion.session_id,
+        ) -> None:
+            try:
+                t.result()
+            except Exception:
+                self._metrics.increment(
+                    Metrics.EXTRACTION_LISTENER_FAILURE_TOTAL,
+                    tags={"session_id": sid},
+                )
+                log.exception(
+                    "extraction_listener_failed",
+                    extra={"session_id": sid},
+                )
+
+        task.add_done_callback(_safe)
 
     def process_session(self, session_id: str) -> list:
         """Run the pipeline for one session. H7: cursor advances on success only.
@@ -366,46 +452,38 @@ class ExtractionWorker:
 
         Returns the atoms that were newly indexed. Raises on failure;
         callers (reconcile / the queue loop) are responsible for catching.
+
+        A *persistent* parse failure is dead-lettered: after
+        ``max_parse_failures`` consecutive :class:`LLMParseError` on the
+        same session, the cursor advances past the stuck batch so the
+        worker stops re-running it on every new event (which would
+        re-attempt the whole growing backlog each time). The events
+        remain in the event store for re-ingestion after a prompt/model
+        fix. Counted as :data:`Metrics.EXTRACTION_DEAD_LETTER_TOTAL` and
+        logged as ``extraction_dead_lettered``.
         """
         start = time.monotonic()
-        try:
-            # 1. read events past the cursor
-            cursor = self._atoms.get_cursor(session_id)
-            all_events = self._events.events(session_id)
-            pending = [e for e in all_events if e.seq > cursor]
-            if not pending:
-                self._metrics.observe(
-                    Metrics.EXTRACTION_LATENCY_MS,
-                    (time.monotonic() - start) * 1000.0,
-                )
-                return []
-            # 2. run the pipeline (extract -> version -> embed -> index)
-            #    The pipeline may raise; the cursor must NOT advance.
-            indexed = self._pipeline.run(session_id, pending)
-            # 3. advance the cursor to the last event seq we just processed.
-            #    H7: only after extraction AND indexing have both succeeded.
-            if pending:
-                new_cursor = max(e.seq for e in pending)
-                self._atoms.set_cursor(session_id, new_cursor)
-            # 4. P3: dispatch to listeners after the cursor advances.
-            #    H7: only after success. Listener failures are caught,
-            #    logged, and counted as EXTRACTION_LISTENER_FAILURE_TOTAL.
-            if pending:
-                completion = SessionCompletion(
-                    session_id=session_id,
-                    completed_at=datetime.now(tz=timezone.utc),
-                    event_id_range=(pending[0].seq, pending[-1].seq),
-                )
-                self._dispatch_listeners(completion)
+        # 1. read events past the cursor
+        cursor = self._atoms.get_cursor(session_id)
+        all_events = self._events.events(session_id)
+        pending = [e for e in all_events if e.seq > cursor]
+        if not pending:
             self._metrics.observe(
                 Metrics.EXTRACTION_LATENCY_MS,
                 (time.monotonic() - start) * 1000.0,
             )
-            return indexed
-        except LLMParseError:
+            return []
+        last_pending_seq = max(e.seq for e in pending)
+        # 2. run the pipeline (extract -> version -> embed -> index).
+        #    The pipeline may raise; the cursor must NOT advance — unless
+        #    this is the Nth consecutive parse failure (dead-letter, below).
+        try:
+            indexed = self._pipeline.run(session_id, pending)
+        except LLMParseError as exc:
             # Parse failure is structurally distinct from an indexing
             # failure. Count it on its own metric (tagged with the
-            # session id) and re-raise. The cursor was not advanced.
+            # session id) and re-raise so the next enqueue / reconciliation
+            # retries the same events. The cursor was not advanced.
             # NOTE: do NOT also increment INDEXING_FAILURES_TOTAL here
             # — the two counters must never overlap or the dashboard
             # conflates "LLM misbehaved" with "embedder/indexer crashed".
@@ -417,9 +495,34 @@ class ExtractionWorker:
                 Metrics.EXTRACTION_LATENCY_MS,
                 (time.monotonic() - start) * 1000.0,
             )
+            self._parse_failures[session_id] = (
+                self._parse_failures.get(session_id, 0) + 1
+            )
+            if self._parse_failures[session_id] >= self._max_parse_failures:
+                # Dead-letter: advance past the stuck batch so the worker
+                # stops re-running it on every new enqueue. The events
+                # remain in the event store for re-ingestion after a
+                # prompt/model fix; this only bounds the retry storm.
+                self._atoms.set_cursor(session_id, last_pending_seq)
+                self._parse_failures.pop(session_id, None)
+                self._metrics.increment(
+                    Metrics.EXTRACTION_DEAD_LETTER_TOTAL,
+                    tags={"session_id": session_id},
+                )
+                log.warning(
+                    "extraction_dead_lettered",
+                    extra={
+                        "session_id": session_id,
+                        "advanced_to": last_pending_seq,
+                        "batch_size": len(pending),
+                        "attempts": self._max_parse_failures,
+                        "error": str(exc),
+                    },
+                )
+                return []
             log.warning(
                 "extraction_parse_failed",
-                extra={"session_id": session_id},
+                extra={"session_id": session_id, "error": str(exc)},
             )
             raise
         except Exception:
@@ -432,6 +535,26 @@ class ExtractionWorker:
                 (time.monotonic() - start) * 1000.0,
             )
             raise
+        # 3. advance the cursor to the last event seq we just processed.
+        #    H7: only after extraction AND indexing have both succeeded.
+        self._atoms.set_cursor(session_id, last_pending_seq)
+        # A successful extraction resets the consecutive-failure counter.
+        self._parse_failures.pop(session_id, None)
+        # 4. P3: dispatch to listeners after the cursor advances.
+        #    H7: only after success. Listener failures are caught,
+        #    logged, and counted as EXTRACTION_LISTENER_FAILURE_TOTAL.
+        if pending:
+            completion = SessionCompletion(
+                session_id=session_id,
+                completed_at=datetime.now(tz=timezone.utc),
+                event_id_range=(pending[0].seq, pending[-1].seq),
+            )
+            self._dispatch_listeners(completion)
+        self._metrics.observe(
+            Metrics.EXTRACTION_LATENCY_MS,
+            (time.monotonic() - start) * 1000.0,
+        )
+        return indexed
 
     def reconcile(self) -> list:
         """Run process_session for every session that has un-indexed events.
