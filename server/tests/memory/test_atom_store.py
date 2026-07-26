@@ -216,3 +216,27 @@ def test_sqlite_legacy_cursor_row_is_treated_as_stale(tmp_path):
     # and a fresh versioned write supersedes the legacy row
     store.set_cursor("s1", 12, extractor_version="v1")
     assert store.get_cursor("s1", extractor_version="v1") == 12
+
+
+def test_store_round_trips_speaker_columns(store):
+    a = MemoryAtom(
+        atom_id="s1:0:0", session_id="s1", source_event_id="s1:0", kind="fact",
+        text="x", created_at=datetime(2026, 7, 26, tzinfo=timezone.utc), start_ms=0,
+        speaker="uuid-1", speaker_confidence=0.82, speaker_assignment="confirmed",
+    )
+    assert store.append(a) is True
+    out = store.atoms("s1")[0]
+    assert out.speaker == "uuid-1"
+    assert out.speaker_confidence == 0.82
+    assert out.speaker_assignment == "confirmed"
+
+
+def test_store_round_trips_null_speaker(store):
+    a = MemoryAtom(
+        atom_id="s1:1:0", session_id="s1", source_event_id="s1:1", kind="fact",
+        text="x", created_at=datetime(2026, 7, 26, tzinfo=timezone.utc), start_ms=1000,
+    )
+    store.append(a)
+    out = store.atoms("s1")[0]
+    assert out.speaker is None
+    assert out.speaker_assignment is None

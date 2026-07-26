@@ -157,3 +157,31 @@ def test_sqlite_store_persists_across_reopen(tmp_path):
     events = s2.events("s1")
     assert len(events) == 1
     assert events[0].text == "durable"
+
+
+def test_store_round_trips_speaker_columns(store):
+    from datetime import datetime, timezone
+    e = CaptureEvent(
+        event_id="s1:0", session_id="s1", seq=0, kind="transcript",
+        created_at=datetime(2026, 7, 26, tzinfo=timezone.utc),
+        text="hi", duration_ms=1000, start_ms=0,
+        speaker="uuid-1", speaker_confidence=0.82, speaker_assignment="confirmed",
+    )
+    assert store.append(e) is True
+    out = store.events("s1")[0]
+    assert out.speaker == "uuid-1"
+    assert out.speaker_confidence == 0.82
+    assert out.speaker_assignment == "confirmed"
+
+
+def test_store_round_trips_null_speaker(store):
+    from datetime import datetime, timezone
+    e = CaptureEvent(
+        event_id="s1:1", session_id="s1", seq=1, kind="transcript",
+        created_at=datetime(2026, 7, 26, tzinfo=timezone.utc),
+        text="hi", duration_ms=1000, start_ms=1000,
+    )
+    store.append(e)
+    out = store.events("s1")[0]
+    assert out.speaker is None
+    assert out.speaker_assignment is None

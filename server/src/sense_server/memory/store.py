@@ -137,7 +137,10 @@ class SqliteAtomStore:
                 kind            TEXT NOT NULL,
                 text            TEXT NOT NULL,
                 created_at      TEXT NOT NULL,
-                start_ms        INTEGER NOT NULL
+                start_ms        INTEGER NOT NULL,
+                speaker             TEXT,
+                speaker_confidence  REAL,
+                speaker_assignment  TEXT
             );
             CREATE INDEX IF NOT EXISTS ix_atoms_session_start
                 ON memory_atoms (session_id, start_ms);
@@ -162,8 +165,9 @@ class SqliteAtomStore:
                 "INSERT OR IGNORE INTO memory_atoms "
                 "(atom_id, session_id, source_event_id, kind, text, created_at, start_ms, "
                 " extraction_version, embedding_model, embedding_version, "
-                " extractor_prompt_version, source_pipeline_version) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " extractor_prompt_version, source_pipeline_version, "
+                " speaker, speaker_confidence, speaker_assignment) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     atom.atom_id,
                     atom.session_id,
@@ -177,6 +181,9 @@ class SqliteAtomStore:
                     atom.embedding_version,
                     atom.extractor_prompt_version,
                     atom.source_pipeline_version,
+                    atom.speaker,
+                    atom.speaker_confidence,
+                    atom.speaker_assignment,
                 ),
             )
             self._conn.commit()
@@ -194,7 +201,8 @@ class SqliteAtomStore:
             rows = self._conn.execute(
                 "SELECT atom_id, session_id, source_event_id, kind, text, created_at, start_ms, "
                 "extraction_version, embedding_model, embedding_version, "
-                "extractor_prompt_version, source_pipeline_version "
+                "extractor_prompt_version, source_pipeline_version, "
+                "speaker, speaker_confidence, speaker_assignment "
                 "FROM memory_atoms WHERE session_id = ? ORDER BY start_ms",
                 (session_id,),
             ).fetchall()
@@ -212,6 +220,9 @@ class SqliteAtomStore:
                 embedding_version=r[9],
                 extractor_prompt_version=r[10],
                 source_pipeline_version=r[11],
+                speaker=r[12],
+                speaker_confidence=r[13],
+                speaker_assignment=r[14],
             )
             for r in rows
         ]

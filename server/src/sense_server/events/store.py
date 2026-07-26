@@ -97,10 +97,16 @@ class SqliteEventStore:
                 created_at TEXT NOT NULL,
                 text       TEXT NOT NULL,
                 duration_ms INTEGER NOT NULL,
-                start_ms   INTEGER NOT NULL
+                start_ms   INTEGER NOT NULL,
+                speaker            TEXT,
+                speaker_confidence REAL,
+                speaker_assignment  TEXT
             )
             """
         )
+        # Idempotent: add the speaker columns to legacy (pre-speaker) databases.
+        from ..memory.migrations import migrate_capture_events_table
+        migrate_capture_events_table(self._conn)
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS ix_events_session_seq "
             "ON capture_events (session_id, seq)"
@@ -111,8 +117,9 @@ class SqliteEventStore:
         with self._lock:
             cur = self._conn.execute(
                 "INSERT OR IGNORE INTO capture_events "
-                "(event_id, session_id, seq, kind, created_at, text, duration_ms, start_ms) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(event_id, session_id, seq, kind, created_at, text, duration_ms, start_ms, "
+                " speaker, speaker_confidence, speaker_assignment) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event.event_id,
                     event.session_id,
@@ -122,6 +129,9 @@ class SqliteEventStore:
                     event.text,
                     event.duration_ms,
                     event.start_ms,
+                    event.speaker,
+                    event.speaker_confidence,
+                    event.speaker_assignment,
                 ),
             )
             self._conn.commit()
@@ -130,7 +140,8 @@ class SqliteEventStore:
     def events(self, session_id: str) -> list[CaptureEvent]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT event_id, session_id, seq, kind, created_at, text, duration_ms, start_ms "
+                "SELECT event_id, session_id, seq, kind, created_at, text, duration_ms, start_ms, "
+                " speaker, speaker_confidence, speaker_assignment "
                 "FROM capture_events WHERE session_id = ? ORDER BY seq",
                 (session_id,),
             ).fetchall()
@@ -144,6 +155,9 @@ class SqliteEventStore:
                 text=r[5],
                 duration_ms=r[6],
                 start_ms=r[7],
+                speaker=r[8],
+                speaker_confidence=r[9],
+                speaker_assignment=r[10],
             )
             for r in rows
         ]
@@ -151,7 +165,8 @@ class SqliteEventStore:
     def last_event(self, session_id: str) -> CaptureEvent | None:
         with self._lock:
             r = self._conn.execute(
-                "SELECT event_id, session_id, seq, kind, created_at, text, duration_ms, start_ms "
+                "SELECT event_id, session_id, seq, kind, created_at, text, duration_ms, start_ms, "
+                " speaker, speaker_confidence, speaker_assignment "
                 "FROM capture_events WHERE session_id = ? ORDER BY seq DESC LIMIT 1",
                 (session_id,),
             ).fetchone()
@@ -166,6 +181,9 @@ class SqliteEventStore:
             text=r[5],
             duration_ms=r[6],
             start_ms=r[7],
+            speaker=r[8],
+            speaker_confidence=r[9],
+            speaker_assignment=r[10],
         )
 
     def sessions(self) -> list[str]:

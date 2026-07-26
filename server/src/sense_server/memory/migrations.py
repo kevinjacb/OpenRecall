@@ -22,17 +22,42 @@ ADDITIONS: list[tuple[str, str]] = [
     ("source_pipeline_version",  "TEXT NOT NULL DEFAULT 'transcript'"),
 ]
 
+# Speaker-recognition columns (additive, nullable). Shared by capture_events and
+# memory_atoms so the event/atom schemas carry the assigned speaker. NULL means
+# no attribution (silence/no-speech hop, or speaker ID disabled).
+SPEAKER_ADDITIONS: list[tuple[str, str]] = [
+    ("speaker",             "TEXT"),  # UUID, or NULL
+    ("speaker_confidence",  "REAL"),  # 0..1, or NULL
+    ("speaker_assignment",  "TEXT"),  # "confirmed" | "tentative" | "none", or NULL
+]
+
 
 def migrate_memory_atoms_table(conn: sqlite3.Connection) -> None:
-    """Add the five version columns to ``memory_atoms`` if absent.
+    """Add the five version columns + three speaker columns to ``memory_atoms``.
 
-    Idempotent: each addition checks the existing schema and is skipped
-    if the column is already present. Safe to call on every startup.
+    Idempotent: each addition checks the existing schema and is skipped if the
+    column is already present. Safe to call on every startup.
     """
     existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_atoms)")}
     for name, decl in ADDITIONS:
         if name not in existing:
             conn.execute(f"ALTER TABLE memory_atoms ADD COLUMN {name} {decl}")
+    for name, decl in SPEAKER_ADDITIONS:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE memory_atoms ADD COLUMN {name} {decl}")
+    conn.commit()
+
+
+def migrate_capture_events_table(conn: sqlite3.Connection) -> None:
+    """Add the three speaker columns to ``capture_events`` if absent.
+
+    Idempotent via ``PRAGMA table_info``. Nullable (no ``DEFAULT NOT NULL``) so
+    existing rows backfill to NULL. Safe to call on every startup.
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(capture_events)")}
+    for name, decl in SPEAKER_ADDITIONS:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE capture_events ADD COLUMN {name} {decl}")
     conn.commit()
 
 
