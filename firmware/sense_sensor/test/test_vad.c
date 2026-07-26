@@ -63,6 +63,36 @@ int main(void) {
           vad_process_dual(&vd2, loud_p, loud_r, N) == C6_GAP_MARKER);
   }
 
+  /* ---- Single-channel energy VAD (runtime audio path) ---- */
+  printf("single-channel VAD host test\n");
+  {
+    const uint32_t threshold = 200000;  /* mean-square gate (amp 447 -> 2e5) */
+    const int hangover = 3;
+    int16_t silence[N], speech[N], quiet[N];
+    fill(silence, 100);   /* room ambient: amp 100 -> ms 1e4, below gate */
+    fill(speech, 800);    /* wearable-distance speech: amp 800 -> ms 6.4e5, above gate */
+    fill(quiet, 200);     /* near-threshold noise: amp 200 -> ms 4e4, below gate */
+
+    vad_t vd;
+    vad_init(&vd, threshold, hangover);
+
+    /* Cold start: silence below the gate -> GAP (no spurious speech). */
+    check("silence -> GAP", vad_process_single(&vd, silence, N) == C6_GAP_MARKER);
+    /* Sub-threshold noise (amp 200 -> ms 4e4) below the 2e5 gate -> GAP. */
+    check("sub-threshold noise -> GAP", vad_process_single(&vd, quiet, N) == C6_GAP_MARKER);
+    /* Speech above the gate -> SPEECH (arms hangover). */
+    check("speech -> SPEECH", vad_process_single(&vd, speech, N) == C6_SPEECH);
+    /* Hangover after speech ends (3 frames, then GAP). */
+    check("hangover 1", vad_process_single(&vd, silence, N) == C6_HANGOVER);
+    check("hangover 2", vad_process_single(&vd, silence, N) == C6_HANGOVER);
+    check("hangover 3", vad_process_single(&vd, silence, N) == C6_HANGOVER);
+    check("then GAP", vad_process_single(&vd, silence, N) == C6_GAP_MARKER);
+    /* Cold start in sub-threshold noise is a gap. */
+    vad_t vd2;
+    vad_init(&vd2, threshold, hangover);
+    check("cold start noise -> GAP", vad_process_single(&vd2, quiet, N) == C6_GAP_MARKER);
+  }
+
   printf(failures ? "\nFAILED (%d)\n" : "\nOK\n", failures);
   return failures ? 1 : 0;
 }

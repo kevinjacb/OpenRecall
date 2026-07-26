@@ -24,10 +24,23 @@ esp_err_t audio_capture_init(void) {
       .din  = I2S_DATA_GPIO,
       .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false},
   };
-  // Philips stereo, 16-bit, both slots (L+R). I2S_SLOT_MODE_STEREO selects
+  // Philips stereo, both slots (L+R). I2S_SLOT_MODE_STEREO selects
   // I2S_STD_SLOT_BOTH inside the macro so both mics are captured.
   i2s_std_slot_config_t slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
       I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
+  // INMP441 is a 32-bit-slot device: it shifts 24 data bits + 8 pad bits per
+  // slot and only tri-states after all 32. The macro default (slot_bit_width =
+  // data_bit_width = 16) flips WS at BCK 16, but the left mic keeps driving SD
+  // with bits 17-24 of its sample straight into the right slot -> bus
+  // contention on the shared SD line, so the right channel reads corrupted
+  // garbage (the "only the left mic works" symptom — independent of which
+  // physical mic is on the right, since the spill is a slot-timing issue).
+  // Force 32-bit slots so each mic fully drains inside its own WS phase; keep
+  // 16-bit data (left_align=true) so we still receive int16 samples = the top
+  // 16 bits of the 24-bit word. ws_width must match slot_bit_width for 50%
+  // duty Philips framing (WS high = right slot = 32 BCK).
+  slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
+  slot_cfg.ws_width = 32;
   i2s_std_config_t std_cfg = {
       .clk_cfg  = clk_cfg,
       .slot_cfg = slot_cfg,

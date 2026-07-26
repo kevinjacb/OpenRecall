@@ -30,7 +30,6 @@
 #include "provisioning_core.h"
 #include "ring_buffer.h"
 #include "vad.h"
-#include "mic_dsp.h"
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -42,24 +41,26 @@
 
 static const char *TAG = "sense";
 
-// Core-1 audio task: capture -> dual-VAD -> NLMS cancellation -> Opus encode
+// Core-1 audio task: capture -> single-mic energy VAD -> Opus encode
 // -> ring_buffer push. rel_ts_ms is a monotonic per-device millisecond counter
 // (not wall clock — the device may not have synced time). It starts at 0 at
 // boot and advances by FRAME_MS per frame; the server uses it to lay out
 // transcript windows.
 static void audio_task(void *arg) {
   (void)arg;
-  static int16_t pri[FRAME_SAMPLES];   // voice/primary mic (front)
-  static int16_t ref[FRAME_SAMPLES];   // noise/reference mic (back)
-  static int16_t mono[FRAME_SAMPLES];  // cleaned mono output of the canceller
+  static int16_t pri[FRAME_SAMPLES];   // voice/primary mic (left, faces mouth)
+  static int16_t ref[FRAME_SAMPLES];   // reference mic (right, faces away) — cal log only
   static uint8_t opus_buf[MAX_OPUS_BYTES];
   vad_t vad;
   vad_init(&vad, VAD_ENERGY_THRESHOLD, VAD_HANGOVER_FRAMES);
-  mic_dsp_t dsp;
-  mic_dsp_init(&dsp);
 
   uint32_t frames = 0, voiced = 0, gaps = 0, total = 0;
   uint32_t rel_ts_ms = 0;
+  // DEBUG (dual-mic bring-up): per-second primary/reference energy + ratio.
+  // Distinguishes L/R-channel inversion (e_ref >> e_pri during speech) from
+  // no-capture (both ~0) from threshold too high (e_pri < 2,000,000) from
+  // slot-width garbage (erratic). Remove once tuned.
+  uint64_t acc_pri = 0, acc_ref = 0;
   // Once-per-minute stack high-water mark. First call here is right after the
   // first opus_encode, so we see real steady-state usage. We log every 3000
   // frames (60 s) which is cheap and lets us size the stack to the true
@@ -70,18 +71,28 @@ static void audio_task(void *arg) {
       continue;  // DMA not ready yet; retry next tick
     }
 
-    // VAD first: its decision gates both the encode and the NLMS adaptation.
-    uint8_t state = vad_process_dual(&vad, pri, ref, FRAME_SAMPLES);
-    // Adapt the noise canceller ONLY on noise-only frames; freeze during speech
-    // so the filter cancels ambient noise, not voice.
-    bool adapt_now = (state == C6_GAP_MARKER);
-    mic_dsp_process(&dsp, pri, ref, mono, FRAME_SAMPLES, adapt_now);
+    // DEBUG: accumulate per-sample energy of each channel for the per-second
+    // calibration log. int32 squared into uint64 — 320 samples, no overflow.
+    for (int i = 0; i < FRAME_SAMPLES; i++) {
+      int32_t p = pri[i], r = ref[i];
+      acc_pri += (uint64_t)(p * p);
+      acc_ref += (uint64_t)(r * r);
+    }
+
+    // Single-mic energy VAD on the primary (mouth) mic. The dual-channel ratio
+    // gate + NLMS canceller are intentionally NOT used: two omnidirectional
+    // INMP441s with insufficient acoustic shadowing both hear the wearer's voice
+    // at ~equal level (ratio ~1), so the ratio gate would reject the voice and
+    // the canceller would adapt to subtract it. Encode the primary directly —
+    // same behaviour as the single-mic inbuilt PDM mic. The reference channel is
+    // still captured for the per-second cal log below.
+    uint8_t state = vad_process_single(&vad, pri, FRAME_SAMPLES);
 
     if (state == C6_SPEECH || state == C6_HANGOVER) {
-      // Voiced frame: encode the CLEANED mono and push the Opus packet. A
+      // Voiced frame: encode the primary mic and push the Opus packet. A
       // failure here is fatal to the frame (it'll show up as a chunk_seq gap on
       // the server, which the request_chunks + ring-buffer replay can recover).
-      int n = opus_stream_encode(mono, opus_buf, sizeof opus_buf);
+      int n = opus_stream_encode(pri, opus_buf, sizeof opus_buf);
       if (n > 0 && n <= UINT8_MAX) {
         ring_buffer_push(state, rel_ts_ms, opus_buf, (uint8_t)n);
         voiced++;
@@ -111,7 +122,17 @@ static void audio_task(void *arg) {
     if (frames % (1000 / FRAME_MS) == 0) {  // ~once per second
       ESP_LOGI(TAG, "frames=%" PRIu32 " voiced=%" PRIu32 " gap=%" PRIu32 " opus_bytes/s=%" PRIu32,
                frames, voiced, gaps, total);
+      // DEBUG cal: e_pri/e_ref are summed per-sample-square over the second.
+      // ratio = e_pri/e_ref. If voice is on primary, e_pri >> e_ref while speaking
+      // (ratio high). If voice is on the reference channel (L/R swapped), e_ref
+      // >> e_pri while speaking (ratio < 1). If a mic is dead, its channel ~0.
+      uint64_t ratio = acc_ref ? acc_pri / acc_ref : 0;
+      ESP_LOGI(TAG, "cal e_pri=%llu e_ref=%llu ratio=%llu",
+               (unsigned long long)acc_pri, (unsigned long long)acc_ref,
+               (unsigned long long)ratio);
       total = 0;
+      acc_pri = 0;
+      acc_ref = 0;
     }
   }
 }

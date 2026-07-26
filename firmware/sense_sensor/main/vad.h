@@ -36,6 +36,13 @@ void vad_init(vad_t *vad, uint32_t energy_threshold, int hangover_frames);
 // state machine as the original single-channel VAD. Returns a c6_vad_state.
 uint8_t vad_process_dual(vad_t *vad, const int16_t *primary, const int16_t *reference, size_t n);
 
+// Single-channel classifier: speech iff primary energy > energy_threshold,
+// with the same hangover state machine. Use when the reference mic carries as
+// much voice as the primary (two omnidirectional mics with insufficient acoustic
+// shadowing -> ratio ~1 -> the dual ratio gate would reject the voice). The
+// reference channel is ignored entirely. Returns a c6_vad_state.
+uint8_t vad_process_single(vad_t *vad, const int16_t *primary, size_t n);
+
 #ifdef __cplusplus
 }
 #endif

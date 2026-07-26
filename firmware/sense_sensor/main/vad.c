@@ -34,3 +34,23 @@ uint8_t vad_process_dual(vad_t *vad, const int16_t *primary, const int16_t *refe
   }
   return C6_GAP_MARKER;
 }
+
+uint8_t vad_process_single(vad_t *vad, const int16_t *primary, size_t n) {
+  uint64_t sp = 0;
+  for (size_t i = 0; i < n; i++) {
+    int32_t p = primary[i];
+    sp += (uint64_t)(p * p);
+  }
+  uint32_t e_pri = (n > 0) ? (uint32_t)(sp / n) : 0;
+  int speech = (e_pri > vad->energy_threshold);
+
+  if (speech) {
+    vad->hangover_left = vad->hangover_frames;  // re-arm on every voiced frame
+    return C6_SPEECH;
+  }
+  if (vad->hangover_left > 0) {
+    vad->hangover_left--;
+    return C6_HANGOVER;
+  }
+  return C6_GAP_MARKER;
+}
