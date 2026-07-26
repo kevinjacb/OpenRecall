@@ -36,6 +36,17 @@
  * onboard mic's noise floor; exposed as a runtime arg so the VAD logic is testable. */
 #define VAD_ENERGY_THRESHOLD 2000000UL
 
+/* ---- Dual-mic DSP: NLMS adaptive differential noise cancellation ----
+ * Pure fixed-point (int32 Q15). The reference mic (back, ambient) drives an
+ * adaptive FIR that models the noise path to the primary (front, voice) mic;
+ * the filtered reference is subtracted from the primary. The filter adapts
+ * ONLY on noise-only frames (VAD says C6_GAP_MARKER) and is frozen during
+ * speech so it cancels noise, not voice. All values TUNE ON HARDWARE. */
+#define DSP_NLMS_TAPS       32        /* filter order; 2 ms at 16 kHz */
+#define DSP_NLMS_STEP_Q15   6553      /* normalized step ~0.2 in Q15 */
+#define DSP_NLMS_LEAK_Q15   1         /* leakage (~3e-5) to bound the filter */
+#define DSP_NLMS_EPS        512       /* ref-power regularization (same scale as ||x||^2) */
+
 /* ---- §C.6 audio packet wire format (mirror of audio_packet.py) ---- */
 #define C6_VERSION           1
 #define C6_HEADER_LEN        12

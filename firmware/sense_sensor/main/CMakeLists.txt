@@ -13,6 +13,7 @@ idf_component_register(
         "c6_packet.c"
         "audio_capture.c"
         "vad.c"
+        "mic_dsp.c"
         "ring_buffer.c"
         "opus_stream.c"
         "ble_link.c"
