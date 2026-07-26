@@ -346,6 +346,9 @@ class GatewayCore:
                 text=t.text,
                 duration_ms=t.duration_ms,
                 start_ms=self._cum_ms,
+                speaker=t.speaker,
+                speaker_confidence=t.speaker_confidence,
+                speaker_assignment=t.speaker_assignment,
             )
             stored = True
             if self._store is not None:
@@ -373,7 +376,9 @@ class GatewayCore:
             )
             msgs.append(
                 TranscriptMsg(
-                    session_id=self._session_id, text=t.text, duration_ms=t.duration_ms
+                    session_id=self._session_id, text=t.text, duration_ms=t.duration_ms,
+                    speaker=t.speaker, speaker_confidence=t.speaker_confidence,
+                    speaker_assignment=t.speaker_assignment,
                 )
             )
         return msgs

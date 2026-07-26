@@ -306,3 +306,66 @@ def test_finalize_pending_session_is_noop_when_no_session_open():
     core, enq = _core_with_store_and_enqueuer()
     core.finalize_pending_session()
     assert enq.qsize() == 0
+
+
+def make_core_with_store_and_speaker(window_ms: int = 100):
+    """A core whose pipeline is wired with a SpeakerIdentifier that always
+    confirms against a pre-seeded "you" centroid."""
+    import math
+
+    from sense_server.ingest.speaker_config import SpeakerConfig
+    from sense_server.ingest.speaker_identifier import SpeakerIdentifier
+    from sense_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
+
+    store = InMemoryEventStore()
+    v = [0.5] * 8
+    n = math.sqrt(sum(x * x for x in v))
+    unit = [x / n for x in v]
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    reg.add_speaker(Speaker(
+        speaker_id="you", display_name="You", is_wearer=True,
+        enrollment_status="confirmed", centroid=unit, embedding_model="fake",
+        dim=8, turn_count=0, first_seen="2026-07-26T00:00:00+00:00",
+        updated_at="2026-07-26T00:00:00+00:00"))
+
+    class _EmbedUnit:
+        dim = 8
+
+        def embed(self, pcm, sr):
+            return list(unit)
+
+    ident = SpeakerIdentifier(_EmbedUnit(), reg, SpeakerConfig())
+
+    def factory(start_seq: int) -> AudioIngestPipeline:
+        return AudioIngestPipeline(
+            reassembler=SessionReassembler(start_seq=start_seq),
+            decoder=FakeDecoder(),
+            transcriber=FakeTranscriber(),
+            hop_ms=20,
+            window_ms=window_ms,
+            sample_rate=16000,
+            speaker_identifier=ident,
+        )
+
+    return GatewayCore(pipeline_factory=factory, event_store=store), store
+
+
+def test_emit_carries_speaker_into_event_and_transcript_msg():
+    core, store = make_core_with_store_and_speaker(window_ms=100)
+    core.on_control(Hello(session_id="s1", start_seq=0))
+
+    out = core.on_audio(audio_bytes(0, n_frames=5))
+
+    transcripts = [m for m in out if isinstance(m, TranscriptMsg)]
+    assert transcripts, "expected transcript messages"
+    for tmsg in transcripts:
+        assert tmsg.speaker == "you"
+        assert tmsg.speaker_assignment == "confirmed"
+        assert tmsg.speaker_confidence is not None and tmsg.speaker_confidence >= 0.7
+
+    events = store.events("s1")
+    assert len(events) == 5
+    for ev in events:
+        assert ev.speaker == "you"
+        assert ev.speaker_assignment == "confirmed"
+        assert ev.speaker_confidence is not None

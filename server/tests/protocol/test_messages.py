@@ -66,4 +66,7 @@ def test_outbound_messages_serialize_with_their_type_tag():
         "session_id": "s1",
         "text": "hello world",
         "duration_ms": 5000,
+        "speaker": None,
+        "speaker_confidence": None,
+        "speaker_assignment": None,
     }

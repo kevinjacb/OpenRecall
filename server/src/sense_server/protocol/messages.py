@@ -82,6 +82,9 @@ class TranscriptMsg(_Strict):
     session_id: str
     text: str
     duration_ms: int
+    speaker: str | None = None
+    speaker_confidence: float | None = None
+    speaker_assignment: str | None = None
 
 
 class CommandMessage(_Strict):
