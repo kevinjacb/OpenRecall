@@ -48,6 +48,29 @@ def handle_message(core: GatewayCore, message: str | bytes) -> list[str]:
     return [m.model_dump_json() for m in outbound]
 
 
+def build_speaker_identifier(cfg, registry, embedder):
+    """Return a :class:`SpeakerIdentifier` when enabled, else ``None``.
+
+    The factory wires ``None`` into the pipeline when speaker ID is off, so
+    the rollout guard is structural: zero embed calls and ``speaker=None`` on
+    every Transcript when ``SENSE_SPEAKER_ENABLED=false``. ``embedder`` is
+    either a real :class:`SpeakerEmbedder` or the sentinel ``"fake"`` (for
+    tests / pre-hardware smoke); ``None`` defaults to the fake embedder so an
+    enabled config without a wired backend still runs end-to-end.
+    """
+    if not cfg.enabled:
+        return None
+    from ..ingest.speaker_embedder import FakeSpeakerEmbedder
+    from ..ingest.speaker_identifier import SpeakerIdentifier
+
+    emb = (
+        FakeSpeakerEmbedder(dim=16, min_speech_ms=cfg.min_speech_ms)
+        if embedder == "fake" or embedder is None
+        else embedder
+    )
+    return SpeakerIdentifier(emb, registry, cfg)
+
+
 def build_pipeline_factory(
     window_ms: int = 5000,
     hop_ms: int = 1000,
@@ -55,6 +78,7 @@ def build_pipeline_factory(
     use_streaming: bool = True,
     whisper_config=None,
     gap_timeout_ms: int | None = 3000,
+    speaker_identifier=None,
 ) -> PipelineFactory:
     """Factory wiring the real Opus decoder + MLX-whisper transcriber per session.
 
@@ -133,6 +157,7 @@ def build_pipeline_factory(
             hop_ms=hop_ms,
             window_ms=window_ms,
             sample_rate=16000,
+            speaker_identifier=speaker_identifier,
         )
 
     return factory
