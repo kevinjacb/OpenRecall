@@ -20,6 +20,9 @@ class Transcript:
 
     text: str
     duration_ms: int
+    speaker: str | None = None  # assigned speaker UUID, or None
+    speaker_confidence: float | None = None
+    speaker_assignment: str | None = None  # "confirmed" | "tentative" | "none"
 
 
 @runtime_checkable

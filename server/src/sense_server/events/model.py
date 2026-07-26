@@ -28,3 +28,6 @@ class CaptureEvent(BaseModel):
     text: str
     duration_ms: int
     start_ms: int
+    speaker: str | None = None  # assigned speaker UUID, or None (silence/no-speech hop)
+    speaker_confidence: float | None = None  # cosine of the match, 0..1
+    speaker_assignment: str | None = None  # "confirmed" | "tentative" | "none"

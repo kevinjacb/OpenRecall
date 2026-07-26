@@ -33,6 +33,9 @@ class MemoryAtom(BaseModel):
     embedding_version: int = 0
     extractor_prompt_version: str = "v1"
     source_pipeline_version: str = "transcript"
+    speaker: str | None = None  # majority speaker UUID for the extraction window
+    speaker_confidence: float | None = None
+    speaker_assignment: str | None = None  # "confirmed" | "tentative" | "none"
 
     def to_provenance(self) -> "Provenance":
         """Return a structured ``Provenance`` view of this atom's origin.
