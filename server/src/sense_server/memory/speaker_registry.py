@@ -54,6 +54,7 @@ class SpeakerRegistry(Protocol):
     def increment_turn(self, speaker_id: str) -> int: ...
     def set_display_name(self, speaker_id: str, name: str) -> None: ...
     def update_enrollment(self, speaker_id: str, status: str) -> None: ...
+    def set_is_wearer(self, speaker_id: str, is_wearer: bool) -> None: ...
     def list_speakers(self) -> list[Speaker]: ...
     def delete_speaker(self, speaker_id: str) -> None: ...
 
@@ -219,6 +220,14 @@ class InMemorySpeakerRegistry:
             d["enrollment_status"] = status
             d["updated_at"] = _now_iso()
 
+    def set_is_wearer(self, speaker_id, is_wearer):
+        with self._lock:
+            d = self._speakers.get(speaker_id)
+            if d is None:
+                raise KeyError(speaker_id)
+            d["is_wearer"] = is_wearer
+            d["updated_at"] = _now_iso()
+
     def delete_speaker(self, speaker_id):
         with self._lock:
             self._speakers.pop(speaker_id, None)
@@ -378,6 +387,14 @@ class SqliteSpeakerRegistry:
             self._conn.execute(
                 "UPDATE speakers SET enrollment_status=?, updated_at=? WHERE speaker_id=?",
                 (status, _now_iso(), speaker_id),
+            )
+            self._conn.commit()
+
+    def set_is_wearer(self, speaker_id, is_wearer):
+        with self._lock:
+            self._conn.execute(
+                "UPDATE speakers SET is_wearer=?, updated_at=? WHERE speaker_id=?",
+                (int(is_wearer), _now_iso(), speaker_id),
             )
             self._conn.commit()
 

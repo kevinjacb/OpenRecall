@@ -122,3 +122,12 @@ def test_sqlite_registry_is_thread_safe(tmp_path):
     for t in ts:
         t.join()
     assert not errs
+
+def test_set_is_wearer_updates_flag(reg):
+    _new_speaker(reg, is_wearer=False)
+    assert reg.get("s1").is_wearer is False
+    reg.set_is_wearer("s1", True)
+    assert reg.get("s1").is_wearer is True
+    # idempotent flip back
+    reg.set_is_wearer("s1", False)
+    assert reg.get("s1").is_wearer is False

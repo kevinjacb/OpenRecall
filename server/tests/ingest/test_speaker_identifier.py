@@ -126,3 +126,89 @@ def test_identify_returns_none_when_embedder_raises():
 
     ident = SpeakerIdentifier(_Boom(), reg, SpeakerConfig())
     assert ident.identify(_pcm(), 16000) is None  # transcription unblocked
+
+# --- clustering + enrollment -------------------------------------------------
+
+
+def test_clustering_mints_unknown_after_n_corroborating_within_window():
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    same = _vec_cos_e0(8, 0.0)  # e1: cosine 0 with e0 (no centroid seeded) -> cluster
+    ident = SpeakerIdentifier(_EmbedReturns(same), reg, SpeakerConfig(
+        corroborate_n=3, cluster_threshold=0.6,
+        corroborate_window_s=30, pending_ttl_s=60, coldstart_window_s=120))
+    outs = [ident.identify(_pcm(), 16000) for _ in range(3)]
+    minted = [o for o in outs if o is not None]
+    assert minted, "expected an assignment once the cluster corroborates"
+    assert reg.list_speakers(), "a speaker row was minted"
+
+
+def test_one_stray_embedding_does_not_mint_a_speaker():
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    stray = _vec_cos_e0(8, 0.0)  # one stray e1
+    ident = SpeakerIdentifier(_EmbedReturns(stray), reg, SpeakerConfig())
+    ident.identify(_pcm(), 16000)
+    assert reg.list_speakers() == []  # no identity minted from one stray
+
+
+def test_pending_cluster_is_garbage_collected_after_ttl():
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    a = _vec_cos_e0(8, 0.0)            # e1
+    b = [0.0, 0.0, 1.0] + [0.0] * 5     # e2: cosine 0 with e1 -> separate cluster
+    t = [0.0]
+
+    class _Seq:
+        dim = 8
+
+        def __init__(self):
+            self.i = 0
+
+        def embed(self, pcm, sr):
+            v = [a, b][self.i % 2]
+            self.i += 1
+            return list(v)
+
+    ident = SpeakerIdentifier(_Seq(), reg, SpeakerConfig(
+        corroborate_n=3, corroborate_window_s=30, pending_ttl_s=60),
+        now_s=lambda: t[0])
+    ident.identify(_pcm(), 16000)       # t=0 -> pending e1, count=1
+    t[0] = 120.0                         # past TTL: e1 pending should be GC'd
+    ident.identify(_pcm(), 16000)       # e2 -> new pending (e1 was GC'd, count=1)
+    assert reg.list_speakers() == []     # the stale pending never minted
+
+
+def test_dominant_cold_start_cluster_is_tagged_you():
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    wearer = _vec_cos_e0(8, 0.0)  # e1: sole voice in cold start
+    ident = SpeakerIdentifier(_EmbedReturns(wearer), reg, SpeakerConfig(
+        corroborate_n=3, coldstart_window_s=120, confirm_turns=10))
+    for _ in range(4):  # corroborate + dominate the cold-start window
+        ident.identify(_pcm(), 16000)
+    speakers = reg.list_speakers()
+    assert speakers
+    you = [s for s in speakers if s.is_wearer]
+    assert you and you[0].display_name == "You"
+    assert you[0].enrollment_status == "implicit"
+
+
+def test_two_close_cold_start_clusters_hold_without_auto_you():
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    a = _vec_cos_e0(8, 0.0)            # e1
+    b = [0.0, 0.0, 1.0] + [0.0] * 5     # e2: cosine 0 with e1 -> separate cluster
+    seq = [a, b, a, b, a, b]  # two interleaved voices, both corroborate
+    idx = {"i": 0}
+
+    class _Seq:
+        dim = 8
+
+        def embed(self, pcm, sr):
+            v = seq[idx["i"] % len(seq)]
+            idx["i"] += 1
+            return list(v)
+
+    ident = SpeakerIdentifier(_Seq(), reg, SpeakerConfig(
+        corroborate_n=3, coldstart_window_s=120))
+    for _ in range(6):
+        ident.identify(_pcm(), 16000)
+    # both minted, neither auto-tagged "You" (counts too close)
+    wearers = [s for s in reg.list_speakers() if s.is_wearer]
+    assert wearers == []
