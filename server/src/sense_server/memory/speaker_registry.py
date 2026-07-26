@@ -55,6 +55,7 @@ class SpeakerRegistry(Protocol):
     def set_display_name(self, speaker_id: str, name: str) -> None: ...
     def update_enrollment(self, speaker_id: str, status: str) -> None: ...
     def set_is_wearer(self, speaker_id: str, is_wearer: bool) -> None: ...
+    def name(self, speaker_id: str, display_name: str) -> None: ...
     def list_speakers(self) -> list[Speaker]: ...
     def delete_speaker(self, speaker_id: str) -> None: ...
 
@@ -227,6 +228,18 @@ class InMemorySpeakerRegistry:
                 raise KeyError(speaker_id)
             d["is_wearer"] = is_wearer
             d["updated_at"] = _now_iso()
+
+    def name(self, speaker_id, display_name):
+        self.set_display_name(speaker_id, display_name)
+        self.update_enrollment(speaker_id, "confirmed")
+
+    def _move_embeddings(self, from_id, to_id):
+        with self._lock:
+            moved = self._bufs.pop(from_id, [])
+            self._bufs.setdefault(to_id, []).extend(moved)
+            n = self.cfg.ring_buffer_n
+            if len(self._bufs[to_id]) > n:
+                del self._bufs[to_id][: len(self._bufs[to_id]) - n]
 
     def delete_speaker(self, speaker_id):
         with self._lock:
@@ -404,3 +417,44 @@ class SqliteSpeakerRegistry:
                                (speaker_id,))
             self._conn.execute("DELETE FROM speakers WHERE speaker_id=?", (speaker_id,))
             self._conn.commit()
+
+    def name(self, speaker_id, display_name):
+        self.set_display_name(speaker_id, display_name)
+        self.update_enrollment(speaker_id, "confirmed")
+
+    def _move_embeddings(self, from_id, to_id):
+        with self._lock:
+            self._conn.execute(
+                "UPDATE speaker_embeddings SET speaker_id=? WHERE speaker_id=?",
+                (to_id, from_id),
+            )
+            n = self.cfg.ring_buffer_n
+            self._conn.execute(
+                "DELETE FROM speaker_embeddings WHERE rowid IN ("
+                "  SELECT rowid FROM speaker_embeddings WHERE speaker_id=? "
+                "  ORDER BY created_at DESC LIMIT -1 OFFSET ?)",
+                (to_id, n),
+            )
+            self._conn.commit()
+
+def reassign_speaker(registry: SpeakerRegistry, events, atoms,
+                     from_id: str, to_id: str, scope: str) -> None:
+    """Orchestrate a manual correction across the event log, atom store, and
+    the registry's ring buffers + centroids.
+
+    Moves the from-speaker's ring-buffer embeddings into the to-speaker's,
+    recomputes both centroids (de-poisoning), and relabels every matching
+    event/atom row across all sessions. v1 treats every ``scope`` as "all of
+    this speaker"; the ``one``/``range`` scopes are a forward-compat surface
+    (the phone has already chosen the rows; the server re-labels the whole
+    speaker for now — documented v1 limitation).
+    """
+    for sid in events.sessions():
+        events.relabel_speaker(from_id=from_id, to_id=to_id,
+                                session_id=sid, scope=scope)
+    for sid in atoms.sessions():
+        atoms.relabel_speaker(from_id=from_id, to_id=to_id,
+                              session_id=sid, scope=scope)
+    registry._move_embeddings(from_id, to_id)
+    registry.recompute_centroid(from_id)
+    registry.recompute_centroid(to_id)

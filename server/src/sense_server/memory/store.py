@@ -63,6 +63,19 @@ class AtomStore(Protocol):
         """
         ...
 
+    def sessions(self) -> list[str]:
+        """Distinct session ids held by this store. Order is not specified;
+        callers that need determinism must sort. Empty if no atoms have been
+        appended. Used by the speaker-reassign sweep to relabel every
+        session's atoms."""
+        ...
+
+    def relabel_speaker(self, *, from_id: str, to_id: str, session_id: str,
+                        scope: str) -> int:
+        """Re-label matching atoms' ``speaker`` from ``from_id`` to ``to_id``
+        (manual correction). Returns the number of rows changed."""
+        ...
+
 
 class InMemoryAtomStore:
     """In-memory :class:`AtomStore` — thread-safe by design.
@@ -111,6 +124,21 @@ class InMemoryAtomStore:
     def set_cursor(self, session_id: str, seq: int, *, extractor_version: str | None = None) -> None:
         with self._lock:
             self._cursor[session_id] = (seq, extractor_version or _LEGACY_VERSION)
+
+    def sessions(self) -> list[str]:
+        with self._lock:
+            return list(self._by_session.keys())
+
+    def relabel_speaker(self, *, from_id, to_id, session_id, scope):
+        rows = self._by_session.get(session_id, [])
+        n = 0
+        for i, a in enumerate(rows):
+            if a.speaker == from_id:
+                rows[i] = a.model_copy(update={
+                    "speaker": to_id, "speaker_confidence": 0.9,
+                    "speaker_assignment": "confirmed"})
+                n += 1
+        return n
 
 
 class SqliteAtomStore:
@@ -250,3 +278,20 @@ class SqliteAtomStore:
                 (session_id, seq, extractor_version or _LEGACY_VERSION),
             )
             self._conn.commit()
+
+    def sessions(self) -> list[str]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT session_id FROM memory_atoms"
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def relabel_speaker(self, *, from_id, to_id, session_id, scope):
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE memory_atoms SET speaker=?, speaker_confidence=0.9, "
+                "speaker_assignment='confirmed' WHERE session_id=? AND speaker=?",
+                (to_id, session_id, from_id),
+            )
+            self._conn.commit()
+            return cur.rowcount

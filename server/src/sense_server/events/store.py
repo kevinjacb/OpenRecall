@@ -53,6 +53,14 @@ class EventStore(Protocol):
         has flowed)."""
         ...
 
+    def relabel_speaker(self, *, from_id: str, to_id: str, session_id: str,
+                        scope: str) -> int:
+        """Re-label matching events' ``speaker`` from ``from_id`` to ``to_id``
+        (manual correction). ``scope`` is carried for forward-compat (v1
+        treats every scope as "all of this speaker within the session").
+        Returns the number of rows changed."""
+        ...
+
 
 class InMemoryEventStore:
     def __init__(self) -> None:
@@ -78,6 +86,17 @@ class InMemoryEventStore:
 
     def sessions(self) -> list[str]:
         return list(self._by_session.keys())
+
+    def relabel_speaker(self, *, from_id, to_id, session_id, scope):
+        rows = self._by_session.get(session_id, [])
+        n = 0
+        for i, e in enumerate(rows):
+            if e.speaker == from_id:
+                rows[i] = e.model_copy(update={
+                    "speaker": to_id, "speaker_confidence": 0.9,
+                    "speaker_assignment": "confirmed"})
+                n += 1
+        return n
 
 
 class SqliteEventStore:
@@ -192,3 +211,13 @@ class SqliteEventStore:
                 "SELECT DISTINCT session_id FROM capture_events"
             ).fetchall()
         return [r[0] for r in rows]
+
+    def relabel_speaker(self, *, from_id, to_id, session_id, scope):
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE capture_events SET speaker=?, speaker_confidence=0.9, "
+                "speaker_assignment='confirmed' WHERE session_id=? AND speaker=?",
+                (to_id, session_id, from_id),
+            )
+            self._conn.commit()
+            return cur.rowcount
