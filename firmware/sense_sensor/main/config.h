@@ -85,9 +85,17 @@ enum c6_vad_state   { C6_GAP_MARKER = 0, C6_SPEECH = 1, C6_PREROLL = 2, C6_HANGO
 #define SD_PIN_CS    21
 #define SD_SPI_HZ    20000000
 
-/* ---- PDM microphone pins (XIAO ESP32S3 Sense onboard mic) ---- */
-#define PDM_CLK_GPIO 42
-#define PDM_DIN_GPIO 41
+/* ---- Dual IENMP441 I2S microphone array (shared bus) ----
+ * Two I2S MEMS mics share SCK + WS + SD; each mic's L/R channel-select pin
+ * ties one to the left slot (GND) and the other to the right slot (VDD).
+ * PRIMARY_CHANNEL picks which deinterleaved channel is the voice/primary mic
+ * (front, faces wearer) vs the noise reference (back, faces ambient). Flip by
+ * changing this constant — no rewiring. Pins chosen to avoid the microSD SPI
+ * bus (GPIO 7/8/9/21), strapping pins (0/3/45/46), and flash/PSRAM (26-32). */
+#define I2S_BCK_GPIO    4   /* SCK  (D3) */
+#define I2S_WS_GPIO     5   /* LRCLK (D4) */
+#define I2S_DATA_GPIO   6   /* SD   (D5) */
+#define PRIMARY_CHANNEL 0   /* 0 = left is voice/primary, 1 = right is voice/primary */
 
 /* ---- Server identity: the device verifies §D command signatures against this ----
  * Replace with your gateway's 32-byte Ed25519 public key (run_gateway.py prints it

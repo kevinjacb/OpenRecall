@@ -46,8 +46,10 @@ static const char *TAG = "sense";
 // FRAME_MS per frame; the server uses it to lay out transcript windows.
 static void audio_task(void *arg) {
   (void)arg;
-  static int16_t pcm[FRAME_SAMPLES];
+  static int16_t pri[FRAME_SAMPLES];
+  static int16_t ref[FRAME_SAMPLES];
   static uint8_t opus_buf[MAX_OPUS_BYTES];
+  (void)ref;  /* used by Task 4 (dual-VAD + DSP); kept warm until then */
   vad_t vad;
   vad_init(&vad, VAD_ENERGY_THRESHOLD, VAD_HANGOVER_FRAMES);
 
@@ -59,17 +61,17 @@ static void audio_task(void *arg) {
   // peak + a safety margin on a later boot.
   uint32_t stack_report_at = 3000;
   for (;;) {
-    if (audio_capture_read_frame(pcm) != ESP_OK) {
+    if (audio_capture_read_stereo(pri, ref) != ESP_OK) {
       continue;  // DMA not ready yet; retry next tick
     }
 
-    uint8_t state = vad_process(&vad, pcm, FRAME_SAMPLES);
+    uint8_t state = vad_process(&vad, pri, FRAME_SAMPLES);
 
     if (state == C6_SPEECH || state == C6_HANGOVER) {
       // Voiced frame: encode and push the Opus packet. A failure here is fatal
       // to the frame (it'll show up as a chunk_seq gap on the server, which the
       // server's request_chunks + ring-buffer replay can recover).
-      int n = opus_stream_encode(pcm, opus_buf, sizeof opus_buf);
+      int n = opus_stream_encode(pri, opus_buf, sizeof opus_buf);
       if (n > 0 && n <= UINT8_MAX) {
         ring_buffer_push(state, rel_ts_ms, opus_buf, (uint8_t)n);
         voiced++;
@@ -106,7 +108,7 @@ static void audio_task(void *arg) {
 
 void app_main(void) {
   ESP_LOGI(TAG, "Sense AI Sensor booting");
-  ESP_LOGI(TAG, "audio: %d Hz mono, %d ms frames (%d samples), Opus %d bps cplx %d",
+  ESP_LOGI(TAG, "audio: %d Hz stereo (dual-mic), %d ms frames (%d samples), Opus %d bps cplx %d",
            SAMPLE_RATE, FRAME_MS, FRAME_SAMPLES, OPUS_BITRATE, OPUS_COMPLEXITY);
 
   // NimBLE needs NVS for its keystore.
