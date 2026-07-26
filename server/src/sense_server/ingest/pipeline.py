@@ -26,6 +26,7 @@ decoder's output size.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from .audio_packet import AudioPacket
 from .reassembler import SessionReassembler
@@ -36,6 +37,9 @@ from .streaming_transcriber import (
     streaming_from_tokens,
 )
 from .transcriber import OpusDecoder, Transcript, Transcriber
+
+if TYPE_CHECKING:
+    from .speaker_identifier import SpeakerAssignment, SpeakerIdentifier
 
 FRAME_MS = 20  # one Opus frame == 20 ms of audio (V1 audio spec)
 DEFAULT_HOP_MS = 1000  # streaming hop size (one Whisper call per second)
@@ -53,6 +57,7 @@ class AudioIngestPipeline:
         hop_ms: int = DEFAULT_HOP_MS,
         window_ms: int = DEFAULT_WINDOW_MS,
         sample_rate: int = 16000,
+        speaker_identifier: "SpeakerIdentifier | None" = None,
     ) -> None:
         if window_ms % FRAME_MS != 0:
             raise ValueError(f"window_ms must be a multiple of {FRAME_MS}")
@@ -84,6 +89,18 @@ class AudioIngestPipeline:
             )
         self._pcm_buffer: bytearray = bytearray()  # decoded PCM, appended as frames arrive
         self._absolute_ms: int = 0  # total ms of audio fed to the streamer
+        self._identifier = speaker_identifier  # optional; None when disabled
+
+    def _speaker(self, pcm: bytes) -> "SpeakerAssignment | None":
+        """Identify the speaker of a PCM slice; None when disabled / no match.
+
+        Speaker ID never blocks transcription: any embed failure is swallowed
+        inside :meth:`SpeakerIdentifier.identify` and returns None, so the
+        hop is still transcribed (with ``speaker=None``).
+        """
+        if self._identifier is None:
+            return None
+        return self._identifier.identify(pcm, self._sample_rate)
 
     @property
     def next_expected_seq(self) -> int:
@@ -118,6 +135,7 @@ class AudioIngestPipeline:
             del self._pcm_buffer[:hop_bytes]
             self._absolute_ms += self._streamer._hop_ms  # type: ignore[attr-defined]
             segments = self._streamer.feed(pcm)
+            spk = self._speaker(pcm)
             for seg in segments:
                 # For the str adapter, seg.end_ms - seg.start_ms == 0;
                 # use the segment's end_ms as the duration, falling back
@@ -125,7 +143,12 @@ class AudioIngestPipeline:
                 duration = seg.end_ms - seg.start_ms
                 if duration <= 0:
                     duration = self._streamer._hop_ms  # type: ignore[attr-defined]
-                out.append(Transcript(text=seg.text, duration_ms=duration))
+                out.append(Transcript(
+                    text=seg.text, duration_ms=duration,
+                    speaker=(spk.speaker_id if spk else None),
+                    speaker_confidence=(spk.confidence if spk else None),
+                    speaker_assignment=(spk.assignment if spk else None),
+                ))
         return out
 
     def flush(self) -> list[Transcript]:
@@ -137,10 +160,16 @@ class AudioIngestPipeline:
         self._absolute_ms += len(pcm) * 1000 // (self._sample_rate * 2)
         segments = self._streamer.feed(pcm)
         tail = self._streamer.flush()
+        spk = self._speaker(pcm)
         out: list[Transcript] = []
         for seg in [*segments, *tail]:
             duration = seg.end_ms - seg.start_ms
             if duration <= 0:
                 duration = len(pcm) * 1000 // (self._sample_rate * 2)
-            out.append(Transcript(text=seg.text, duration_ms=duration))
+            out.append(Transcript(
+                text=seg.text, duration_ms=duration,
+                speaker=(spk.speaker_id if spk else None),
+                speaker_confidence=(spk.confidence if spk else None),
+                speaker_assignment=(spk.assignment if spk else None),
+            ))
         return out

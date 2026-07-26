@@ -67,7 +67,7 @@ class FakeTranscriber:
         return f"seg{len(self.calls)}"
 
 
-def make_pipeline(window_ms: int = 100, hop_ms: int = 20):
+def make_pipeline(window_ms: int = 100, hop_ms: int = 20, speaker_identifier=None):
     """Build a pipeline with streaming defaults scaled for the test.
 
     The old hard-cut pipeline used a single window. The new streaming
@@ -83,6 +83,7 @@ def make_pipeline(window_ms: int = 100, hop_ms: int = 20):
         hop_ms=hop_ms,
         window_ms=window_ms,
         sample_rate=16000,
+        speaker_identifier=speaker_identifier,
     )
     return pipe, dec, tr
 
@@ -177,3 +178,50 @@ def test_out_of_order_packets_contribute_no_audio_until_the_gap_fills():
     out = pipe.ingest(pkt(1, n_frames=5))
     assert len(out) == 10
     assert dec.frames_decoded == 15
+
+
+def test_pipeline_threads_speaker_assignment_onto_transcripts():
+    import math
+
+    from sense_server.ingest.speaker_config import SpeakerConfig
+    from sense_server.ingest.speaker_identifier import SpeakerIdentifier
+    from sense_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
+
+    v = [0.5] * 8
+    n = math.sqrt(sum(x * x for x in v))
+    unit = [x / n for x in v]
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    reg.add_speaker(Speaker(
+        speaker_id="you", display_name="You", is_wearer=True,
+        enrollment_status="confirmed", centroid=unit, embedding_model="fake",
+        dim=8, turn_count=0, first_seen="2026-07-26T00:00:00+00:00",
+        updated_at="2026-07-26T00:00:00+00:00"))
+
+    class _EmbedUnit:
+        dim = 8
+
+        def embed(self, pcm, sr):
+            return list(unit)
+
+    ident = SpeakerIdentifier(_EmbedUnit(), reg, SpeakerConfig())
+    pipe, _dec, _tr = make_pipeline(speaker_identifier=ident)
+
+    out = pipe.ingest(pkt(0, n_frames=5))  # 5 hops
+
+    assert out, "expected transcripts from the 5 hops"
+    for t in out:
+        assert t.speaker == "you"
+        assert t.speaker_assignment == "confirmed"
+        assert t.speaker_confidence is not None and t.speaker_confidence >= 0.7
+
+
+def test_pipeline_without_identifier_leaves_speaker_none():
+    pipe, _dec, _tr = make_pipeline()  # no speaker_identifier
+
+    out = pipe.ingest(pkt(0, n_frames=5))
+
+    assert out
+    for t in out:
+        assert t.speaker is None
+        assert t.speaker_confidence is None
+        assert t.speaker_assignment is None
