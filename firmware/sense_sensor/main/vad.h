@@ -28,16 +28,12 @@ typedef struct {
 } vad_t;
 
 // Initialise with an energy threshold and hangover length (in frames).
-// ratio_threshold is populated from VAD_RATIO_THRESHOLD. Signature unchanged
-// so existing callers keep compiling.
+// ratio_threshold is populated from VAD_RATIO_THRESHOLD.
 void vad_init(vad_t *vad, uint32_t energy_threshold, int hangover_frames);
-
-// Classify one frame of `n` int16 samples; returns a c6_vad_state value.
-uint8_t vad_process(vad_t *vad, const int16_t *pcm, size_t n);
 
 // Dual-channel classifier: speech iff primary energy > energy_threshold AND
 // primary energy > ratio_threshold * (reference energy + 1). Same hangover
-// state machine as vad_process. Returns a c6_vad_state.
+// state machine as the original single-channel VAD. Returns a c6_vad_state.
 uint8_t vad_process_dual(vad_t *vad, const int16_t *primary, const int16_t *reference, size_t n);
 
 #ifdef __cplusplus

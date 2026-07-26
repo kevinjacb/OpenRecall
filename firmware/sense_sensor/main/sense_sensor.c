@@ -30,6 +30,7 @@
 #include "provisioning_core.h"
 #include "ring_buffer.h"
 #include "vad.h"
+#include "mic_dsp.h"
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -37,21 +38,25 @@
 #include "nvs_flash.h"
 
 #include <inttypes.h>  // PRIu32 — fixed-width format specifier for uint32_t (Xtensa)
+#include <stdbool.h>   // bool / true / false for the DSP adapt gate
 
 static const char *TAG = "sense";
 
-// Core-1 audio task: capture -> VAD -> Opus encode -> ring_buffer push.
-// rel_ts_ms is a monotonic per-device millisecond counter (not wall clock — the
-// device may not have synced time). It starts at 0 at boot and advances by
-// FRAME_MS per frame; the server uses it to lay out transcript windows.
+// Core-1 audio task: capture -> dual-VAD -> NLMS cancellation -> Opus encode
+// -> ring_buffer push. rel_ts_ms is a monotonic per-device millisecond counter
+// (not wall clock — the device may not have synced time). It starts at 0 at
+// boot and advances by FRAME_MS per frame; the server uses it to lay out
+// transcript windows.
 static void audio_task(void *arg) {
   (void)arg;
-  static int16_t pri[FRAME_SAMPLES];
-  static int16_t ref[FRAME_SAMPLES];
+  static int16_t pri[FRAME_SAMPLES];   // voice/primary mic (front)
+  static int16_t ref[FRAME_SAMPLES];   // noise/reference mic (back)
+  static int16_t mono[FRAME_SAMPLES];  // cleaned mono output of the canceller
   static uint8_t opus_buf[MAX_OPUS_BYTES];
-  (void)ref;  /* used by Task 4 (dual-VAD + DSP); kept warm until then */
   vad_t vad;
   vad_init(&vad, VAD_ENERGY_THRESHOLD, VAD_HANGOVER_FRAMES);
+  mic_dsp_t dsp;
+  mic_dsp_init(&dsp);
 
   uint32_t frames = 0, voiced = 0, gaps = 0, total = 0;
   uint32_t rel_ts_ms = 0;
@@ -65,13 +70,18 @@ static void audio_task(void *arg) {
       continue;  // DMA not ready yet; retry next tick
     }
 
-    uint8_t state = vad_process(&vad, pri, FRAME_SAMPLES);
+    // VAD first: its decision gates both the encode and the NLMS adaptation.
+    uint8_t state = vad_process_dual(&vad, pri, ref, FRAME_SAMPLES);
+    // Adapt the noise canceller ONLY on noise-only frames; freeze during speech
+    // so the filter cancels ambient noise, not voice.
+    bool adapt_now = (state == C6_GAP_MARKER);
+    mic_dsp_process(&dsp, pri, ref, mono, FRAME_SAMPLES, adapt_now);
 
     if (state == C6_SPEECH || state == C6_HANGOVER) {
-      // Voiced frame: encode and push the Opus packet. A failure here is fatal
-      // to the frame (it'll show up as a chunk_seq gap on the server, which the
-      // server's request_chunks + ring-buffer replay can recover).
-      int n = opus_stream_encode(pri, opus_buf, sizeof opus_buf);
+      // Voiced frame: encode the CLEANED mono and push the Opus packet. A
+      // failure here is fatal to the frame (it'll show up as a chunk_seq gap on
+      // the server, which the request_chunks + ring-buffer replay can recover).
+      int n = opus_stream_encode(mono, opus_buf, sizeof opus_buf);
       if (n > 0 && n <= UINT8_MAX) {
         ring_buffer_push(state, rel_ts_ms, opus_buf, (uint8_t)n);
         voiced++;
@@ -80,8 +90,8 @@ static void audio_task(void *arg) {
         gaps++;  // encode error — treat as a gap so the server can backfill
       }
     } else {
-      // Silence: push a zero-length frame so the ring keeps a contiguous record
-      // (and the drainer can preserve chunk_seq + rel_ts continuity).
+      // Silence/noise: push a zero-length frame so the ring keeps a contiguous
+      // record (and the drainer can preserve chunk_seq + rel_ts continuity).
       ring_buffer_push(C6_GAP_MARKER, rel_ts_ms, NULL, 0);
       gaps++;
     }
