@@ -122,6 +122,22 @@ def main() -> None:
     metrics = InMemoryMetricsRecorder()
     atom_store = SqliteAtomStore(args.db.replace("events.db", "atoms.db"))
     memory_index = SqliteMemoryIndex(args.db.replace("events.db", "memory_index.db"))
+    # Speaker recognition: a Sqlite registry + an identifier wired into the
+    # pipeline only when SENSE_SPEAKER_ENABLED=true. Off by default — when
+    # disabled, build_speaker_identifier returns None and the pipeline wires
+    # no identifier, so zero embed calls run and every Transcript carries
+    # speaker=None.
+    from sense_server.gateway.adapter import build_speaker_identifier
+    from sense_server.ingest.speaker_config import load_speaker_config
+    from sense_server.memory.speaker_registry import SqliteSpeakerRegistry
+
+    speaker_cfg = load_speaker_config(__import__("os").environ)
+    speaker_registry = SqliteSpeakerRegistry(
+        args.db.replace("events.db", "speakers.db"), speaker_cfg,
+    )
+    speaker_identifier = build_speaker_identifier(
+        speaker_cfg, speaker_registry, embedder=None,
+    )
     embedder = OpenAICompatibleEmbedder.from_env(__import__("os").environ)
     llm_chat = OpenAICompatibleChatModel.from_env(__import__("os").environ)
     extractor = LLMExtractor(llm_chat)
@@ -240,7 +256,8 @@ def main() -> None:
         worker is never blocked."""
 
         async def send_proactive(
-            self, *, session_id: str, request_id: str, text: str, atoms
+            self, *, session_id: str, request_id: str, text: str, atoms,
+            propose: dict | None = None,
         ) -> None:
             raise RuntimeError("no active WebSocket connection")
 
@@ -263,6 +280,7 @@ def main() -> None:
             hop_ms=1000,
             model=args.model,
             whisper_config=agent_config.whisper,
+            speaker_identifier=speaker_identifier,
         )
     factory = _make_factory()
     app = build_app(
@@ -298,6 +316,29 @@ def main() -> None:
             # The engine is fire-and-forget from the worker's POV, so
             # this never blocks extraction.
             worker.add_listener(proactive_engine.on_session_completion)
+            # Speaker recognition nudge listener (only when enabled). Its
+            # ws_sender is rebound per-connection in serve() alongside the
+            # proactive engine's. The listener is best-effort and never
+            # re-raises into the worker loop.
+            speaker_nudge = None
+            if speaker_cfg.enabled:
+                from sense_server.agent.speaker_nudge import SpeakerNudgeListener
+                speaker_nudge = SpeakerNudgeListener(
+                    speaker_registry, store, _PlaceholderWsSender(),
+                    speaker_cfg,
+                    rate_limit_per_min=agent_config.guardrails.rate_limit_per_min,
+                    ids=UuidIdGenerator(), clock=SystemClock(),
+                )
+                worker.add_listener(speaker_nudge.on_session_completion)
+                print(
+                    f"speaker recognition ENABLED "
+                    f"(model={speaker_cfg.embed_model or 'fake'})"
+                )
+            else:
+                print(
+                    "speaker recognition DISABLED "
+                    "(set SENSE_SPEAKER_ENABLED=true to enable)"
+                )
             print(f"http control API on http://{args.host}:{args.http_port}")
             print(f"gateway listening on ws://{args.host}:{args.port}  "
                   f"(window={args.window_ms} ms, events -> {args.db})")
@@ -316,6 +357,9 @@ def main() -> None:
                 enqueuer=enqueuer,
                 proactive_outbox=proactive_outbox,
                 proactive_engine=proactive_engine,
+                speaker_registry=speaker_registry,
+                atom_store=atom_store,
+                speaker_nudge=speaker_nudge,
             )
         finally:
             await worker.stop()

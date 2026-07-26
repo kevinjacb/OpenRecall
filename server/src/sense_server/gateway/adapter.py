@@ -29,6 +29,9 @@ if TYPE_CHECKING:
     from ..sessions.index import SessionIndex
     from ..sessions.lifecycle import SessionLifecycle
     from ..agent.proactive import ProactiveTriggerEngine
+    from ..agent.speaker_nudge import SpeakerNudgeListener
+    from ..memory.speaker_registry import SpeakerRegistry
+    from ..memory.store import AtomStore
     from .core import ProactiveOutbox
 
 logger = logging.getLogger(__name__)
@@ -175,6 +178,9 @@ async def serve(
     enqueuer: "ExtractionEnqueuer | None" = None,
     proactive_outbox: "ProactiveOutbox | None" = None,
     proactive_engine: "ProactiveTriggerEngine | None" = None,
+    speaker_registry: "SpeakerRegistry | None" = None,
+    atom_store: "AtomStore | None" = None,
+    speaker_nudge: "SpeakerNudgeListener | None" = None,
 ) -> None:
     """Run the gateway WebSocket server until cancelled.
 
@@ -224,6 +230,8 @@ async def serve(
             session_lifecycle=session_lifecycle,
             enqueuer=enqueuer,
             proactive_outbox=proactive_outbox,
+            speaker_registry=speaker_registry,
+            atom_store=atom_store,
         )
         # P3: rebind the engine's ws_sender to this per-connection core.
         # The engine is process-wide (one Planner, one set of listeners),
@@ -232,6 +240,10 @@ async def serve(
         # have an engine wired (existing test suite).
         if proactive_engine is not None and proactive_outbox is not None:
             proactive_engine.set_ws_sender(core)
+        # Speaker nudge: rebind its ws_sender to this per-connection core
+        # too, so the nudge is pushed through the active connection.
+        if speaker_nudge is not None:
+            speaker_nudge.set_ws_sender(core)
 
         # P3: background drain task — wakes on the outbox event, sends
         # each pending ProactiveMessage as a §E frame. Cancelled on

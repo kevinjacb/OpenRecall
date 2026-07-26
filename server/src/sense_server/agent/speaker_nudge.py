@@ -53,6 +53,11 @@ class SpeakerNudgeListener:
         # rolling per-minute send timestamps for the rate limit
         self._send_times: list[float] = []
 
+    def set_ws_sender(self, ws_sender: WsSender) -> None:
+        """Rebind the ws_sender. The gateway rebinds this per-connection so
+        the nudge is pushed through whichever GatewayCore is active."""
+        self._ws = ws_sender
+
     async def on_session_completion(self, completion: SessionCompletion) -> None:
         """Best-effort; never re-raises (the worker must not see listener errors)."""
         try:
