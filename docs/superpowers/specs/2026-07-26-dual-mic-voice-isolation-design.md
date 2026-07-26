@@ -193,7 +193,8 @@ Following the existing host contract-test pattern (`firmware/sense_sensor/test/`
 
 - **`test/vad_dual_test.c`**
   - *Loud correlated ambient:* primary ≈ reference (ratio ≈ 1), both above energy threshold → `C6_GAP_MARKER` (not speech). This is the junk-rejection guarantee.
-  - *Quiet voice on primary only:* `e_pri` below the old energy-only threshold but `ratio > VAD_RATIO_THRESHOLD` → still `C6_SPEECH` (if `e_pri > VAD_ENERGY_THRESHOLD`); confirm the ratio test lifts quiet-voice detection relative to a pure energy VAD while the energy floor still blocks silence.
+  - *Loud correlated ambient (the junk case):* primary ≈ reference (ratio ≈ 1), both above the energy threshold → `C6_GAP_MARKER` (not speech). This is the junk-rejection guarantee the old energy-only VAD violated.
+  - *Voice above threshold with background:* `e_pri > VAD_ENERGY_THRESHOLD` and `ratio > VAD_RATIO_THRESHOLD` (e.g. primary = voice + mild ambient, reference = ambient) → `C6_SPEECH`. Voice with background is still detected.
   - *Hangover:* a speech frame followed by N non-speech frames emits `C6_HANGOVER` for 600 ms then `C6_GAP_MARKER`.
   - *Reference-dead fallback:* `e_ref ≈ 0`, loud primary → `C6_SPEECH`.
 
