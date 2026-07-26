@@ -35,6 +35,10 @@
 /* Per-sample mean-square energy gate. Placeholder — TUNE ON HARDWARE against the
  * onboard mic's noise floor; exposed as a runtime arg so the VAD logic is testable. */
 #define VAD_ENERGY_THRESHOLD 2000000UL
+/* Dual-channel ratio gate: primary energy must exceed reference energy by this
+ * factor to count as speech. Loud ambient that lands similarly on both mics
+ * (ratio ~1) is rejected even when it passes the energy threshold. TUNE ON HARDWARE. */
+#define VAD_RATIO_THRESHOLD 4u
 
 /* ---- Dual-mic DSP: NLMS adaptive differential noise cancellation ----
  * Pure fixed-point (int32 Q15). The reference mic (back, ambient) drives an
