@@ -30,6 +30,34 @@ from .index import MemoryIndex
 from .store import AtomStore
 from .versioned import stamp_version_metadata
 
+
+def _majority_speaker(window: list[CaptureEvent]) -> "SpeakerAssignment | None":
+    """The majority speaker by turn-weighted confidence, or None if no majority.
+
+    Weight each attributed event by its confidence; the speaker with >50% of the
+    total weight wins. Ties / no majority -> None (atom unattributed). Events
+    with no speaker or assignment == "none" are skipped.
+    """
+    weights: dict[str, float] = {}
+    assignment: dict[str, str] = {}
+    for e in window:
+        if not e.speaker or e.speaker_assignment == "none":
+            continue
+        w = e.speaker_confidence if e.speaker_confidence is not None else 0.0
+        weights[e.speaker] = weights.get(e.speaker, 0.0) + w
+        assignment[e.speaker] = e.speaker_assignment
+    if not weights:
+        return None
+    total = sum(weights.values())
+    if total <= 0:
+        return None
+    leader_id, leader_w = max(weights.items(), key=lambda kv: kv[1])
+    if leader_w <= total / 2:  # no strict majority
+        return None
+    from ..ingest.speaker_identifier import SpeakerAssignment
+
+    return SpeakerAssignment(leader_id, leader_w / total, assignment[leader_id])
+
 log = logging.getLogger(__name__)
 
 Clock = Callable[[], datetime]
@@ -146,6 +174,7 @@ class ExtractionStage:
         for window in extracted_windows:
             joined = " ".join(e.text for e in window)
             last = window[-1]
+            majority = _majority_speaker(window)
             log.debug(
                 "extraction_window_extract session=%s window_events=%d "
                 "span_ms=%d seq_range=[%d,%d] joined=%r",
@@ -162,6 +191,9 @@ class ExtractionStage:
                         text=memory.text,
                         created_at=now,
                         start_ms=last.start_ms,
+                        speaker=(majority.speaker_id if majority else None),
+                        speaker_confidence=(majority.confidence if majority else None),
+                        speaker_assignment=(majority.assignment if majority else None),
                     )
                 )
             consumed_seq = last.seq

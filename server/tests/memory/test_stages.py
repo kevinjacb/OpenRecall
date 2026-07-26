@@ -56,7 +56,11 @@ class FixedEmbedder:
         return [[float(len(t))] + [0.0, 0.0] for t in texts]
 
 
-def _event(seq: int, session_id: str = "s1", text: str = "hello") -> CaptureEvent:
+def _event(
+    seq: int, session_id: str = "s1", text: str = "hello",
+    speaker: str | None = None, speaker_confidence: float | None = None,
+    speaker_assignment: str | None = None,
+) -> CaptureEvent:
     return CaptureEvent(
         event_id=f"{session_id}:{seq}",
         session_id=session_id,
@@ -66,6 +70,9 @@ def _event(seq: int, session_id: str = "s1", text: str = "hello") -> CaptureEven
         text=text,
         duration_ms=1000,
         start_ms=seq * 1000,
+        speaker=speaker,
+        speaker_confidence=speaker_confidence,
+        speaker_assignment=speaker_assignment,
     )
 
 
@@ -303,3 +310,39 @@ def test_pipeline_run_propagates_embedder_error_atomically():
     with pytest.raises(RuntimeError, match="boom"):
         pipe.run("s1", [_event(0)])
     assert idx.search("s1", [1.0, 0.0, 0.0], 10) == []
+
+
+# --- speaker attribution -----------------------------------------------------
+
+
+def _stage():
+    return ExtractionStage(FixedExtractor(), clock=lambda: FIXED, window_ms=60_000)
+
+
+def test_atom_inherits_majority_speaker_of_its_window():
+    events = [
+        _event(0, text="a", speaker="you", speaker_confidence=0.9, speaker_assignment="confirmed"),
+        _event(1, text="b", speaker="you", speaker_confidence=0.9, speaker_assignment="confirmed"),
+        _event(2, text="c", speaker="you", speaker_confidence=0.9, speaker_assignment="confirmed"),
+        _event(3, text="d", speaker="sarah", speaker_confidence=0.6, speaker_assignment="tentative"),
+    ]
+    atoms, _ = _stage().extract("s1", events, finalize=True)
+    assert atoms
+    assert atoms[0].speaker == "you"
+    assert atoms[0].speaker_assignment == "confirmed"
+    assert atoms[0].speaker_confidence is not None and atoms[0].speaker_confidence > 0.5
+
+
+def test_atom_speaker_none_when_no_majority():
+    events = [
+        _event(0, text="a", speaker="you", speaker_confidence=0.8, speaker_assignment="confirmed"),
+        _event(1, text="b", speaker="sarah", speaker_confidence=0.8, speaker_assignment="confirmed"),
+    ]
+    atoms, _ = _stage().extract("s1", events, finalize=True)
+    assert atoms and atoms[0].speaker is None
+
+
+def test_atom_speaker_none_when_all_events_unattributed():
+    events = [_event(0, text="a"), _event(1, text="b")]
+    atoms, _ = _stage().extract("s1", events, finalize=True)
+    assert atoms and atoms[0].speaker is None
