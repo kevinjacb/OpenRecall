@@ -109,6 +109,32 @@ class ProactiveOutbox:
             self._event.clear()
         return kept
 
+    def drain_all(self) -> list[ProactiveMessage]:
+        """Drain every pending message across all sessions and clear the wake
+        event.
+
+        This is the level-triggered drain the gateway's proactive send loop
+        uses. The event is cleared *up front*, before draining, so a bare
+        ``signal()`` (a wake with nothing to drain — e.g. the adapter's
+        connection-close wake) does not leave the event set. If it did,
+        ``wait()`` would return immediately forever without yielding and the
+        drain loop would hot-spin at 100% CPU, starving the event loop — the
+        'server works for ~20s then every connection times out, no error in
+        the terminal' incident. Clearing first means the next ``wait()``
+        blocks until a *new* ``enqueue()`` re-sets the event.
+
+        Safe under concurrency: the proactive engine enqueues on a different
+        task, but ``drain_all`` is synchronous (no ``await`` between the clear
+        and the per-session drains), so no wake can be lost — a message
+        enqueued after the clear re-sets the event and is drained on the next
+        loop iteration.
+        """
+        self._event.clear()
+        kept: list[ProactiveMessage] = []
+        for session_id in list(self._by_session.keys()):
+            kept.extend(self.drain(session_id))
+        return kept
+
     async def wait(self) -> None:
         await self._event.wait()
 
@@ -210,11 +236,30 @@ class GatewayCore:
     def _on_hello(self, msg: Hello) -> list[Outbound]:
         self._session_id = msg.session_id
         self._pipeline = self._factory(msg.start_seq)
-        self._event_seq = 0
-        self._cum_ms = 0
+        # Continue the per-session event counter past any events already in the
+        # store for this session. The BLE relay does NOT replay on reconnect —
+        # it resumes at the device's current chunk_seq (a boot-relative
+        # monotonic that never resets) — so the audio after a reconnect is NEW
+        # content. Resetting _event_seq to 0 made every post-reconnect
+        # transcript collide with an existing "{session}:{seq}" event_id and
+        # be dropped as a duplicate (stored=False), so it was never enqueued
+        # for extraction and never became a memory (the 'chat says no memory
+        # after reconnect' incident). For a genuinely new session (no prior
+        # events) last_event returns None and we start at 0 as before.
+        prior = self._store.last_event(msg.session_id) if self._store is not None else None
+        if prior is not None:
+            self._event_seq = prior.seq + 1
+            self._cum_ms = prior.start_ms + prior.duration_ms
+            logger.info(
+                "hello: session=%s start_seq=%d resuming event_seq=%d cum_ms=%d",
+                msg.session_id, msg.start_seq, self._event_seq, self._cum_ms,
+            )
+        else:
+            self._event_seq = 0
+            self._cum_ms = 0
+            logger.info("hello: session=%s start_seq=%d (fresh)", msg.session_id, msg.start_seq)
         if self._session_lifecycle is not None:
             self._session_lifecycle.register(msg.session_id)
-        logger.info("hello: session=%s start_seq=%d", msg.session_id, msg.start_seq)
         # initial sync: ack the cursor, then hand over any commands awaiting this session
         return [Ack(session_id=msg.session_id, next_seq=msg.start_seq), *self._pending_commands()]
 
@@ -242,9 +287,41 @@ class GatewayCore:
         closing_session = self._session_id
         if self._session_lifecycle is not None:
             self._session_lifecycle.deregister(closing_session)
+        # Bug C: the live extraction path held the trailing still-growing 60s
+        # window back (finalize=False). The session ending is the signal to
+        # finalize it — enqueue a finalize=True pass so the trailing partial
+        # window forms memories without waiting for a server restart. Done
+        # before clearing _session_id so the bye itself owns the finalize and
+        # the disconnect path's finalize_pending_session() is a no-op after.
+        if self._enqueuer is not None:
+            self._enqueuer.enqueue_finalize(closing_session)
+            logger.info("enqueued finalize (bye) for session=%s", closing_session)
         self._session_id = None
         self._pipeline = None
         return flushed
+
+    def finalize_pending_session(self) -> None:
+        """Finalize the trailing extraction window of the still-open session.
+
+        Bug C: a relay disconnect without a clean ``bye`` leaves the live
+        extraction cursor holding the trailing partial 60s window back
+        (finalize=False on the live path). Without a finalize, those last
+        ~up-to-60s of speech never form memories until a server restart
+        re-runs reconcile-on-start. The WebSocket adapter calls this from
+        the connection ``finally`` block so a dropped link finalizes the
+        session it was carrying.
+
+        A no-op when there is no open session (never hello'd, or already
+        bye'd — bye enqueues its own finalize and clears ``_session_id``),
+        so the disconnect path does not double-finalize a cleanly-closed
+        session.
+        """
+        if self._session_id is None or self._enqueuer is None:
+            return
+        self._enqueuer.enqueue_finalize(self._session_id)
+        logger.info(
+            "enqueued finalize (disconnect) for session=%s", self._session_id,
+        )
 
     def _emit(self, transcripts: list[Transcript]) -> list[TranscriptMsg]:
         """Persist each transcript as a §F capture event and build its §E message.
@@ -284,6 +361,10 @@ class GatewayCore:
             # with tests that don't wire a worker.
             if stored and self._enqueuer is not None and self._session_id is not None:
                 self._enqueuer.enqueue(self._session_id)
+                logger.debug(
+                    "enqueued for extraction session=%s event=%s seq=%d",
+                    self._session_id, event.event_id, event.seq,
+                )
             self._event_seq += 1
             self._cum_ms += t.duration_ms
             logger.info(

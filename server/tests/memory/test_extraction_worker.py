@@ -969,11 +969,17 @@ def test_safe_process_does_not_count_parse_failure_as_indexing_failure():
     """The _run-path wrapper must not double-count a parse failure as
     INDEXING_FAILURES_TOTAL — process_session already counted it as
     LLM_PARSE_FAILURES_TOTAL. The dashboard must not conflate the two.
+
+    ``_safe_process`` is the live path (finalize=False), so a single event
+    would be a still-growing trailing window and held back — no extraction,
+    no parse failure. Append a second event so the first forms a closed
+    window the LLM actually runs on.
     """
     events = InMemoryEventStore()
     atoms = InMemoryAtomStore()
     idx = InMemoryMemoryIndex()
     events.append(_event(0))
+    events.append(_event(1))  # closes W1 (window_ms=1000, start_ms=seq*1000)
     metrics = InMemoryMetricsRecorder()
 
     def clock() -> datetime:
@@ -1025,3 +1031,167 @@ def test_reconcile_does_not_count_parse_failure_as_indexing_failure():
     assert metrics.counter(
         Metrics.INDEXING_FAILURES_TOTAL, tags={"session_id": "s1"}
     ) == 0
+
+
+# --- version-aware cursor: algorithm/prompt changes re-extract --------------
+#
+# Regression guard for the live "stale cursor locks out historical transcripts"
+# incident. The per-event extractor advanced every session's cursor to max
+# while producing ~0 atoms; the windowed extractor that replaced it then saw
+# `pending` empty for every historical session and silently skipped them.
+# Bumping the extractor version must invalidate the old cursors so the new
+# extractor re-processes past events instead of abandoning them.
+
+
+def _build_versioned_worker(
+    events: InMemoryEventStore,
+    atoms: InMemoryAtomStore,
+    idx: InMemoryMemoryIndex,
+    *,
+    extractor_version: str,
+    embedder=None,
+) -> ExtractionWorker:
+    def clock() -> datetime:
+        return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
+    pipeline = Pipeline(
+        extraction=ExtractionStage(
+            window_ms=1000, extractor=FixedExtractor(), clock=clock,
+            version=extractor_version,
+        ),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=embedder or HappyEmbedder()),
+        indexing=IndexingStage(index=idx),
+        store=atoms,
+    )
+    return ExtractionWorker(
+        events=events, atoms=atoms, pipeline=pipeline,
+        metrics=InMemoryMetricsRecorder(),
+        extractor_version=extractor_version,
+    )
+
+
+def test_worker_reextracts_when_extractor_version_changes():
+    """A cursor stamped with version v1 is invisible to a v2 worker: it must
+    re-extract the session. This is the mechanism that turns an algorithm or
+    prompt change into an automatic re-extraction of historical data."""
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    events.append(_event(0, session_id="s1"))
+    events.append(_event(1, session_id="s1"))
+
+    # v1 worker extracts both events; cursor stamped v1.
+    idx1 = InMemoryMemoryIndex()
+    w1 = _build_versioned_worker(events, atoms, idx1, extractor_version="v1")
+    w1.process_session("s1")
+    assert atoms.get_cursor("s1", extractor_version="v1") == 1
+    assert len(atoms.atoms("s1")) == 2  # one atom per event (FixedExtractor)
+
+    # A v2 worker with a FRESH index sees the v1 cursor as stale (-1) and
+    # re-extracts: pending is non-empty, the fresh index accepts the atoms.
+    idx2 = InMemoryMemoryIndex()
+    w2 = _build_versioned_worker(events, atoms, idx2, extractor_version="v2")
+    indexed = w2.process_session("s1")
+    assert len(indexed) == 2  # re-extracted into the fresh index
+    assert atoms.get_cursor("s1", extractor_version="v2") == 1
+    # the v1 stamp is superseded — a v1 read now sees stale
+    assert atoms.get_cursor("s1", extractor_version="v1") == -1
+    # atom store is idempotent: re-extraction did not duplicate atoms
+    assert len(atoms.atoms("s1")) == 2
+
+
+def test_worker_skips_session_when_extractor_version_matches():
+    """The matching-version path still short-circuits on an empty pending set
+    — the version check must not regress the common 'already processed' case."""
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    events.append(_event(0, session_id="s1"))
+    w = _build_versioned_worker(events, atoms, idx, extractor_version="v1")
+    w.process_session("s1")
+    # second run with the same version: nothing pending, returns []
+    assert w.process_session("s1") == []
+    assert atoms.get_cursor("s1", extractor_version="v1") == 0
+
+
+# --- live-path window hold-back ---------------------------------------------
+#
+# The gateway enqueues after EVERY transcript event; the worker's live
+# drain calls process_session(finalize=False). If the cursor advanced past
+# every batch (the old behaviour), each batch was only the new events since
+# the last call — a ~1s fragment — so the 60s windowing never saw a full
+# window on the live path: the LLM was called on fragments, returned [],
+# burned tokens, and never formed memories (the "events stop generating
+# but the terminal shows tokens being used" incident). finalize=False holds
+# the trailing still-growing window back so the LLM only fires on a closed
+# ~window_ms slice and the cursor only advances past closed windows.
+
+
+def _build_live_worker(events, atoms, idx, *, window_ms, extractor=None):
+    def clock() -> datetime:
+        return datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
+    pipeline = Pipeline(
+        extraction=ExtractionStage(
+            window_ms=window_ms, extractor=extractor or FixedExtractor(), clock=clock,
+            version="v1",
+        ),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=HappyEmbedder()),
+        indexing=IndexingStage(index=idx),
+        store=atoms,
+    )
+    return ExtractionWorker(
+        events=events, atoms=atoms, pipeline=pipeline,
+        metrics=InMemoryMetricsRecorder(),
+        extractor_version="v1",
+    )
+
+
+def test_worker_live_path_holds_back_growing_window():
+    """finalize=False: a still-growing window is NOT extracted and the
+    cursor does NOT advance — the events are re-seen next call so the
+    window can complete. No LLM call, no atoms, cursor unchanged."""
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    w = _build_live_worker(events, atoms, idx, window_ms=2000)
+    # two events within the window -> one growing window, nothing closed
+    events.append(_event(0, session_id="s1", text="a"))
+    events.append(_event(1, session_id="s1", text="b"))
+    produced = w.process_session("s1", finalize=False)
+    assert produced == []
+    # cursor NOT advanced: still treats every event as unprocessed
+    assert atoms.get_cursor("s1", extractor_version="v1") == -1
+
+
+def test_worker_live_path_extracts_closed_window_advances_to_its_end():
+    """Once an event closes the prior window, finalize=False extracts it,
+    advances the cursor to the closed window's last seq, and holds the
+    new trailing window back for the next call."""
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    w = _build_live_worker(events, atoms, idx, window_ms=2000)
+    # window_ms=2000 with start_ms=seq*1000: e0,e1 -> W1 (1000<2000); e2 -> W2
+    events.append(_event(0, session_id="s1", text="a"))
+    events.append(_event(1, session_id="s1", text="b"))
+    events.append(_event(2, session_id="s1", text="c"))
+    produced = w.process_session("s1", finalize=False)
+    assert [a.text for a in produced] == ["a b"]  # W1 extracted, W2 held
+    # cursor advanced to e1 (last of W1); e2 still pending
+    assert atoms.get_cursor("s1", extractor_version="v1") == 1
+    # next call: only e2 is past the cursor; it's a growing window -> held
+    assert w.process_session("s1", finalize=False) == []
+
+
+def test_worker_reconcile_path_finalizes_trailing_window():
+    """finalize=True (the reconcile-on-start default) extracts the trailing
+    window too — a short finalized session still forms memories."""
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    w = _build_live_worker(events, atoms, idx, window_ms=2000)
+    events.append(_event(0, session_id="s1", text="a"))
+    events.append(_event(1, session_id="s1", text="b"))
+    produced = w.process_session("s1")  # finalize=True default
+    assert [a.text for a in produced] == ["a b"]
+    assert atoms.get_cursor("s1", extractor_version="v1") == 1

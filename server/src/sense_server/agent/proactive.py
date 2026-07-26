@@ -125,6 +125,10 @@ class ProactiveTriggerEngine:
                 session_id=completion.session_id,
                 limit=10,
             )
+            log.info(
+                "proactive_trigger session=%s seq_range=%s",
+                completion.session_id, completion.event_id_range,
+            )
             try:
                 result = await asyncio.wait_for(
                     self._planner.plan(ctx), timeout=self._plan_timeout_s,
@@ -147,6 +151,12 @@ class ProactiveTriggerEngine:
                 self._metrics.increment(Metrics.PROACTIVE_PLAN_FAILURE_TOTAL)
                 return
 
+            log.info(
+                "proactive_plan_result session=%s outcome=%s atoms=%s "
+                "answer=%r",
+                completion.session_id, result.outcome, result.atom_ids,
+                (result.answer or "")[:200],
+            )
             if result.outcome in (
                 PlannerOutcome.RETURN, PlannerOutcome.RETURN_WITH_UNCERTAINTY,
             ):
@@ -158,6 +168,9 @@ class ProactiveTriggerEngine:
                         atoms=result.atom_ids,
                     )
                     self._metrics.increment(Metrics.PROACTIVE_DELIVERED_TOTAL)
+                    log.info(
+                        "proactive_delivered session=%s", completion.session_id,
+                    )
                 except Exception:
                     log.exception(
                         "proactive_send_failed",
@@ -168,6 +181,10 @@ class ProactiveTriggerEngine:
 
             # REFUSE or any other outcome: drop with a counter.
             self._metrics.increment(Metrics.PROACTIVE_REFUSED_TOTAL)
+            log.info(
+                "proactive_refused session=%s outcome=%s", completion.session_id,
+                result.outcome,
+            )
         except Exception:
             # Defensive: catch any unexpected error from the listener
             # signature or argument validation. Never re-raise; the

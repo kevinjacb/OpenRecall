@@ -1,32 +1,46 @@
 #!/usr/bin/env python3
-"""Extract §G memory atoms from captured §F events using a configurable model.
+"""Extract §G memory atoms from captured §F events for one session.
 
-Runs the out-of-band extraction pass: reads new capture events from the durable
-event log and writes structured memories to the atom store. The model is whatever
-you configure — local or cloud — via env vars (no model is hardcoded):
+Runs the SAME windowed extraction pipeline the gateway runs
+(``memory.stages.Pipeline``) — not the legacy per-event extractor — so it forms
+the same memories a live session would. Reads capture events past the
+session's extraction cursor, extracts/ embeds/ indexes them, and advances the
+cursor (H7: only after extraction + indexing both succeed).
 
-    export SENSE_LLM_MODEL=gemma2                       # required: the model name
-    export SENSE_LLM_BASE_URL=http://localhost:11434/v1  # default: Ollama
-    export SENSE_LLM_API_KEY=...                          # optional (cloud)
+The model is whatever you configure — local or cloud — via env vars (no model
+is hardcoded), the same ``SENSE_LLM_*`` / ``SENSE_EMBED_*`` vars as
+``run_gateway.py``. Export them first, e.g. ``set -a; source .env; set +a``.
+
     pip install -e '.[llm]'
     python scripts/extract_memories.py --session <session_id>
 
-Examples of "any model, local or cloud":
-  * local Gemma via Ollama:   BASE_URL=http://localhost:11434/v1  MODEL=gemma2
-  * local Qwen via mlx_lm:     BASE_URL=http://localhost:8080/v1   MODEL=qwen2.5
-  * cloud (e.g. MiniMax/OpenAI): BASE_URL=<provider>/v1  MODEL=<name>  API_KEY=<key>
+To re-extract EVERY session (e.g. recovering from a stale-cursor lockout),
+use ``scripts/reextract.py`` instead.
 """
-
 from __future__ import annotations
 
 import argparse
 import os
+from datetime import datetime, timezone
 
+from sense_server.agent.metrics import InMemoryMetricsRecorder
 from sense_server.events.store import SqliteEventStore
+from sense_server.memory.embeddings import OpenAICompatibleEmbedder
+from sense_server.memory.extraction_worker import ExtractionWorker
 from sense_server.memory.extract import LLMExtractor
+from sense_server.memory.index import SqliteMemoryIndex
 from sense_server.memory.llm import OpenAICompatibleChatModel
-from sense_server.memory.pipeline import ExtractionPipeline
+from sense_server.memory.stages import (
+    EmbeddingStage,
+    ExtractionStage,
+    IndexingStage,
+    Pipeline,
+    VersionStampStage,
+)
 from sense_server.memory.store import SqliteAtomStore
+
+# Must match EXTRACTOR_VERSION in run_gateway.py.
+EXTRACTOR_VERSION = "v1"
 
 
 def main() -> None:
@@ -34,17 +48,36 @@ def main() -> None:
     ap.add_argument("--session", required=True, help="session_id to extract")
     ap.add_argument("--events-db", default="data/events.db")
     ap.add_argument("--atoms-db", default="data/atoms.db")
+    ap.add_argument("--index-db", default="data/memory_index.db")
     args = ap.parse_args()
 
-    model = OpenAICompatibleChatModel.from_env(os.environ)
-    print(f"extracting with model={model.model} via {model.base_url}")
+    env = os.environ
+    chat = OpenAICompatibleChatModel.from_env(env)
+    embedder = OpenAICompatibleEmbedder.from_env(env)
+    print(f"extracting with LLM={chat.model} via {chat.base_url}, "
+          f"embedder={embedder.model} via {embedder.base_url}")
 
-    pipe = ExtractionPipeline(
-        event_store=SqliteEventStore(args.events_db),
-        atom_store=SqliteAtomStore(args.atoms_db),
-        extractor=LLMExtractor(model),
+    events = SqliteEventStore(args.events_db)
+    atoms = SqliteAtomStore(args.atoms_db)
+    index = SqliteMemoryIndex(args.index_db)
+    pipeline = Pipeline(
+        extraction=ExtractionStage(
+            extractor=LLMExtractor(chat),
+            clock=lambda: datetime.now(timezone.utc),
+            version=EXTRACTOR_VERSION,
+        ),
+        version_stamp=VersionStampStage(),
+        embedding=EmbeddingStage(embedder=embedder),
+        indexing=IndexingStage(index=index),
+        store=atoms,
     )
-    produced = pipe.run(args.session)
+    worker = ExtractionWorker(
+        events=events, atoms=atoms, pipeline=pipeline,
+        metrics=InMemoryMetricsRecorder(),
+        extractor_version=EXTRACTOR_VERSION,
+    )
+
+    produced = worker.process_session(args.session)
 
     print(f"produced {len(produced)} new memory atom(s) for session {args.session!r}:")
     for atom in produced:

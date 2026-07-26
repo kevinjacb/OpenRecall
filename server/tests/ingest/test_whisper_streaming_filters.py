@@ -208,6 +208,125 @@ def test_missing_avg_logprob_field_is_treated_as_high_confidence():
     assert len(tokens) == 1
 
 
+# --- tests for repeated-token hallucination filtering ------------------------
+# mlx-whisper's other classic failure mode on near-silence / low-SNR audio is
+# high-confidence repeated-token hallucination: it transcribes a real word
+# ("Congratulations", "name", "My") and then loops it many times in one
+# segment. These segments have perfectly good no_speech_prob / avg_logprob
+# (they ARE real words, just wrongly repeated), so the confidence filter
+# above lets them through — producing stored transcripts like
+# "Congratulations. Congratulations. Congratulations. Congratulations."
+# (6x in 640 ms — physically impossible as speech). The repetition filter is
+# the defense; it drops a segment whose word tokens are excessively
+# repetitive. This matters most once the firmware VAD is sensitive enough to
+# admit near-silence frames (which is exactly when Whisper hallucinates).
+
+
+def _repeated_word_segment(word: str, n: int, start: float = 0.0, step: float = 0.1) -> dict:
+    """A confident segment repeating ``word`` n times — the hallucination shape."""
+    words = [
+        {"word": (" " + word if i > 0 else word), "start": start + i * step, "end": start + (i + 1) * step}
+        for i in range(n)
+    ]
+    return _mlx_segment(
+        text=" ".join([word] * n),
+        words=words,
+        no_speech_prob=0.1,   # mlx is "confident" this is speech
+        avg_logprob=-0.3,     # and "confident" about the words
+    )
+
+
+def test_hallucinated_long_run_of_same_token_is_dropped():
+    """6x "Congratulations." in one segment = hallucination, even though the
+    confidence signals say it's real speech. Mirrors a real stored transcript.
+    """
+    response = _make_mlx_response(_repeated_word_segment("Congratulations.", 6))
+    tokens = _mlx_segments_to_tokens(response, no_speech_threshold=0.6, logprob_threshold=-1.0)
+    assert tokens == []
+
+
+def test_hallucinated_low_unique_ratio_is_dropped():
+    """17 tokens drawn from only 3 unique words ("name name name name name
+    My My is My My My is My My My") = hallucination. Mirrors a real stored
+    transcript.
+    """
+    text = "name name name name name My My is My My My is My My My"
+    toks = text.split()
+    step = 0.05
+    words = [
+        {"word": (" " + t if i > 0 else t), "start": i * step, "end": (i + 1) * step}
+        for i, t in enumerate(toks)
+    ]
+    response = _make_mlx_response(_mlx_segment(
+        text=text, words=words, no_speech_prob=0.1, avg_logprob=-0.3,
+    ))
+    tokens = _mlx_segments_to_tokens(response, no_speech_threshold=0.6, logprob_threshold=-1.0)
+    assert tokens == []
+
+
+def test_benign_short_repetition_is_kept():
+    """A 3x repeat ("no no no") is plausible emphatic speech and must NOT be
+    dropped — guards against false positives.
+    """
+    response = _make_mlx_response(_repeated_word_segment("no", 3))
+    tokens = _mlx_segments_to_tokens(response, no_speech_threshold=0.6, logprob_threshold=-1.0)
+    assert [t.text for t in tokens] == ["no", " no", " no"]
+
+
+def test_varied_speech_is_kept():
+    """Normal varied speech has a high unique-token ratio and is kept."""
+    response = _make_mlx_response(_mlx_segment(
+        text="I didn't know you were a car guy",
+        no_speech_prob=0.1, avg_logprob=-0.3,
+    ))
+    tokens = _mlx_segments_to_tokens(response, no_speech_threshold=0.6, logprob_threshold=-1.0)
+    assert len(tokens) == 8  # I / didn't / know / you / were / a / car / guy
+
+
+def test_hallucination_filter_does_not_drop_short_segments():
+    """A 1-2 token segment can't be repetitive enough to flag; always kept
+    (modulo the confidence filter)."""
+    response = _make_mlx_response(_mlx_segment(
+        text="hello", words=[{"word": "hello", "start": 0.0, "end": 0.4}],
+        no_speech_prob=0.1, avg_logprob=-0.3,
+    ))
+    tokens = _mlx_segments_to_tokens(response, no_speech_threshold=0.6, logprob_threshold=-1.0)
+    assert len(tokens) == 1
+
+
+def test_hallucination_split_across_many_short_segments_is_dropped():
+    """Whisper can emit the loop as 6 one-word segments instead of one
+    6-word segment. Each segment is individually non-repetitive, so the
+    per-segment check misses it; the aggregate check across the whole
+    response drops it.
+    """
+    segs = []
+    for i in range(6):
+        segs.append(_mlx_segment(
+            text="Congratulations.",
+            words=[{"word": "Congratulations.", "start": float(i), "end": float(i + 1)}],
+            no_speech_prob=0.1, avg_logprob=-0.3,
+        ))
+    response = _make_mlx_response(*segs)
+    tokens = _mlx_segments_to_tokens(response, no_speech_threshold=0.6, logprob_threshold=-1.0)
+    assert tokens == []
+
+
+def test_real_speech_plus_hallucination_keeps_real_speech():
+    """A response with one varied segment and one hallucinated segment keeps
+    the varied segment (per-segment drop) and is not wrongly aggregate-dropped.
+    """
+    response = _make_mlx_response(
+        _mlx_segment(
+            text="I am going to the store now",
+            no_speech_prob=0.1, avg_logprob=-0.3,
+        ),
+        _repeated_word_segment("Congratulations.", 6, start=2.0),
+    )
+    tokens = _mlx_segments_to_tokens(response, no_speech_threshold=0.6, logprob_threshold=-1.0)
+    assert [t.text for t in tokens] == ["I", " am", " going", " to", " the", " store", " now"]
+
+
 # --- tests for the backend wiring -------------------------------------------
 
 

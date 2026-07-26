@@ -44,6 +44,71 @@ def _seconds_to_ms(seconds: float) -> int:
     return round(seconds * 1000)
 
 
+# --- repeated-token hallucination detector ----------------------------------
+# mlx-whisper's other classic failure mode on near-silence / low-SNR audio:
+# it transcribes a real word and then loops it many times in one segment.
+# These segments pass the no_speech_prob / avg_logprob filter (they ARE real
+# words, just wrongly repeated), so without this detector they reach the
+# streaming wrapper and get stored as gibberish like
+# "Congratulations. Congratulations. Congratulations. Congratulations."
+# (6x in 640 ms — physically impossible as speech). This matters most once
+# the firmware VAD is sensitive enough to admit near-silence frames, which
+# is exactly when Whisper hallucinates. Two signals, both required to be
+# unambiguous before we drop real speech:
+#   - a run of >= HALLUC_MIN_RUN consecutive identical tokens, or
+#   - >= HALLUC_MIN_TOKENS tokens whose unique/total ratio is below
+#     HALLUC_MAX_UNIQUE_RATIO (a tiny vocabulary packed into a long segment).
+_HALLUC_MIN_RUN = 5
+_HALLUC_MIN_TOKENS = 6
+_HALLUC_MAX_UNIQUE_RATIO = 0.5
+
+
+def _normalize_word(text: str) -> str:
+    """Lowercase + strip whitespace/punctuation so that
+    "Congratulations." == "Congratulations" == "congratulations"."""
+    return text.strip().lower().strip(".,!?;:'\"-()[]{}")
+
+
+def _texts_are_hallucinated_repetition(texts: list[str]) -> bool:
+    """True if a sequence of word strings looks like Whisper's repeated-token
+    hallucination (a real word looped on near-silence).
+
+    Conservative by design: short sequences and ordinary emphatic repeats
+    ("no no no", "yeah yeah") are kept. Only unambiguous looping is dropped.
+    """
+    if not texts:
+        return False
+    norm = [_normalize_word(t) for t in texts]
+
+    # Rule 1: a long run of the same token.
+    run = 1
+    max_run = 1
+    for i in range(1, len(norm)):
+        if norm[i] and norm[i] == norm[i - 1]:
+            run += 1
+            if run > max_run:
+                max_run = run
+        else:
+            run = 1
+    if max_run >= _HALLUC_MIN_RUN:
+        return True
+
+    # Rule 2: very low unique-token ratio across enough tokens.
+    if len(norm) >= _HALLUC_MIN_TOKENS:
+        unique = len({n for n in norm if n})
+        if unique / len(norm) < _HALLUC_MAX_UNIQUE_RATIO:
+            return True
+    return False
+
+
+def _is_hallucinated_repetition(words: list[dict]) -> bool:
+    """Per-segment check: extract word strings from mlx-whisper's word dicts
+    and apply the repetition test."""
+    return _texts_are_hallucinated_repetition(
+        [w.get("word", "") for w in words if w.get("word")]
+    )
+
+
 def _mlx_segments_to_tokens(
     response: dict,
     no_speech_threshold: float = 0.6,
@@ -81,6 +146,11 @@ def _mlx_segments_to_tokens(
         avg_logprob = seg.get("avg_logprob")
         if avg_logprob is not None and avg_logprob < logprob_threshold:
             continue
+        # Repeated-token hallucination: a real word looped on near-silence
+        # has good confidence signals, so the checks above let it through.
+        # Drop the whole segment if its words are unambiguously repetitive.
+        if _is_hallucinated_repetition(seg.get("words") or []):
+            continue
         for word in seg.get("words") or []:
             text = word.get("word", "")
             if not text:
@@ -95,6 +165,13 @@ def _mlx_segments_to_tokens(
                 # Malformed word; drop rather than emit a zero-length token.
                 continue
             tokens.append(Token(text=text, start_ms=start_ms, end_ms=end_ms))
+    # Aggregate guard: Whisper can also split a looping hallucination across
+    # many short one-word segments, each individually non-repetitive. If the
+    # whole response's tokens are unambiguatively repetitive, drop them all.
+    # Normal multi-segment speech has a high unique-token ratio, so this only
+    # fires when the entire call hallucinated.
+    if tokens and _texts_are_hallucinated_repetition([t.text for t in tokens]):
+        return []
     return tokens
 
 

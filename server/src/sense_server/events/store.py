@@ -30,6 +30,19 @@ class EventStore(Protocol):
         """All events for a session, ordered by seq."""
         ...
 
+    def last_event(self, session_id: str) -> CaptureEvent | None:
+        """The highest-seq event for a session, or None if none.
+
+        Used by the gateway on ``hello`` to continue a reconnected session's
+        per-connection ``event_seq`` / ``cum_ms`` past the events already in
+        the store. The BLE relay does not replay on reconnect — it resumes at
+        the device's current chunk_seq — so a fresh GatewayCore must pick up
+        the event counter where the prior connection left off, or the new
+        transcripts collide with existing ``event_id``s and are dropped as
+        duplicates (``stored=False``), starving extraction.
+        """
+        ...
+
     def sessions(self) -> list[str]:
         """Distinct session ids held by this store. Order is not specified;
         callers that need determinism must sort. Empty if no events have
@@ -55,6 +68,13 @@ class InMemoryEventStore:
 
     def events(self, session_id: str) -> list[CaptureEvent]:
         return sorted(self._by_session.get(session_id, []), key=lambda e: e.seq)
+
+    def last_event(self, session_id: str) -> CaptureEvent | None:
+        events = self._by_session.get(session_id)
+        if not events:
+            return None
+        # Appends are in seq order, but be defensive against any reordering.
+        return max(events, key=lambda e: e.seq)
 
     def sessions(self) -> list[str]:
         return list(self._by_session.keys())
@@ -127,6 +147,26 @@ class SqliteEventStore:
             )
             for r in rows
         ]
+
+    def last_event(self, session_id: str) -> CaptureEvent | None:
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT event_id, session_id, seq, kind, created_at, text, duration_ms, start_ms "
+                "FROM capture_events WHERE session_id = ? ORDER BY seq DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        if r is None:
+            return None
+        return CaptureEvent(
+            event_id=r[0],
+            session_id=r[1],
+            seq=r[2],
+            kind=r[3],
+            created_at=r[4],
+            text=r[5],
+            duration_ms=r[6],
+            start_ms=r[7],
+        )
 
     def sessions(self) -> list[str]:
         with self._lock:

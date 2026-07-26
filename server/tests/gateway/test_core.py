@@ -16,6 +16,7 @@ from sense_server.gateway.core import GatewayCore
 from sense_server.ingest.audio_packet import PacketType, VadState
 from sense_server.ingest.pipeline import AudioIngestPipeline
 from sense_server.ingest.reassembler import SessionReassembler
+from sense_server.memory.extraction_worker import ExtractionEnqueuer
 from sense_server.protocol.messages import Ack, Bye, Hello, RequestChunks, TranscriptMsg
 
 
@@ -191,13 +192,117 @@ def test_bye_flushed_transcript_is_persisted():
     assert [e.duration_ms for e in events] == [20, 20, 20]
 
 
-def test_replaying_a_session_does_not_duplicate_events():
-    core, store = make_core_with_store(window_ms=100)
-    for _ in range(2):  # same session captured twice (at-least-once replay)
-        core.on_control(Hello(session_id="s1", start_seq=0))
-        core.on_audio(audio_bytes(0, n_frames=5))
-        core.on_control(Bye(session_id="s1"))
+def test_reconnect_continues_event_seq_so_new_audio_is_not_dropped():
+    """Bug B: the BLE relay does NOT replay on reconnect — it continues at
+    the device's current chunk_seq (a boot-relative monotonic that never
+    resets), so the audio after a reconnect is NEW content. The fresh
+    per-connection GatewayCore must continue ``_event_seq`` past the events
+    already in the store for this session, so the new transcripts get fresh
+    ``event_id``s and are stored. Resetting ``_event_seq`` to 0 made every
+    post-reconnect transcript collide with an existing ``event_id`` and be
+    silently dropped (``stored=False``), starving extraction → 'no memory'.
 
-    # First pass: 5 events. Second pass: 0 (all event_ids collide; store
-    # dedupes). The replay is a no-op for the store.
-    assert len(store.events("s1")) == 5
+    The store still dedupes by ``event_id`` (covered in
+    ``tests/events/test_store.py``); what changes is the core no longer
+    FEEDS colliding ids on a continue-stream.
+    """
+    store = InMemoryEventStore()
+
+    def factory(start_seq: int) -> AudioIngestPipeline:
+        return AudioIngestPipeline(
+            reassembler=SessionReassembler(start_seq=start_seq),
+            decoder=FakeDecoder(),
+            transcriber=FakeTranscriber(),
+            hop_ms=20,
+            window_ms=100,
+            sample_rate=16000,
+        )
+
+    # Connection 1: 5 frames -> events s1:0..4, start_ms 0..80.
+    core1 = GatewayCore(pipeline_factory=factory, event_store=store)
+    core1.on_control(Hello(session_id="s1", start_seq=0))
+    core1.on_audio(audio_bytes(0, n_frames=5))
+    assert [e.event_id for e in store.events("s1")] == [f"s1:{i}" for i in range(5)]
+
+    # Connection 2 (reconnect): a FRESH GatewayCore with the SAME store. The
+    # relay continues at chunk_seq=100 (not a replay from 0).
+    core2 = GatewayCore(pipeline_factory=factory, event_store=store)
+    core2.on_control(Hello(session_id="s1", start_seq=0))
+    out = core2.on_audio(audio_bytes(100, n_frames=5))
+
+    transcripts = [m for m in out if isinstance(m, TranscriptMsg)]
+    assert len(transcripts) == 5  # emitted regardless, but...
+    # ...they MUST also be persisted, with continued seq + start_ms.
+    events = store.events("s1")
+    assert len(events) == 10
+    assert [e.event_id for e in events] == [f"s1:{i}" for i in range(10)]
+    # start_ms continues past the prior session end (5 * 20ms = 100ms).
+    assert [e.start_ms for e in events[5:]] == [100, 120, 140, 160, 180]
+
+
+# ---- Bug C: finalize the trailing window on session end ---------------------
+
+
+def _core_with_store_and_enqueuer():
+    """A core wired with a real store + enqueuer for the finalize-on-end tests."""
+    store = InMemoryEventStore()
+    enq = ExtractionEnqueuer(capacity=10)  # no loop bound -> direct put path
+
+    def factory(start_seq: int) -> AudioIngestPipeline:
+        return AudioIngestPipeline(
+            reassembler=SessionReassembler(start_seq=start_seq),
+            decoder=FakeDecoder(),
+            transcriber=FakeTranscriber(),
+            hop_ms=20,
+            window_ms=100,
+            sample_rate=16000,
+        )
+
+    return GatewayCore(pipeline_factory=factory, event_store=store, enqueuer=enq), enq
+
+
+def test_bye_enqueues_finalize_for_the_ending_session():
+    """Bug C: bye must enqueue a ``finalize=True`` extraction pass for the
+    session so the trailing partial 60s window is extracted without a server
+    restart. The live path held it back; the session ending is the signal to
+    finalize it."""
+    core, enq = _core_with_store_and_enqueuer()
+    core.on_control(Hello(session_id="s1", start_seq=0))
+    # No audio -> flush() returns [] -> no live enqueues from _emit.
+    core.on_control(Bye(session_id="s1"))
+
+    assert enq.qsize() == 1
+    assert enq._queue.get_nowait() == ("s1", True)
+
+
+def test_finalize_pending_session_enqueues_finalize_on_disconnect():
+    """Bug C (disconnect without bye): the adapter calls this on connection
+    close so a session dropped without a clean bye still finalizes its
+    trailing window. Covers the relay dropping mid-session."""
+    core, enq = _core_with_store_and_enqueuer()
+    core.on_control(Hello(session_id="s1", start_seq=0))
+
+    core.finalize_pending_session()
+
+    assert enq.qsize() == 1
+    assert enq._queue.get_nowait() == ("s1", True)
+
+
+def test_finalize_pending_session_is_noop_after_bye():
+    """No double-finalize: after bye the session is closed, so a disconnect
+    finalize on the same core is a no-op."""
+    core, enq = _core_with_store_and_enqueuer()
+    core.on_control(Hello(session_id="s1", start_seq=0))
+    core.on_control(Bye(session_id="s1"))
+    assert enq.qsize() == 1  # the bye finalize
+    enq._queue.get_nowait()
+
+    core.finalize_pending_session()  # already bye'd -> no-op
+    assert enq.qsize() == 0
+
+
+def test_finalize_pending_session_is_noop_when_no_session_open():
+    """A core that never saw hello (or already bye'd) enqueues nothing."""
+    core, enq = _core_with_store_and_enqueuer()
+    core.finalize_pending_session()
+    assert enq.qsize() == 0

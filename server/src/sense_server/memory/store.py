@@ -15,9 +15,17 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from .atom import MemoryAtom
-from .migrations import migrate_memory_atoms_table
+from .migrations import (
+    migrate_extraction_cursor_table,
+    migrate_memory_atoms_table,
+)
 
 _NO_CURSOR = -1  # nothing extracted yet (capture event seqs start at 0)
+# Stamp recorded for a cursor written with no version (the legacy / back-compat
+# path, e.g. the old per-event ExtractionPipeline, or a pre-versioning DB row
+# backfilled by the migration). Any versioned extractor treats 'legacy' as a
+# mismatch and re-extracts the session.
+_LEGACY_VERSION = "legacy"
 
 
 @runtime_checkable
@@ -34,12 +42,25 @@ class AtomStore(Protocol):
         """All atoms for a session, ordered by start_ms."""
         ...
 
-    def get_cursor(self, session_id: str) -> int:
-        """Seq of the last capture event extracted for this session (-1 if none)."""
+    def get_cursor(self, session_id: str, *, extractor_version: str | None = None) -> int:
+        """Seq of the last capture event extracted for this session (-1 if none).
+
+        When ``extractor_version`` is given, the cursor is only honoured if it
+        was stamped with the *same* version; a cursor stamped with a different
+        (or legacy) version is treated as ``-1`` so the caller re-extracts the
+        session. Passing ``None`` (the default) skips the version check and
+        returns the raw last seq — the original contract, preserved for
+        callers that don't track versions.
+        """
         ...
 
-    def set_cursor(self, session_id: str, seq: int) -> None:
-        """Record extraction progress for this session."""
+    def set_cursor(self, session_id: str, seq: int, *, extractor_version: str | None = None) -> None:
+        """Record extraction progress for this session.
+
+        ``extractor_version`` stamps the cursor with the version of the
+        extractor that advanced it; ``None`` records the ``'legacy'`` stamp
+        (back-compat with the old per-event pipeline and pre-versioning code).
+        """
         ...
 
 
@@ -55,7 +76,8 @@ class InMemoryAtomStore:
     def __init__(self) -> None:
         self._seen: set[str] = set()
         self._by_session: dict[str, list[MemoryAtom]] = {}
-        self._cursor: dict[str, int] = {}
+        # session_id -> (last_seq, extractor_version)
+        self._cursor: dict[str, tuple[int, str]] = {}
         self._lock = threading.Lock()
 
     def append(self, atom: MemoryAtom) -> bool:
@@ -74,13 +96,21 @@ class InMemoryAtomStore:
         with self._lock:
             return sorted(self._by_session.get(session_id, []), key=lambda a: a.start_ms)
 
-    def get_cursor(self, session_id: str) -> int:
+    def get_cursor(self, session_id: str, *, extractor_version: str | None = None) -> int:
         with self._lock:
-            return self._cursor.get(session_id, _NO_CURSOR)
+            stamped = self._cursor.get(session_id)
+        if stamped is None:
+            return _NO_CURSOR
+        last_seq, recorded_version = stamped
+        if extractor_version is None or recorded_version == extractor_version:
+            return last_seq
+        # Version mismatch: the cursor was advanced by a different extractor.
+        # Treat as unextracted so the caller re-processes the session.
+        return _NO_CURSOR
 
-    def set_cursor(self, session_id: str, seq: int) -> None:
+    def set_cursor(self, session_id: str, seq: int, *, extractor_version: str | None = None) -> None:
         with self._lock:
-            self._cursor[session_id] = seq
+            self._cursor[session_id] = (seq, extractor_version or _LEGACY_VERSION)
 
 
 class SqliteAtomStore:
@@ -112,14 +142,18 @@ class SqliteAtomStore:
             CREATE INDEX IF NOT EXISTS ix_atoms_session_start
                 ON memory_atoms (session_id, start_ms);
             CREATE TABLE IF NOT EXISTS extraction_cursor (
-                session_id TEXT PRIMARY KEY,
-                last_seq   INTEGER NOT NULL
+                session_id        TEXT PRIMARY KEY,
+                last_seq          INTEGER NOT NULL,
+                extractor_version TEXT NOT NULL DEFAULT 'legacy'
             );
             """
         )
         # Backfill the five version columns on legacy (pre-v1) databases.
         # Idempotent; safe to call on every startup.
         migrate_memory_atoms_table(self._conn)
+        # Backfill the cursor version column on pre-versioning databases.
+        # Idempotent; safe to call on every startup.
+        migrate_extraction_cursor_table(self._conn)
         self._conn.commit()
 
     def append(self, atom: MemoryAtom) -> bool:
@@ -182,18 +216,26 @@ class SqliteAtomStore:
             for r in rows
         ]
 
-    def get_cursor(self, session_id: str) -> int:
+    def get_cursor(self, session_id: str, *, extractor_version: str | None = None) -> int:
         with self._lock:
             row = self._conn.execute(
-                "SELECT last_seq FROM extraction_cursor WHERE session_id = ?",
+                "SELECT last_seq, extractor_version FROM extraction_cursor WHERE session_id = ?",
                 (session_id,),
             ).fetchone()
-        return row[0] if row is not None else _NO_CURSOR
+        if row is None:
+            return _NO_CURSOR
+        last_seq, recorded_version = row
+        if extractor_version is None or recorded_version == extractor_version:
+            return last_seq
+        # Version mismatch: the cursor was advanced by a different extractor.
+        # Treat as unextracted so the caller re-processes the session.
+        return _NO_CURSOR
 
-    def set_cursor(self, session_id: str, seq: int) -> None:
+    def set_cursor(self, session_id: str, seq: int, *, extractor_version: str | None = None) -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT OR REPLACE INTO extraction_cursor (session_id, last_seq) VALUES (?, ?)",
-                (session_id, seq),
+                "INSERT OR REPLACE INTO extraction_cursor "
+                "(session_id, last_seq, extractor_version) VALUES (?, ?, ?)",
+                (session_id, seq, extractor_version or _LEGACY_VERSION),
             )
             self._conn.commit()

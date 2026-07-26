@@ -34,3 +34,27 @@ def migrate_memory_atoms_table(conn: sqlite3.Connection) -> None:
         if name not in existing:
             conn.execute(f"ALTER TABLE memory_atoms ADD COLUMN {name} {decl}")
     conn.commit()
+
+
+def migrate_extraction_cursor_table(conn: sqlite3.Connection) -> None:
+    """Add the ``extractor_version`` column to ``extraction_cursor`` if absent.
+
+    The cursor records the last capture-event seq extracted for a session,
+    but that progress is only meaningful relative to the extractor that
+    produced it. ``extractor_version`` stamps the cursor with the version of
+    the extractor that advanced it; when the extraction algorithm or prompt
+    changes, the new version mismatches the stamped rows and the worker
+    re-extracts the session instead of skipping it.
+
+    Legacy rows (written by pre-versioning code, or by the old per-event
+    ``ExtractionPipeline``) backfill to ``'legacy'`` so any versioned
+    extractor treats them as stale on the next run. Idempotent and safe to
+    call on every startup.
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(extraction_cursor)")}
+    if "extractor_version" not in existing:
+        conn.execute(
+            "ALTER TABLE extraction_cursor ADD COLUMN extractor_version "
+            "TEXT NOT NULL DEFAULT 'legacy'"
+        )
+    conn.commit()

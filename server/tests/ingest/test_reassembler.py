@@ -121,3 +121,60 @@ def test_resume_with_start_seq_waits_for_the_anchor_and_tolerates_reorder():
     assert flushed == [b"a"]
     assert r.next_expected_seq == 501
     assert r.missing_range() == (501, 502)
+
+
+# ---- continue-stream gap timeout (Bug A) -------------------------------------
+
+
+def test_unfillable_head_gap_is_skipped_after_timeout():
+    """Bug A: on a continue-stream reconnect the relay resumes at a chunk_seq
+    that leaves a gap (the in-flight chunks were lost while the WebSocket was
+    down, and the BLE relay does not buffer past audio). The reassembler must
+    give up on that gap after a deadline and re-anchor at the lowest buffered
+    packet, so new audio reaches the transcriber. Without a deadline it holds
+    every future packet forever and no new audio is ever delivered (the 'fails
+    to capture any more audio after reconnect' incident)."""
+    now = [0]
+    clock = lambda: now[0]
+    r = SessionReassembler(start_seq=0, gap_timeout_ms=3000, clock=clock)
+
+    # anchor at 100, deliver it
+    assert r.accept(pkt(100, [b"a"])) == [b"a"]
+    # 102 arrives -> head gap [101,102); held
+    assert r.accept(pkt(102, [b"c"])) == []
+    assert r.missing_range() == (101, 102)
+    # more future packets buffer behind the gap
+    assert r.accept(pkt(103, [b"d"])) == []
+    assert r.accept(pkt(104, [b"e"])) == []
+
+    # under the deadline: a new packet still buffers, gap unchanged
+    now[0] = 2000
+    assert r.accept(pkt(105, [b"f"])) == []
+    assert r.missing_range() == (101, 102)
+
+    # past the deadline: the next accept re-anchors at 102, draining 102..105,
+    # then delivers the incoming 106.
+    now[0] = 3500
+    out = r.accept(pkt(106, [b"g"]))
+    assert out == [b"c", b"d", b"e", b"f", b"g"]
+    assert r.missing_range() is None
+    assert r.next_expected_seq == 107
+
+
+def test_head_gap_that_backfills_before_timeout_is_not_skipped():
+    """The timeout only fires on an UNFILLED gap. If the missing chunk
+    backfills in time, the reassembler must flush it in order — not skip it."""
+    now = [0]
+    clock = lambda: now[0]
+    r = SessionReassembler(start_seq=0, gap_timeout_ms=3000, clock=clock)
+    r.accept(pkt(100, [b"a"]))
+    assert r.accept(pkt(102, [b"c"])) == []  # gap [101,102)
+    now[0] = 1000
+    assert r.accept(pkt(103, [b"d"])) == []  # still under deadline, buffers
+
+    # backfill arrives before the timeout
+    now[0] = 1500
+    flushed = r.accept(pkt(101, [b"b"]))  # fills the gap
+    assert flushed == [b"b", b"c", b"d"]  # 101 + drained 102,103
+    assert r.missing_range() is None
+    assert r.next_expected_seq == 104

@@ -314,8 +314,15 @@ async def test_listener_does_not_block_worker_run_loop():
 
     try:
         # Enqueue N sessions quickly. The queue is drained by _run.
+        # _safe_process runs the live path (finalize=False), so each session
+        # needs a CLOSED window for the LLM to run and produce an atom that
+        # fires the listener. _build_worker uses the default window_ms=60s
+        # with start_ms=seq*1000, so event 60 (start_ms=60000) closes the
+        # window started by event 0; that window is extracted and the
+        # trailing [e60] window is held back.
         for i in range(n_listeners):
             events.append(_event(0, f"s{i}", "hello"))
+            events.append(_event(60, f"s{i}", "hello"))
             enq.enqueue(f"s{i}")
 
         # Wait for all listeners to complete. With the fix, this is

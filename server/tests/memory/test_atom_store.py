@@ -148,3 +148,71 @@ def test_sqlite_atom_store_handles_concurrent_writes(tmp_path):
 
     assert errors == [], f"concurrent write errors: {errors}"
     assert len(store.atoms("s1")) == 2
+
+
+# --- version-aware extraction cursor ---------------------------------------
+#
+# The cursor records "the last capture event seq already extracted" so the
+# extraction pass is resumable. But the cursor is only meaningful relative to
+# the extractor that produced it: if the extraction algorithm or prompt
+# changes, a cursor stamped with the old version must be treated as stale
+# (i.e. "unextracted") so the new extractor re-processes those events.
+#
+# This is the structural fix for the live incident where the per-event
+# extractor advanced every session's cursor to max while producing ~0 atoms;
+# the windowed extractor that replaced it then saw `pending` empty for every
+# historical session and silently skipped them — transcripts piled up, no
+# memories ever formed. A versioned cursor makes the next algorithm change
+# invalidate the old cursors automatically instead of locking the data out.
+
+
+def test_get_cursor_returns_last_seq_when_version_matches(store):
+    store.set_cursor("s1", 5, extractor_version="v1")
+    assert store.get_cursor("s1", extractor_version="v1") == 5
+
+
+def test_get_cursor_treats_mismatched_version_as_unextracted(store):
+    store.set_cursor("s1", 5, extractor_version="v1")
+    # a different extractor version must see the cursor as stale (-1)
+    assert store.get_cursor("s1", extractor_version="v2") == -1
+
+
+def test_set_cursor_overwrites_with_new_version(store):
+    store.set_cursor("s1", 5, extractor_version="v1")
+    store.set_cursor("s1", 7, extractor_version="v2")
+    # the v1 cursor is gone; only the v2 stamp remains
+    assert store.get_cursor("s1", extractor_version="v1") == -1
+    assert store.get_cursor("s1", extractor_version="v2") == 7
+
+
+def test_set_cursor_without_version_records_legacy(store):
+    """A cursor written with no version (the legacy / back-compat path,
+    e.g. the old per-event ExtractionPipeline) is stamped 'legacy' and must
+    be treated as stale by any versioned extractor — so a new extractor
+    re-processes the session instead of skipping it."""
+    store.set_cursor("s1", 9)  # no version → legacy
+    assert store.get_cursor("s1", extractor_version="v1") == -1
+    # but an unversioned read (back-compat) still sees the seq
+    assert store.get_cursor("s1") == 9
+
+
+def test_get_cursor_without_version_arg_is_backwards_compatible(store):
+    """Callers that don't pass a version get the raw last_seq regardless of
+    the recorded version — preserving the original contract for the many
+    existing call sites (tests, the old pipeline) that don't track versions."""
+    store.set_cursor("s1", 5, extractor_version="v1")
+    assert store.get_cursor("s1") == 5
+    store.set_cursor("s1", 6, extractor_version="v2")
+    assert store.get_cursor("s1") == 6
+
+
+def test_sqlite_legacy_cursor_row_is_treated_as_stale(tmp_path):
+    """A pre-versioning database has extraction_cursor rows with no version
+    column. The migration backfills 'legacy'; a versioned extractor must
+    re-extract those sessions rather than skip them."""
+    store = SqliteAtomStore(tmp_path / "atoms.db")
+    store.set_cursor("s1", 12)  # legacy stamp
+    assert store.get_cursor("s1", extractor_version="v1") == -1
+    # and a fresh versioned write supersedes the legacy row
+    store.set_cursor("s1", 12, extractor_version="v1")
+    assert store.get_cursor("s1", extractor_version="v1") == 12

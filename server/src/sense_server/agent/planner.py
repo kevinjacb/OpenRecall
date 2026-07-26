@@ -31,6 +31,7 @@ the :class:`Guardrails` seam, which the caller can swap.
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Protocol, runtime_checkable
 
@@ -39,6 +40,7 @@ from ..commands.model import Command
 from ..contracts.clock import Clock
 from ..contracts.id_generator import IdGenerator
 from ..contracts.metrics import Metrics
+
 from ..contracts.types import (
     AgentAction,
     AgentActionKind,
@@ -59,6 +61,8 @@ from ..contracts.types import (
 )
 from .guardrails_command import CommandGuardrails, RejectionReason as CommandRejectionReason
 from .validator_command import CommandValidator
+
+log = logging.getLogger(__name__)
 
 _REFUSE = GuardOutcome.REFUSE
 
@@ -108,11 +112,16 @@ class Planner:
         self._dispatcher = dispatcher
 
     async def plan(self, ctx: PlannerContext) -> PlannerResult:
+        trigger_kind = type(ctx.trigger).__name__
         # 1. RETRIEVE
         t0 = time.monotonic()
         retrieved = self._do_retrieve(ctx)
         retrieval_latency = int((time.monotonic() - t0) * 1000)
         self._metrics.observe(Metrics.RETRIEVAL_LATENCY_MS, retrieval_latency)
+        log.info(
+            "planner_retrieve trigger=%s session=%s atoms=%d retrieval_ms=%d",
+            trigger_kind, ctx.session_id, len(retrieved.atoms), retrieval_latency,
+        )
 
         # P2-commands: do NOT short-circuit on empty retrieval. The
         # previous short-circuit saved one LLM call per empty-retrieval
@@ -152,6 +161,14 @@ class Planner:
         llm_result = await self._llm.reason(prompt)
         llm_latency = int((time.monotonic() - t1) * 1000)
         self._metrics.observe(Metrics.LLM_LATENCY_MS, llm_latency)
+        log.info(
+            "planner_llm trigger=%s session=%s kind=%s confidence=%s "
+            "parse_error=%s llm_ms=%d",
+            trigger_kind, ctx.session_id,
+            llm_result.parsed.kind if llm_result.parsed else None,
+            llm_result.parsed.confidence if llm_result.parsed else None,
+            llm_result.parse_error, llm_latency,
+        )
 
         # 5. VALIDATE
         t2 = time.monotonic()

@@ -106,7 +106,12 @@ class ExtractionEnqueuer:
     ) -> None:
         if capacity <= 0:
             raise ValueError("capacity must be positive")
-        self._queue: asyncio.Queue[str] = asyncio.Queue(maxsize=capacity)
+        # Each item is (session_id, finalize). ``finalize=False`` is the live
+        # path (hold the trailing growing window back); ``finalize=True`` is
+        # the session-end path (extract the trailing window too) driven by
+        # bye / connection close so an ended session forms memories without a
+        # server restart (Bug C).
+        self._queue: asyncio.Queue[tuple[str, bool]] = asyncio.Queue(maxsize=capacity)
         self._metrics = metrics
         self._worker: ExtractionWorker | None = None
         # The loop the consumer (worker._run) runs on. Captured by
@@ -157,7 +162,9 @@ class ExtractionEnqueuer:
         self._worker = worker
 
     def enqueue(self, session_id: str) -> None:
-        """Enqueue a session for extraction. Drops + counts on overflow.
+        """Enqueue a session for a *live* extraction pass (``finalize=False``):
+        the trailing still-growing 60s window is held back. Called by the
+        gateway hot path after every successful transcript append.
 
         Thread safety:
 
@@ -169,18 +176,31 @@ class ExtractionEnqueuer:
           the loop thread. The basic enqueue/overflow tests use
           this path; they never call enqueue from a worker thread.
         """
+        self._enqueue(session_id, finalize=False)
+
+    def enqueue_finalize(self, session_id: str) -> None:
+        """Enqueue a ``finalize=True`` extraction pass: extract the trailing
+        partial window too, so an ended session forms memories without a
+        server restart (Bug C). Called by the gateway on bye and on
+        connection close. Same cross-thread safety as :meth:`enqueue`.
+        """
+        self._enqueue(session_id, finalize=True)
+
+    def _enqueue(self, session_id: str, *, finalize: bool) -> None:
         if self._loop is not None:
             # Cross-thread producer path. The loop will run the
             # actual put_nowait on its own thread, so the asyncio
             # queue internals are never touched by the calling
             # thread. Overflow is detected on the loop thread; we
             # count it there too.
-            self._loop.call_soon_threadsafe(self._enqueue_on_loop, session_id)
+            self._loop.call_soon_threadsafe(
+                self._enqueue_on_loop, session_id, finalize,
+            )
             return
         # Loop-thread-only fallback.
-        self._enqueue_on_loop(session_id)
+        self._enqueue_on_loop(session_id, finalize)
 
-    def _enqueue_on_loop(self, session_id: str) -> None:
+    def _enqueue_on_loop(self, session_id: str, finalize: bool) -> None:
         """The actual put_nowait. Always runs on the loop thread.
 
         Called either directly (no-loop fallback) or via
@@ -189,10 +209,18 @@ class ExtractionEnqueuer:
         consistent with the queue state.
         """
         try:
-            self._queue.put_nowait(session_id)
+            self._queue.put_nowait((session_id, finalize))
+            log.debug(
+                "extraction_enqueue session=%s finalize=%s qsize=%d",
+                session_id, finalize, self._queue.qsize(),
+            )
         except asyncio.QueueFull:
             if self._metrics is not None:
                 self._metrics.increment(Metrics.EXTRACTION_QUEUE_OVERFLOW_TOTAL)
+            log.warning(
+                "extraction_enqueue_overflow session=%s finalize=%s",
+                session_id, finalize,
+            )
 
     def enqueue_session(self, session_id: str) -> None:
         """Compatibility shim — same as :meth:`enqueue`."""
@@ -201,7 +229,7 @@ class ExtractionEnqueuer:
     def qsize(self) -> int:
         return self._queue.qsize()
 
-    async def get(self) -> str:
+    async def get(self) -> tuple[str, bool]:
         return await self._queue.get()
 
     def task_done(self) -> None:
@@ -233,6 +261,7 @@ class ExtractionWorker:
         enqueuer: ExtractionEnqueuer | None = None,
         listeners: list[Callable[[SessionCompletion], Awaitable[None]]] | None = None,
         max_parse_failures: int = 5,
+        extractor_version: str | None = None,
     ) -> None:
         self._events = events
         self._atoms = atoms
@@ -242,6 +271,14 @@ class ExtractionWorker:
         self._enqueuer.attach(self)
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        # Version of the extraction algorithm+prompt this worker runs. Stamps
+        # the per-session cursor so a version bump invalidates old cursors and
+        # the worker re-extracts historical events instead of skipping them.
+        # Defaults to the pipeline's own version (ExtractionStage.version).
+        self._extractor_version = (
+            extractor_version if extractor_version is not None
+            else getattr(pipeline, "version", None)
+        )
         # P3: listeners invoked after every successful extraction.
         # Snapshot-iterated in process_session so a listener that
         # calls remove_listener during dispatch doesn't mutate the
@@ -437,7 +474,7 @@ class ExtractionWorker:
 
         task.add_done_callback(_safe)
 
-    def process_session(self, session_id: str) -> list:
+    def process_session(self, session_id: str, *, finalize: bool = True) -> list:
         """Run the pipeline for one session. H7: cursor advances on success only.
 
         Records the EXTRACTION_LATENCY_MS histogram on every call. On
@@ -457,6 +494,17 @@ class ExtractionWorker:
         Returns the atoms that were newly indexed. Raises on failure;
         callers (reconcile / the queue loop) are responsible for catching.
 
+        ``finalize`` is forwarded to :meth:`Pipeline.run`. The live queue
+        path passes ``finalize=False`` so the trailing still-growing window
+        is held back — the cursor then advances only to ``consumed_seq``
+        (the last closed window's last event), NOT to ``last_pending_seq``.
+        Reconcile-on-start and the batch scripts use the default
+        ``finalize=True`` so a short, ended session still extracts its
+        trailing window. Holding the trailing window back is what keeps the
+        60s windowing meaningful on the live path: without it the cursor
+        advanced past every ~1s fragment and the LLM was called on fragments
+        (burning tokens, returning [], never forming memories).
+
         A *persistent* parse failure is dead-lettered: after
         ``max_parse_failures`` consecutive :class:`LLMParseError` on the
         same session, the cursor advances past the stuck batch so the
@@ -468,21 +516,46 @@ class ExtractionWorker:
         """
         start = time.monotonic()
         # 1. read events past the cursor
-        cursor = self._atoms.get_cursor(session_id)
+        cursor = self._atoms.get_cursor(session_id, extractor_version=self._extractor_version)
         all_events = self._events.events(session_id)
         pending = [e for e in all_events if e.seq > cursor]
         if not pending:
+            log.debug(
+                "extraction_skip session=%s cursor=%d (no pending events)",
+                session_id, cursor,
+            )
             self._metrics.observe(
                 Metrics.EXTRACTION_LATENCY_MS,
                 (time.monotonic() - start) * 1000.0,
             )
             return []
         last_pending_seq = max(e.seq for e in pending)
+        log.info(
+            "extraction_process_start session=%s cursor=%d pending=%d "
+            "last_pending_seq=%d finalize=%s",
+            session_id, cursor, len(pending), last_pending_seq, finalize,
+        )
+        # The safe cursor: how far the pipeline can advance. In finalize
+        # mode this is last_pending_seq (the trailing window is extracted
+        # too). In live mode it is consumed_seq — the last CLOSED window's
+        # last event — and the trailing still-growing window is held back
+        # (its events remain pending for the next call). Computed here,
+        # before the raising pipeline call, so the dead-letter path can
+        # advance past the stuck closed window without re-running the LLM.
+        if finalize:
+            advance_to: int | None = last_pending_seq
+        else:
+            advance_to = self._pipeline.consumed_seq(pending, finalize=False)
         # 2. run the pipeline (extract -> version -> embed -> index).
         #    The pipeline may raise; the cursor must NOT advance — unless
         #    this is the Nth consecutive parse failure (dead-letter, below).
         try:
-            indexed = self._pipeline.run(session_id, pending)
+            indexed = self._pipeline.run(session_id, pending, finalize=finalize)
+            log.info(
+                "extraction_process_ok session=%s indexed=%d advance_to=%s "
+                "finalize=%s",
+                session_id, len(indexed), advance_to, finalize,
+            )
         except LLMParseError as exc:
             # Parse failure is structurally distinct from an indexing
             # failure. Count it on its own metric (tagged with the
@@ -507,7 +580,14 @@ class ExtractionWorker:
                 # stops re-running it on every new enqueue. The events
                 # remain in the event store for re-ingestion after a
                 # prompt/model fix; this only bounds the retry storm.
-                self._atoms.set_cursor(session_id, last_pending_seq)
+                # In live mode advance_to holds the trailing growing window
+                # back (it was not extracted); only the closed windows the
+                # LLM actually ran on are skipped.
+                if advance_to is not None:
+                    self._atoms.set_cursor(
+                        session_id, advance_to,
+                        extractor_version=self._extractor_version,
+                    )
                 self._parse_failures.pop(session_id, None)
                 self._metrics.increment(
                     Metrics.EXTRACTION_DEAD_LETTER_TOTAL,
@@ -517,7 +597,7 @@ class ExtractionWorker:
                     "extraction_dead_lettered",
                     extra={
                         "session_id": session_id,
-                        "advanced_to": last_pending_seq,
+                        "advanced_to": advance_to,
                         "batch_size": len(pending),
                         "attempts": self._max_parse_failures,
                         "error": str(exc),
@@ -541,7 +621,24 @@ class ExtractionWorker:
             raise
         # 3. advance the cursor to the last event seq we just processed.
         #    H7: only after extraction AND indexing have both succeeded.
-        self._atoms.set_cursor(session_id, last_pending_seq)
+        #    In live mode a None advance_to means no closed window was
+        #    extracted (only a growing trailing window) — leave the cursor
+        #    where it is so the events are re-seen and the window can grow.
+        if advance_to is not None:
+            self._atoms.set_cursor(
+                session_id, advance_to,
+                extractor_version=self._extractor_version,
+            )
+            log.info(
+                "extraction_cursor_advance session=%s cursor=%d->%d",
+                session_id, cursor, advance_to,
+            )
+        else:
+            log.info(
+                "extraction_cursor_held session=%s cursor=%d (no closed window; "
+                "trailing growing window held back)",
+                session_id, cursor,
+            )
         # A successful extraction resets the consecutive-failure counter.
         self._parse_failures.pop(session_id, None)
         # 4. P3: dispatch to listeners ONLY when new atoms were indexed.
@@ -559,7 +656,18 @@ class ExtractionWorker:
                 completed_at=datetime.now(tz=timezone.utc),
                 event_id_range=(pending[0].seq, pending[-1].seq),
             )
+            log.info(
+                "extraction_dispatch_listeners session=%s atoms=%d "
+                "listeners=%d seq_range=[%d,%d]",
+                session_id, len(indexed), len(self._listeners),
+                pending[0].seq, pending[-1].seq,
+            )
             self._dispatch_listeners(completion)
+        else:
+            log.debug(
+                "extraction_no_dispatch session=%s (no new atoms indexed)",
+                session_id,
+            )
         self._metrics.observe(
             Metrics.EXTRACTION_LATENCY_MS,
             (time.monotonic() - start) * 1000.0,
@@ -584,6 +692,7 @@ class ExtractionWorker:
         ``list(self._by_session.keys())`` against the in-memory store.
         """
         sessions = list(self._events.sessions())
+        log.info("extraction_reconcile_start sessions=%d", len(sessions))
         indexed: list = []
         for sid in sorted(sessions):
             try:
@@ -600,6 +709,7 @@ class ExtractionWorker:
                 )
                 # Swallow: failure isolation — keep going.
                 continue
+        log.info("extraction_reconcile_done sessions=%d atoms=%d", len(sessions), len(indexed))
         return indexed
 
     # --- async lifecycle --------------------------------------------------
@@ -629,6 +739,7 @@ class ExtractionWorker:
         # session is correctly re-attempted on the next start.
         await asyncio.to_thread(self._safe_reconcile)
         self._task = asyncio.create_task(self._run(), name="extraction-worker")
+        log.info("extraction_worker_started")
 
     async def stop(self) -> None:
         self._stop.set()
@@ -654,20 +765,36 @@ class ExtractionWorker:
                     p.cancel()
                 if stop_task in done:
                     return
-                session_id = get_task.result()
+                session_id, finalize = get_task.result()
                 self._enqueuer.task_done()
+                log.debug(
+                    "extraction_drain session=%s finalize=%s", session_id, finalize,
+                )
                 # Process on a worker thread so the embedder / indexer
-                # don't block the event loop (H4 spirit).
-                await asyncio.to_thread(self._safe_process, session_id)
+                # don't block the event loop (H4 spirit). The live path
+                # enqueues finalize=False after every transcript event to
+                # hold the trailing still-growing 60s window back (so the
+                # cursor advances only past closed windows and the LLM
+                # doesn't burn tokens on ~1s fragments). The session-end
+                # path (bye / connection close) enqueues finalize=True to
+                # extract the trailing partial window too — Bug C: an ended
+                # session forms memories without a server restart.
+                await asyncio.to_thread(self._safe_process, session_id, finalize)
             except Exception:
                 # Defensive: never let an unhandled exception kill the loop.
                 continue
 
-    def _safe_process(self, session_id: str) -> None:
+    def _safe_process(self, session_id: str, finalize: bool = False) -> None:
         """Wrap :meth:`process_session` in latency + error metrics."""
         start = time.monotonic()
         try:
-            self.process_session(session_id)
+            # ``finalize`` is chosen by the enqueue side: the live queue
+            # path enqueues False (hold the trailing growing window back);
+            # the session-end path enqueues True (extract the trailing
+            # partial window too). Reconcile-on-start calls
+            # ``reconcile`` -> ``process_session`` directly with
+            # finalize=True, bypassing this wrapper.
+            self.process_session(session_id, finalize=finalize)
             self._metrics.observe(
                 Metrics.EXTRACTION_LATENCY_MS,
                 (time.monotonic() - start) * 1000.0,

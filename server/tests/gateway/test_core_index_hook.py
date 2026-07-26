@@ -107,24 +107,46 @@ def test_core_with_index_records_newly_stored_events():
     assert s.transcript_count == 5
 
 
-def test_core_with_index_does_not_record_duplicates():
-    """A replay that the store dedupes (event_id collision) must NOT bump the index.
-
-    Under streaming, the first pass records 5 events (one per hop).
-    The second pass replays the same 5 events; the store dedupes by
-    event_id, so the replay is a no-op. The index records only the
-    first pass.
+def test_core_with_index_records_continued_events_on_reconnect():
+    """A reconnect continues the session with NEW audio (the BLE relay does
+    not replay — it resumes at the device's current chunk_seq). The fresh
+    GatewayCore continues ``event_seq`` past the events already in the store,
+    so the new transcripts get fresh event_ids, are stored, and the index
+    records them. Resetting event_seq to 0 dropped them as duplicates
+    (Bug B). The ``if stored`` guard in ``_emit`` remains as defense-in-depth
+    against any event_id collision, but the continue-stream fix means the
+    core no longer feeds colliding ids on reconnect.
     """
     core, store, index = make_core_with_index(window_ms=100)
-    for _ in range(2):  # same session captured twice
-        core.on_control(Hello(session_id="s1", start_seq=0))
-        core.on_audio(audio_bytes(0, n_frames=5))
-        core.on_control(Bye(session_id="s1"))
-
-    # First pass: 5 events. Second pass: 0 (all event_ids collide; store
-    # dedupes). The replay is a no-op for the store.
-    assert len(store.events("s1")) == 5
+    # Connection 1: 5 events s1:0..4.
+    core.on_control(Hello(session_id="s1", start_seq=0))
+    core.on_audio(audio_bytes(0, n_frames=5))
+    core.on_control(Bye(session_id="s1"))
     assert index.summary("s1").event_count == 5
+
+    # Connection 2 (reconnect): a fresh core sharing the SAME store + index,
+    # receiving new audio at a later chunk_seq. event_seq continues to 5 ->
+    # events s1:5..9 stored and recorded.
+    def factory(start_seq: int) -> AudioIngestPipeline:
+        return AudioIngestPipeline(
+            reassembler=SessionReassembler(start_seq=start_seq),
+            decoder=FakeDecoder(),
+            transcriber=FakeTranscriber(),
+            hop_ms=20,
+            window_ms=100,
+            sample_rate=16000,
+        )
+
+    core2 = GatewayCore(
+        pipeline_factory=factory, event_store=store, session_index=index,
+    )
+    core2.on_control(Hello(session_id="s1", start_seq=0))
+    core2.on_audio(audio_bytes(100, n_frames=5))
+    core2.on_control(Bye(session_id="s1"))
+
+    assert len(store.events("s1")) == 10
+    assert [e.seq for e in store.events("s1")] == list(range(10))
+    assert index.summary("s1").event_count == 10
 
 
 def test_core_without_index_works_as_before():

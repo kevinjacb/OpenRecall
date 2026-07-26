@@ -135,6 +135,82 @@ def test_extraction_stage_multiple_memories_in_a_window_indexed_by_position():
     assert [a.kind for a in atoms] == ["fact", "task"]
 
 
+# --- stage 1: live-path window hold-back -------------------------------------
+#
+# The gateway enqueues the session for extraction after EVERY transcript
+# event, and the worker's process_session advances the cursor past every
+# batch. On the live path each batch is therefore only the *new* events
+# since the last call — a ~1s fragment — so the 60s windowing never sees a
+# full window and the LLM is called on fragments (burning tokens, returning
+# [], never forming memories). The fix: in live mode (finalize=False) the
+# stage extracts only *closed* windows (a subsequent event already started a
+# new window) and holds the trailing still-growing window back, reporting
+# consumed_seq so the worker advances the cursor only past closed windows.
+
+
+def test_extraction_stage_live_holds_back_single_growing_window():
+    """In live mode a single still-growing window is NOT extracted — the
+    LLM is not called on a fragment. consumed_seq is None so the worker
+    leaves the cursor where it is and the events are re-seen next call."""
+    calls: list[str] = []
+
+    class Tracking(FixedExtractor):
+        def extract(self, text: str) -> list[ExtractedMemory]:
+            calls.append(text)
+            return super().extract(text)
+
+    stage = ExtractionStage(extractor=Tracking(), clock=lambda: FIXED, window_ms=60_000)
+    events = [_event(0, text="a"), _event(1, text="b")]  # both within 60s -> one trailing window
+    atoms, consumed = stage.extract("s1", events, finalize=False)
+    assert atoms == []
+    assert calls == []  # LLM not called on the fragment
+    assert consumed is None  # nothing safe to advance past
+
+
+def test_extraction_stage_finalize_extracts_trailing_window():
+    """finalize=True (the reconcile/batch path) extracts the trailing
+    window too, even though no further event will close it. consumed_seq
+    reaches the last event."""
+    stage = ExtractionStage(extractor=FixedExtractor(), clock=lambda: FIXED)
+    events = [_event(0, text="a"), _event(1, text="b")]
+    atoms, consumed = stage.extract("s1", events, finalize=True)
+    assert [a.text for a in atoms] == ["a b"]
+    assert consumed == 1
+
+
+def test_extraction_stage_live_extracts_closed_window_holds_new_trailing():
+    """When an event closes a window and starts a new one, live mode
+    extracts the closed window and holds the new trailing window back.
+    consumed_seq is the last event of the closed window only."""
+    # window_ms=2000: e0(0ms),e1(1000ms) -> W1; e2(2000ms) -> W2 (trailing)
+    stage = ExtractionStage(extractor=FixedExtractor(), clock=lambda: FIXED, window_ms=2000)
+    events = [_event(0, text="a"), _event(1, text="b"), _event(2, text="c")]
+    atoms, consumed = stage.extract("s1", events, finalize=False)
+    assert [a.text for a in atoms] == ["a b"]  # W1 extracted
+    assert consumed == 1  # last seq of W1; W2 (e2) held back
+
+
+def test_extraction_stage_consumed_seq_helper():
+    """consumed_seq() mirrors which windows extract() would consume, so
+    the worker can compute the safe cursor without re-running the LLM."""
+    stage = ExtractionStage(extractor=FixedExtractor(), clock=lambda: FIXED, window_ms=2000)
+    assert stage.consumed_seq([], finalize=False) is None
+    # one growing window: held back in live mode
+    assert stage.consumed_seq([_event(0), _event(1)], finalize=False) is None
+    # closed window present: advance to its last seq
+    assert stage.consumed_seq([_event(0), _event(1), _event(2)], finalize=False) == 1
+    # finalize mode: trailing window counts
+    assert stage.consumed_seq([_event(0), _event(1)], finalize=True) == 1
+
+
+def test_extraction_stage_run_is_backcompat_finalize_true_wrapper():
+    """run() (used by existing batch tests) keeps returning just atoms and
+    defaults to finalize=True so the trailing window is extracted."""
+    stage = ExtractionStage(extractor=FixedExtractor(), clock=lambda: FIXED)
+    atoms = stage.run("s1", [_event(0, text="a"), _event(1, text="b")])
+    assert [a.text for a in atoms] == ["a b"]
+
+
 # --- stage 2: version-stamp ---------------------------------------------------
 
 

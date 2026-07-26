@@ -78,12 +78,15 @@ def main() -> None:
                     help="HTTP control API port (operator/phone-facing)")
     args = ap.parse_args()
 
-    # Bring-up observability: INFO shows the relay flow (connection, hello, each
-    # audio packet, reassembler delivery, window-fill, transcripts, events).
-    # Drop to WARNING once it's stable; bump to DEBUG for per-frame decode/ack
-    # detail. Format includes time + logger name so the source is obvious.
+    # Bring-up observability: INFO shows the full relay + memory + proactive
+    # flow (connection, hello, transcripts, event append, extraction enqueue,
+    # windowing, LLM calls, cursor advance, proactive triggers). DEBUG adds
+    # per-frame / per-event detail. Override with SENSE_LOG_LEVEL (e.g.
+    # SENSE_LOG_LEVEL=WARNING to quiet it once stable, =DEBUG for everything).
+    # Format includes time + logger name so the source is obvious.
+    _log_level = __import__("os").environ.get("SENSE_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
-        level=logging.WARNING,
+        level=getattr(logging, _log_level, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
@@ -122,10 +125,20 @@ def main() -> None:
     embedder = OpenAICompatibleEmbedder.from_env(__import__("os").environ)
     llm_chat = OpenAICompatibleChatModel.from_env(__import__("os").environ)
     extractor = LLMExtractor(llm_chat)
+    # EXTRACTOR_VERSION: identity of the extraction algorithm + prompt. The
+    # worker stamps the per-session cursor with this; bumping it invalidates
+    # every existing cursor so the new extractor re-extracts historical
+    # transcripts instead of silently skipping them. Bump when you change the
+    # windowing, the prompt in memory/extract.py, or the extractor model in a
+    # way that should re-form memories. Legacy cursors (stamped 'legacy' by
+    # pre-versioning code / the old per-event pipeline) mismatch this and are
+    # re-extracted automatically on the next worker start.
+    EXTRACTOR_VERSION = "v1"
     pipeline = Pipeline(
         extraction=ExtractionStage(
             extractor=extractor,
             clock=lambda: __import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            version=EXTRACTOR_VERSION,
         ),
         version_stamp=VersionStampStage(),
         embedding=EmbeddingStage(embedder=embedder),

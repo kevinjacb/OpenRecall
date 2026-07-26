@@ -14,6 +14,7 @@ used here; it is reserved for end-of-day bulk video retrieval.
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from ..ingest.pipeline import AudioIngestPipeline
@@ -33,6 +34,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _monotonic_ms() -> float:
+    """A monotonic clock in milliseconds for the reassembler's gap deadline."""
+    return time.monotonic() * 1000.0
+
+
 def handle_message(core: GatewayCore, message: str | bytes) -> list[str]:
     """Route one inbound frame to the core; return outbound §E messages as JSON."""
     if isinstance(message, (bytes, bytearray, memoryview)):
@@ -48,6 +54,7 @@ def build_pipeline_factory(
     model: str | None = None,
     use_streaming: bool = True,
     whisper_config=None,
+    gap_timeout_ms: int | None = 3000,
 ) -> PipelineFactory:
     """Factory wiring the real Opus decoder + MLX-whisper transcriber per session.
 
@@ -113,7 +120,14 @@ def build_pipeline_factory(
                 MlxWhisperTranscriber(model) if model else MlxWhisperTranscriber()
             )
         return AudioIngestPipeline(
-            reassembler=SessionReassembler(start_seq=start_seq),
+            reassembler=SessionReassembler(
+                start_seq=start_seq,
+                gap_timeout_ms=gap_timeout_ms,
+                # Bug A: a monotonic-ms clock so an unfillable head gap (lost
+                # chunks after a reconnect) is skipped after gap_timeout_ms
+                # instead of stalling the stream forever.
+                clock=_monotonic_ms,
+            ),
             decoder=OpusStreamDecoder(),
             transcriber=transcriber,
             hop_ms=hop_ms,
@@ -207,20 +221,35 @@ async def serve(
                 # will simply be the empty bucket).
                 while True:
                     await proactive_outbox.wait()
-                    # We don't know the session_id here yet — drain
-                    # every bucket. In practice each connection has at
-                    # most one active session, so the cost is O(1).
-                    for bucket in list(proactive_outbox._by_session.keys()):  # noqa: SLF001
-                        for msg in proactive_outbox.drain(bucket):
-                            try:
-                                await ws.send(msg.model_dump_json())
-                            except ConnectionClosed:
-                                return
-                            except Exception:
-                                logger.exception(
-                                    "proactive_send_failed peer=%s", peer,
-                                )
-                                return
+                    # drain_all() clears the wake event *before* draining, so
+                    # a bare signal() (e.g. the connection-close wake below)
+                    # with no pending message does not leave the event set —
+                    # which would make wait() return immediately forever
+                    # (asyncio.Event.wait() does not yield when already set)
+                    # and hot-spin at 100% CPU, starving the event loop (the
+                    # 'works for ~20s then every connection times out, no
+                    # error in the terminal' incident). In practice each
+                    # connection has at most one active session, so the cost
+                    # is O(1).
+                    drained = proactive_outbox.drain_all()
+                    if drained:
+                        logger.info(
+                            "proactive_drain peer=%s messages=%d", peer, len(drained),
+                        )
+                    for msg in drained:
+                        try:
+                            await ws.send(msg.model_dump_json())
+                            logger.info(
+                                "proactive_sent peer=%s session=%s text=%r",
+                                peer, msg.session_id, msg.text[:200],
+                            )
+                        except ConnectionClosed:
+                            return
+                        except Exception:
+                            logger.exception(
+                                "proactive_send_failed peer=%s", peer,
+                            )
+                            return
             proactive_task = asyncio.create_task(_drain_proactive())
         try:
             async for message in ws:
@@ -250,11 +279,23 @@ async def serve(
         except ConnectionClosed:
             pass  # client went away (possibly mid-transcribe) — a normal disconnect
         finally:
+            # Bug C: a relay disconnect without a clean bye leaves the live
+            # extraction cursor holding the trailing partial 60s window back.
+            # Finalize the session this core was carrying so the last ~up-to-60s
+            # of speech forms memories without waiting for a server restart.
+            # No-op if the client already said bye (bye enqueued its own
+            # finalize and cleared the session id) or never said hello.
+            core.finalize_pending_session()
             if proactive_task is not None:
-                # Wake the drain task if it's parked on the outbox event
-                # so the cancellation can be observed promptly.
-                if proactive_outbox is not None:
-                    proactive_outbox.signal()
+                # Cancel the drain task. We do NOT signal() the outbox here —
+                # the event is shared process-wide, so a bare signal() on every
+                # disconnect would wake every other connection's drain task for
+                # a no-op cycle (a thundering-herd poke that fires on every relay
+                # reconnect), and before the drain_all() fix a bare set with no
+                # bucket to drain left the event set and hot-spun the loop.
+                # task.cancel() injects CancelledError into the parked wait()
+                # directly, so the event does not need to be set to observe the
+                # cancellation promptly.
                 proactive_task.cancel()
                 try:
                     await proactive_task

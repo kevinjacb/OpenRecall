@@ -86,3 +86,41 @@ def test_outbox_wait_and_signal_semantics():
         assert result is False
     finally:
         loop.close()
+
+
+def test_drain_all_clears_event_after_bare_signal():
+    """A bare signal() (e.g. the adapter's connection-close wake) sets the
+    event with no enqueued message. drain_all() must clear the event so the
+    drain loop's next wait() blocks — otherwise wait() returns immediately
+    forever (it does not yield when the event is already set), hot-spinning
+    at 100% CPU and starving the event loop. This is the 'server works for
+    ~20s then every connection times out, no error in the terminal' incident.
+    """
+    box = ProactiveOutbox(ttl_s=30.0)
+    box.signal()  # bare signal, no message
+    assert box._event.is_set()  # the hot-spin precondition
+    drained = box.drain_all()
+    assert drained == []  # nothing to send
+    assert not box._event.is_set()  # cleared → next wait() blocks, no spin
+
+
+def test_drain_all_returns_and_clears_enqueued_messages():
+    """drain_all() drains every pending bucket and clears the event so the
+    next wait() blocks until a new enqueue re-sets it."""
+    box = ProactiveOutbox(ttl_s=30.0)
+    box.enqueue(_msg("s1", "r1"))
+    box.enqueue(_msg("s2", "r2"))
+    assert box._event.is_set()
+    drained = box.drain_all()
+    assert {m.session_id for m in drained} == {"s1", "s2"}
+    assert not box._event.is_set()  # cleared after draining
+
+
+def test_drain_all_is_idempotent_when_empty():
+    """Calling drain_all() repeatedly on an empty outbox does not re-set the
+    event — it stays cleared, so the drain loop blocks."""
+    box = ProactiveOutbox(ttl_s=30.0)
+    assert box.drain_all() == []
+    assert not box._event.is_set()
+    assert box.drain_all() == []
+    assert not box._event.is_set()

@@ -108,6 +108,49 @@ async def test_enqueuer_overflow_with_small_capacity():
     assert metrics.counter(Metrics_or := __import__("sense_server.contracts.metrics", fromlist=["Metrics"]).Metrics.EXTRACTION_QUEUE_OVERFLOW_TOTAL) == 2
 
 
+@pytest.mark.asyncio
+async def test_enqueue_finalize_extracts_trailing_window_without_restart():
+    """Bug C: a session that ends with a trailing partial 60s window must
+    have it extracted when the session ends — not held back until a server
+    restart. The live path (``enqueue`` → ``finalize=False``) correctly holds
+    the trailing growing window back; ``enqueue_finalize`` (driven by bye /
+    connection close) feeds a ``finalize=True`` pass through the worker so the
+    ended session forms memories immediately.
+
+    The event is appended AFTER ``start()`` so the reconcile-on-start sweep
+    (which runs ``finalize=True``) doesn't see it — the only thing that can
+    extract it here is the finalize enqueue."""
+    events = InMemoryEventStore()
+    atoms = InMemoryAtomStore()
+    idx = InMemoryMemoryIndex()
+    metrics = InMemoryMetricsRecorder()
+    enq = ExtractionEnqueuer(capacity=10, metrics=metrics)
+    w = _build_worker(events, atoms, idx, metrics=metrics)
+    w.replace_enqueuer(enq)
+    await w.start()  # reconcile-on-start: no events yet -> no-op
+
+    # A single event arrives AFTER start, so reconcile didn't see it.
+    events.append(_event(0, session_id="s1", text="I like oatmeal"))
+    enq.enqueue("s1")  # live path: finalize=False -> trailing window held
+    # Let the live drain run: cursor stays -1, no atoms indexed.
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+    assert atoms.get_cursor("s1") == -1
+    assert idx.search("s1", [1.0, 0.0, 0.0], 10) == []
+
+    # Session ends -> a finalize pass is enqueued.
+    enq.enqueue_finalize("s1")
+    for _ in range(40):
+        if atoms.get_cursor("s1") == 0:
+            break
+        await asyncio.sleep(0.01)
+    assert atoms.get_cursor("s1") == 0
+    results = idx.search("s1", [1.0, 0.0, 0.0], 10)
+    assert len(results) == 1
+    assert results[0].atom.text == "I like oatmeal"
+    await w.stop()
+
+
 def test_gateway_core_enqueues_after_emit():
     """After _emit stores a transcript event, the enqueuer should see
     the session id. The pipeline factory and the audio hot path are

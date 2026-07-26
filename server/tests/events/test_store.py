@@ -69,6 +69,23 @@ def test_unknown_session_reads_empty(store):
     assert store.events("nope") == []
 
 
+def test_last_event_returns_highest_seq_or_none(store):
+    """The gateway reads this on ``hello`` to continue a reconnected session's
+    event counter past the events already stored (Bug B)."""
+    assert store.last_event("s1") is None  # no events yet
+
+    store.append(ev("s1", 0))
+    store.append(ev("s1", 2))
+    store.append(ev("s1", 1))  # appended out of order
+
+    last = store.last_event("s1")
+    assert last is not None
+    assert last.seq == 2
+    assert last.event_id == "s1:2"
+    # Other session is independent.
+    assert store.last_event("s2") is None
+
+
 def test_sessions_returns_distinct_session_ids(store):
     """Reconcile-on-start (M4.3 reconciliation) needs the EventStore to
     enumerate every session id it holds. Both backends must agree on the

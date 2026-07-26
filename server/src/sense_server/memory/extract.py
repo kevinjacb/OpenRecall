@@ -31,10 +31,13 @@ a shape the parser couldn't read.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ValidationError
+
+log = logging.getLogger(__name__)
 
 _JSON_ARRAY = re.compile(r"\[.*\]", re.DOTALL)
 
@@ -87,7 +90,26 @@ class LLMExtractor:
         self._prompt = prompt
 
     def extract(self, text: str) -> list[ExtractedMemory]:
-        return self._parse(self._model.complete(self._prompt, text))
+        # The single LLM call for one extraction window. Log input size +
+        # a snippet, and the parsed result / parse error — this is the seam
+        # where "tokens are being used" becomes visible: if you see many
+        # calls with tiny inputs and [] outputs, the windowing/cursor is
+        # feeding the LLM fragments (the live-window-holdback regression).
+        log.info(
+            "llm_extract_call chars=%d text=%r", len(text), text[:200],
+        )
+        reply = self._model.complete(self._prompt, text)
+        log.debug("llm_extract_reply raw=%r", reply[:300])
+        try:
+            memories = self._parse(reply)
+        except LLMParseError as e:
+            log.warning("llm_extract_parse_failed error=%s reply=%r", e, reply[:200])
+            raise
+        log.info(
+            "llm_extract_ok memories=%d kinds=%s",
+            len(memories), [m.kind for m in memories],
+        )
+        return memories
 
     @staticmethod
     def _parse(reply: str) -> list[ExtractedMemory]:
