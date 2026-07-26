@@ -144,3 +144,4 @@ class ProactiveMessage(_Strict):
     request_id: str
     text: str
     atoms: tuple[str, ...] = Field(default_factory=tuple)
+    propose: dict | None = None

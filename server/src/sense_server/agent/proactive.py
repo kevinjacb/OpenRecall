@@ -76,6 +76,7 @@ class WsSender(Protocol):
         request_id: str,
         text: str,
         atoms: tuple[str, ...],
+        propose: dict | None = None,
     ) -> None: ...
 
 

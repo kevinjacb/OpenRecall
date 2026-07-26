@@ -159,6 +159,7 @@ def test_proactive_message_round_trip_json():
         "request_id": "r1",
         "text": "hi",
         "atoms": ["a1"],
+        "propose": None,
     }
 
 

@@ -222,11 +222,16 @@ class GatewayCore:
         request_id: str,
         text: str,
         atoms: tuple[str, ...],
+        propose: dict | None = None,
     ) -> None:
         """WsSender seam (P3). The engine calls this to push a proactive
         answer onto the open WebSocket. We enqueue the message into the
         per-session outbox; the adapter's proactive task wakes up and
         drains it as a ``proactive`` §E frame.
+
+        ``propose`` carries an optional inline proposal (e.g. a
+        ``{kind:"name_speaker", speaker_id}`` nudge) so the phone can
+        render a quick input instead of a free-form reply.
 
         Raises if no outbox is wired (refusing to silently drop is the
         whole point of a WsSender)."""
@@ -241,6 +246,7 @@ class GatewayCore:
                 request_id=request_id,
                 text=text,
                 atoms=atoms,
+                propose=propose,
             ),
         )
         self._proactive_outbox.signal()
