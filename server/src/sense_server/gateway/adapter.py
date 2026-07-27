@@ -51,27 +51,50 @@ def handle_message(core: GatewayCore, message: str | bytes) -> list[str]:
     return [m.model_dump_json() for m in outbound]
 
 
-def build_speaker_identifier(cfg, registry, embedder):
+def _select_embedder(cfg):
+    """Pick the embedder from ``cfg.embed_model``.
+
+    ``"resemblyzer"`` (or any non-empty, non-"fake" value) -> the real local
+    backend; ``""`` / ``"fake"`` -> the deterministic fake. Heavy import is
+    lazy inside the real backend's ``_ensure_ready``, so constructing the real
+    backend here never loads the model.
+    """
+    from ..ingest.speaker_embedder import (
+        FakeSpeakerEmbedder,
+        ResemblyzerSpeakerEmbedder,
+    )
+
+    model = (cfg.embed_model or "").strip().lower()
+    if model and model != "fake":
+        return ResemblyzerSpeakerEmbedder(
+            min_speech_ms=cfg.min_speech_ms, model_name=cfg.embed_model,
+        )
+    return FakeSpeakerEmbedder(dim=16, min_speech_ms=cfg.min_speech_ms)
+
+
+def build_speaker_identifier(cfg, registry, embedder=None):
     """Return a :class:`SpeakerIdentifier` when enabled, else ``None``.
 
     The factory wires ``None`` into the pipeline when speaker ID is off, so
     the rollout guard is structural: zero embed calls and ``speaker=None`` on
-    every Transcript when ``SENSE_SPEAKER_ENABLED=false``. ``embedder`` is
-    either a real :class:`SpeakerEmbedder` or the sentinel ``"fake"`` (for
-    tests / pre-hardware smoke); ``None`` defaults to the fake embedder so an
-    enabled config without a wired backend still runs end-to-end.
+    every Transcript when ``SENSE_SPEAKER_ENABLED=false``.
+
+    ``embedder``: ``None`` -> select from ``cfg.embed_model`` (``"resemblyzer"``
+    -> the real backend, ``""``/``"fake"`` -> the deterministic fake); the
+    sentinel ``"fake"`` -> the fake (explicit test override); a concrete
+    :class:`SpeakerEmbedder` -> used as-is.
     """
     if not cfg.enabled:
         return None
-    from ..ingest.speaker_embedder import FakeSpeakerEmbedder
     from ..ingest.speaker_identifier import SpeakerIdentifier
 
-    emb = (
-        FakeSpeakerEmbedder(dim=16, min_speech_ms=cfg.min_speech_ms)
-        if embedder == "fake" or embedder is None
-        else embedder
-    )
-    return SpeakerIdentifier(emb, registry, cfg)
+    if embedder is None:
+        embedder = _select_embedder(cfg)
+    elif embedder == "fake":
+        from ..ingest.speaker_embedder import FakeSpeakerEmbedder
+
+        embedder = FakeSpeakerEmbedder(dim=16, min_speech_ms=cfg.min_speech_ms)
+    return SpeakerIdentifier(embedder, registry, cfg)
 
 
 def build_pipeline_factory(

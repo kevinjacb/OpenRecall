@@ -30,3 +30,32 @@ def test_build_pipeline_factory_accepts_speaker_identifier():
     # factory (that needs opuslib); we only assert the seam exists.
     factory = build_pipeline_factory(use_streaming=False, speaker_identifier=None)
     assert factory is not None
+
+
+def test_resemblyzer_model_yields_resemblyzer_embedder():
+    from sense_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
+
+    cfg = SpeakerConfig(enabled=True, embed_model="resemblyzer")
+    ident = build_speaker_identifier(cfg, InMemorySpeakerRegistry(cfg), embedder=None)
+    assert ident is not None
+    # Construction is cheap (no model load) so this assertion is dep-free.
+    assert isinstance(ident._embedder, ResemblyzerSpeakerEmbedder)
+
+
+def test_unset_embed_model_yields_fake_embedder():
+    from sense_server.ingest.speaker_embedder import FakeSpeakerEmbedder
+
+    cfg = SpeakerConfig(enabled=True)  # embed_model defaults to ""
+    ident = build_speaker_identifier(cfg, InMemorySpeakerRegistry(cfg), embedder=None)
+    assert ident is not None
+    assert isinstance(ident._embedder, FakeSpeakerEmbedder)
+
+
+def test_explicit_fake_overrides_resemblyzer_model():
+    from sense_server.ingest.speaker_embedder import FakeSpeakerEmbedder
+
+    cfg = SpeakerConfig(enabled=True, embed_model="resemblyzer")
+    # Explicit "fake" sentinel overrides cfg.embed_model.
+    ident = build_speaker_identifier(cfg, InMemorySpeakerRegistry(cfg), embedder="fake")
+    assert ident is not None
+    assert isinstance(ident._embedder, FakeSpeakerEmbedder)
