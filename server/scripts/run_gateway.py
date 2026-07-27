@@ -138,6 +138,14 @@ def main() -> None:
     speaker_identifier = build_speaker_identifier(
         speaker_cfg, speaker_registry, embedder=None,
     )
+    # Warm up the real embedder at startup so the first connection pays no
+    # model-init cost. No-op for the fake embedder / when disabled. Best-effort:
+    # a warmup failure must not abort the gateway.
+    if speaker_identifier is not None:
+        try:
+            speaker_identifier.warmup_embedder()
+        except Exception:
+            logging.exception("speaker_warmup_failed")
     embedder = OpenAICompatibleEmbedder.from_env(__import__("os").environ)
     llm_chat = OpenAICompatibleChatModel.from_env(__import__("os").environ)
     extractor = LLMExtractor(llm_chat)

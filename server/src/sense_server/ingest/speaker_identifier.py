@@ -99,6 +99,17 @@ class SpeakerIdentifier:
         self._pending: list[dict] = []
         self._now = now_s or time.monotonic
 
+    def warmup_embedder(self) -> None:
+        """Best-effort: warm up the embedder model if it supports warmup.
+
+        run_gateway calls this once at startup so the first real conversation
+        pays no model-init cost. No-op for embedders without ``warmup``
+        (e.g. FakeSpeakerEmbedder).
+        """
+        warmup = getattr(self._embedder, "warmup", None)
+        if warmup is not None:
+            warmup()
+
     def identify(self, pcm: bytes, sample_rate: int) -> SpeakerAssignment | None:
         try:
             vec = self._embedder.embed(pcm, sample_rate)
