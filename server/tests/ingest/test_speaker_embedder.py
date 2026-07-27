@@ -44,7 +44,7 @@ def test_fake_embedder_different_pcm_yields_different_vector():
     assert a != b
 
 
-def test_mlx_embedder_imports_lazily_and_not_at_module_import():
+def test_speaker_embedder_module_imports_lazily():
     # Run in a fresh subprocess so the assertion isn't polluted by another test
     # in the suite having already imported numpy. Importing the module must not
     # pull in numpy/mlx_whisper — only embed() does, and only on the real path.
@@ -91,3 +91,24 @@ def test_pcm_to_float32_wrong_sample_rate_returns_none():
     from sense_server.ingest.speaker_embedder import _pcm_to_float32
 
     assert _pcm_to_float32(b"\x00\x00", 48000) is None
+
+
+def test_resemblyzer_embedder_constructs_without_loading_model():
+    # Construction must be cheap: no resemblyzer/numpy import, encoder not
+    # loaded. This lets the adapter-selection unit test (T3) assert isinstance
+    # dep-free.
+    from sense_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
+
+    e = ResemblyzerSpeakerEmbedder(min_speech_ms=500, model_name="resemblyzer")
+    assert e.model_name == "resemblyzer"
+    assert e.min_speech_ms == 500
+    assert e._encoder is None  # not loaded at construction
+    assert e._dim is None
+
+
+def test_resemblyzer_embedder_dim_is_a_lazy_property():
+    # dim is a @property that triggers _ensure_ready on first access; we do NOT
+    # call it here (would load the model). Assert it's a property descriptor.
+    from sense_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
+
+    assert isinstance(ResemblyzerSpeakerEmbedder.__dict__["dim"], property)

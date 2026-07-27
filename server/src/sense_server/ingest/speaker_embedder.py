@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import threading
 from typing import Protocol, runtime_checkable
 
 log = logging.getLogger(__name__)
@@ -67,46 +68,93 @@ class FakeSpeakerEmbedder:
         return [v / norm for v in vec]
 
 
-class MlxSpeakerEmbedder:
-    """Real Apple-Silicon voice-embedding backend (ECAPA-TDNN / pyannote-style).
+class ResemblyzerSpeakerEmbedder:
+    """Real local speaker-embedding backend (Resemblyzer GE2E).
 
-    Heavy deps (numpy, the embedding model) are imported lazily inside ``embed``
-    so importing this module — and running the unit suite — never loads them.
-    Configured via :class:`SpeakerConfig`; the model id/base_url/api_key mirror
-    the text embedder. Local-only by default; a cloud base_url is opt-in.
+    Chosen for v1 due to its mature API, lightweight CPU inference, and
+    permissive licensing. The :class:`SpeakerEmbedder` Protocol allows
+    migration to ECAPA-TDNN / pyannote without architectural changes;
+    Resemblyzer is not the state of the art but is the right v1 backend.
 
-    The local model inference wiring lands with the hardware bring-up; until then
-    ``embed`` raises ``NotImplementedError`` so a misconfigured production path
-    fails loud rather than silently returning a fake vector.
+    Heavy deps (``resemblyzer``, ``numpy``) are imported lazily inside
+    ``_ensure_ready`` so importing this module — and constructing this class —
+    never loads them. ``dim`` is discovered from a dummy inference (never
+    hardcoded), so a future backend with a different dim is accommodated with
+    no change to the identifier (the identifier is already dim-agnostic via
+    ``_cosine``'s length guard).
+
+    Local-only by default; the remote ``base_url``/``api_key`` path is not
+    implemented in v1 (speaker embeddings take audio, not text, so an
+    OpenAI-compatible text ``/embeddings`` endpoint does not apply).
     """
 
+    _SUPPORTED_RATE = 16000
+    _WARMUP_MS = 1600  # Resemblyzer wants >= ~1.6 s for a stable embedding
+
     def __init__(
-        self,
-        *,
-        model: str,
-        base_url: str | None = None,
-        api_key: str | None = None,
-        dim: int = 0,
-        min_speech_ms: int = 500,
+        self, *, min_speech_ms: int = 500, model_name: str = "resemblyzer"
     ) -> None:
-        self.model = model
-        self.base_url = base_url
-        self.api_key = api_key
-        self._dim = dim
+        # Cheap: stores config only. Does NOT load the model — so adapter
+        # selection + unit tests can construct this class without
+        # resemblyzer/numpy installed.
+        self.model_name = model_name
         self.min_speech_ms = min_speech_ms
+        self._encoder = None
+        self._dim: int | None = None
+        self._lock = threading.Lock()
 
     @property
     def dim(self) -> int:
+        # Discovered from the model, not assumed. Triggers _ensure_ready on
+        # first access (the identifier reads dim at mint time, after the first
+        # embed() has already loaded the encoder).
+        self._ensure_ready()
+        assert self._dim is not None
         return self._dim
 
-    def embed(self, pcm: bytes, sample_rate: int) -> SpeakerVector | None:
-        ms = len(pcm) * 1000 // (sample_rate * 2)
-        if ms < self.min_speech_ms:
-            return None
-        # Lazy import — unit tests never reach here.
-        import numpy as np  # noqa: F401  (lazy heavy dep)
+    def warmup(self) -> None:
+        """Load the model + run a dummy inference so the first real hop pays
+        nothing. Best-effort; ``run_gateway`` calls this at startup."""
+        self._ensure_ready()
 
-        raise NotImplementedError(
-            "MlxSpeakerEmbedder.embed requires the local voice-embedding model; "
-            "configure SENSE_SPEAKER_EMBED_MODEL and run on Apple Silicon."
-        )
+    def _ensure_ready(self) -> None:
+        # Thread-safe singleton init (double-checked locking). The gateway
+        # runs embed() via asyncio.to_thread; concurrent sessions could race
+        # the first-call init.
+        if self._encoder is not None:
+            return
+        with self._lock:
+            if self._encoder is not None:
+                return
+            from resemblyzer import VoiceEncoder
+            import numpy as np
+
+            log.info("speaker_embedder_loading model=%s", self.model_name)
+            self._encoder = VoiceEncoder()
+            # One dummy inference: warms the graph AND discovers dim via
+            # shape[0]. Low-amplitude noise; the value is irrelevant, only
+            # the dimension matters.
+            n = self._SUPPORTED_RATE * self._WARMUP_MS // 1000
+            dummy = (np.random.randn(n).astype(np.float32)) * 1e-3
+            vec = self._encoder.embed_utterance(dummy)
+            self._dim = int(vec.shape[0])
+            log.info("speaker_embedder_ready dim=%d", self._dim)
+
+    def embed(self, pcm: bytes, sample_rate: int) -> SpeakerVector | None:
+        if sample_rate != self._SUPPORTED_RATE:
+            log.warning(
+                "unsupported sample rate %d (speaker disabled for hop)",
+                sample_rate,
+            )
+            return None
+        ms = len(pcm) * 1000 // (sample_rate * 2)
+        if ms < max(self.min_speech_ms, self._WARMUP_MS):
+            return None  # too short for a stable embedding
+        wav = _pcm_to_float32(pcm, sample_rate)
+        if wav is None:
+            return None
+        self._ensure_ready()
+        vec = self._encoder.embed_utterance(wav)
+        # One ndarray -> list[float] conversion at the boundary. Plain floats
+        # so JSON storage round-trips cleanly.
+        return [float(x) for x in vec.tolist()]
