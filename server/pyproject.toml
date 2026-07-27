@@ -24,6 +24,13 @@ mlx = [
 opus = [
     "opuslib>=3.0",
 ]
+# Real local speaker-embedding backend (Resemblyzer, CPU). Lazy-imported
+# inside ResemblyzerSpeakerEmbedder._ensure_ready so the unit suite runs
+# without it; install to use SENSE_SPEAKER_EMBED_MODEL=resemblyzer.
+speaker = [
+    "resemblyzer>=0.1",
+    "numpy>=2",
+]
 # Provider-agnostic LLM client (extraction). Works against any OpenAI-compatible
 # endpoint — local (Ollama, mlx_lm.server) or cloud (MiniMax/OpenAI/…).
 llm = [
