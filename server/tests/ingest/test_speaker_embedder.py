@@ -5,7 +5,12 @@ None on a too-short window; importing the module never pulls in numpy/mlx.
 """
 from __future__ import annotations
 
+import importlib.util
 import sys
+
+import pytest
+
+_np_available = importlib.util.find_spec("numpy") is not None
 
 
 def _pcm(ms: int, sr: int = 16000) -> bytes:
@@ -61,3 +66,28 @@ def test_mlx_embedder_imports_lazily_and_not_at_module_import():
     )
     assert r.returncode == 0, r.stdout + r.stderr
     assert "ok" in r.stdout
+
+
+@pytest.mark.skipif(not _np_available, reason="numpy not installed")
+def test_pcm_to_float32_normalizes_int16_to_unit_float():
+    import numpy as np
+
+    from sense_server.ingest.speaker_embedder import _pcm_to_float32
+
+    # int16 16384 -> 0.5 ; -16384 -> -0.5
+    pcm = (16384).to_bytes(2, "little", signed=True) + (-16384).to_bytes(
+        2, "little", signed=True
+    )
+    arr = _pcm_to_float32(pcm, 16000)
+    assert arr is not None
+    assert arr.dtype.name == "float32"
+    assert arr.shape == (2,)
+    assert abs(float(arr[0]) - 0.5) < 1e-6
+    assert abs(float(arr[1]) + 0.5) < 1e-6
+
+
+@pytest.mark.skipif(not _np_available, reason="numpy not installed")
+def test_pcm_to_float32_wrong_sample_rate_returns_none():
+    from sense_server.ingest.speaker_embedder import _pcm_to_float32
+
+    assert _pcm_to_float32(b"\x00\x00", 48000) is None

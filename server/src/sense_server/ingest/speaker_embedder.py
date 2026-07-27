@@ -12,10 +12,27 @@ never mints, never blocks transcription).
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 from typing import Protocol, runtime_checkable
 
+log = logging.getLogger(__name__)
+
 SpeakerVector = list[float]
+
+
+def _pcm_to_float32(pcm: bytes, sample_rate: int):
+    """int16-LE PCM bytes -> float32 numpy array in [-1, 1].
+
+    Returns ``None`` when ``sample_rate != 16000`` (the caller logs). Pure;
+    imports numpy lazily so the unit suite runs without it. Resemblyzer expects
+    16 kHz mono float32 in [-1, 1].
+    """
+    if sample_rate != 16000:
+        return None
+    import numpy as np
+
+    return np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
 
 
 @runtime_checkable
