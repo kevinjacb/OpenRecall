@@ -54,6 +54,7 @@ fun ChatRoute(
         onSend = vm::ask,
         onAtomChipTap = onOpenAtom,
         onBrowseMemory = onOpenMemory,
+        onNameSpeaker = vm::nameSpeaker,
         modifier = modifier,
     )
 }

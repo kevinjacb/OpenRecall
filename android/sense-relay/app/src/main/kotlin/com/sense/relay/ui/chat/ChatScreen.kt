@@ -35,6 +35,7 @@ fun ChatScreen(
     onSend: () -> Unit,
     onAtomChipTap: (atomId: String) -> Unit,
     onBrowseMemory: () -> Unit,
+    onNameSpeaker: (speakerId: String, name: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val isThinking = loading && messages.lastOrNull()?.role == Role.USER
@@ -59,6 +60,7 @@ fun ChatScreen(
                 isThinking = isThinking,
                 onAtomChipTap = onAtomChipTap,
                 onBrowseMemory = onBrowseMemory,
+                onNameSpeaker = onNameSpeaker,
                 modifier = Modifier.weight(1f),
             )
         }
