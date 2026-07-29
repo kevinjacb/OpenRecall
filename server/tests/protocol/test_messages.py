@@ -69,6 +69,8 @@ def test_outbound_messages_serialize_with_their_type_tag():
         "speaker": None,
         "speaker_confidence": None,
         "speaker_assignment": None,
+        "speaker_name": None,
+        "is_wearer": False,
     }
 
 

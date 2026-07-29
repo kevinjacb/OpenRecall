@@ -116,6 +116,8 @@ class TranscriptMsg(_Strict):
     speaker: str | None = None
     speaker_confidence: float | None = None
     speaker_assignment: str | None = None
+    speaker_name: str | None = None  # resolved display_name at emit time
+    is_wearer: bool = False           # this hop's speaker is the wearer
 
 
 class CommandMessage(_Strict):

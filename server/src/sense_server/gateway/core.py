@@ -419,11 +419,22 @@ class GatewayCore:
                 "transcript: session=%s event=%s text=%r (%d ms) stored=%s",
                 self._session_id, event.event_id, t.text, t.duration_ms, stored,
             )
+            # Resolve the display name + wearer flag at emit time from the
+            # registry so renames/reassigns reflect immediately in history
+            # without a backfill. None/False when the hop has no speaker or the
+            # registry has no row (e.g. speaker recognition disabled).
+            sp = (
+                self._speaker_registry.get(t.speaker)
+                if (t.speaker and self._speaker_registry is not None)
+                else None
+            )
             msgs.append(
                 TranscriptMsg(
                     session_id=self._session_id, text=t.text, duration_ms=t.duration_ms,
                     speaker=t.speaker, speaker_confidence=t.speaker_confidence,
                     speaker_assignment=t.speaker_assignment,
+                    speaker_name=sp.display_name if sp is not None else None,
+                    is_wearer=sp.is_wearer if sp is not None else False,
                 )
             )
         return msgs
