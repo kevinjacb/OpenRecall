@@ -50,6 +50,9 @@ fun CaptureEventDto.toDomainOrNull(onUnknownKind: (String) -> Unit): CaptureEven
         createdAt = parseInstant(createdAt),
         text = text,
         durationMs = durationMs,
+        speaker = speaker,
+        speakerName = speakerName,
+        isWearer = isWearer,
     )
     "audio" -> AudioSegment(
         id = id,

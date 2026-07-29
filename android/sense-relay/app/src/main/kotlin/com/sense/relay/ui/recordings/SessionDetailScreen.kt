@@ -24,6 +24,7 @@ import androidx.compose.runtime.collectAsState
 import com.sense.relay.core.ui.Spacing
 import com.sense.relay.core.util.formatHmMs
 import com.sense.relay.data.RepositoryModule
+import com.sense.relay.data.SpeakerCache
 import com.sense.relay.domain.model.AudioSegment
 import com.sense.relay.domain.model.CaptureEvent
 import com.sense.relay.domain.model.SessionId
@@ -34,6 +35,15 @@ import com.sense.relay.ui.design.LoadingCard
 import com.sense.relay.ui.design.MetricCard
 import com.sense.relay.ui.design.SenseTopBar
 import com.sense.relay.ui.design.TopBarState
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 
 /**
  * SessionDetail route. Builds the [SessionDetailViewModel] for [id] from the
@@ -43,7 +53,13 @@ import com.sense.relay.ui.design.TopBarState
 fun SessionDetailRoute(id: SessionId, onBack: () -> Unit, modifier: Modifier = Modifier) {
     val vm: SessionDetailViewModel = viewModel(
         factory = viewModelFactory {
-            initializer { SessionDetailViewModel(id, RepositoryModule.repos.session) }
+            initializer {
+                SessionDetailViewModel(
+                    id,
+                    RepositoryModule.repos.session,
+                    speakerCache = RepositoryModule.repos.speakerCache,
+                )
+            }
         },
     )
     val state by vm.state.collectAsState()
@@ -53,6 +69,9 @@ fun SessionDetailRoute(id: SessionId, onBack: () -> Unit, modifier: Modifier = M
         isRefreshing = isRefreshing,
         onRefresh = vm::onRefresh,
         onBack = onBack,
+        speakerCache = vm.speakerCache,
+        onRenameSpeaker = vm::renameSpeaker,
+        onReassignSpeaker = vm::reassignSpeaker,
         modifier = modifier,
     )
 }
@@ -72,6 +91,9 @@ fun SessionDetailScreen(
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
     onBack: () -> Unit,
+    speakerCache: SpeakerCache = SpeakerCache(),
+    onRenameSpeaker: (speakerId: String, name: String) -> Unit = { _, _ -> },
+    onReassignSpeaker: (fromId: String, toId: String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
     Scaffold(
@@ -94,9 +116,15 @@ fun SessionDetailScreen(
                 }
                 is SessionDetailUiState.LoadedSummary -> Body(
                     state.summary, events = null, isRefreshing = isRefreshing, onRefresh = onRefresh,
+                    speakerCache = speakerCache,
+                    onRenameSpeaker = onRenameSpeaker,
+                    onReassignSpeaker = onReassignSpeaker,
                 )
                 is SessionDetailUiState.Loaded -> Body(
                     state.summary, events = state.events, isRefreshing = isRefreshing, onRefresh = onRefresh,
+                    speakerCache = speakerCache,
+                    onRenameSpeaker = onRenameSpeaker,
+                    onReassignSpeaker = onReassignSpeaker,
                 )
             }
         }
@@ -110,6 +138,9 @@ private fun Body(
     events: List<CaptureEvent>?,
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
+    speakerCache: SpeakerCache = SpeakerCache(),
+    onRenameSpeaker: (speakerId: String, name: String) -> Unit = { _, _ -> },
+    onReassignSpeaker: (fromId: String, toId: String) -> Unit = { _, _ -> },
 ) {
     // The timeline is keyed by the stable event id (NOT the design system's
     // `timeline()` helper, which keys by title and would crash a LazyColumn
@@ -139,15 +170,123 @@ private fun Body(
                         body = "This session has no transcript events yet.",
                     )
                 }
-                else -> items(events, key = { it.id }) { event -> EventRow(event) }
+                else -> items(events, key = { it.id }) { event ->
+                    EventRow(
+                        event = event,
+                        speakerCache = speakerCache,
+                        onRename = onRenameSpeaker,
+                        onReassign = onReassignSpeaker,
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun EventRow(event: CaptureEvent) {
+private fun EventRow(
+    event: CaptureEvent,
+    speakerCache: SpeakerCache = SpeakerCache(),
+    onRename: (speakerId: String, name: String) -> Unit = { _, _ -> },
+    onReassign: (fromId: String, toId: String) -> Unit = { _, _ -> },
+) {
+    // Speaker label resolution. TranscriptChunks carry the server-resolved
+    // speakerName (or null when the hop had no speaker / speaker unknown).
+    // We fall back to the cache (a prior hop may have named this speaker, or
+    // the local optimistic rename applied), then to "?".
+    val chunk = event as? TranscriptChunk
+    val speakerId = chunk?.speaker
+    val speakerName = when {
+        chunk == null || speakerId == null -> null
+        chunk.speakerName != null -> chunk.speakerName
+        speakerCache.get(speakerId)?.name != null -> speakerCache.get(speakerId)!!.name
+        else -> "?"
+    }
+
+    // Rename dialog state.
+    var showRename by remember { mutableStateOf(false) }
+    var renameText by remember { mutableStateOf("") }
+    // Per-row dropdown menu (Rename / Reassign…).
+    var showMenu by remember { mutableStateOf(false) }
+    // Reassign picker menu.
+    var showReassign by remember { mutableStateOf(false) }
+
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = Spacing.xs)) {
+        // Speaker tag — tappable when this hop has a speaker (opens Rename /
+        // Reassign menu). Non-transcript rows render no tag.
+        if (chunk != null && speakerId != null) {
+            Text(
+                text = speakerName ?: "?",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .padding(bottom = Spacing.xs)
+                    .clickable { showMenu = true },
+            )
+            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                DropdownMenuItem(
+                    text = { Text("Rename") },
+                    onClick = {
+                        showMenu = false
+                        renameText = speakerName?.takeUnless { it == "?" } ?: ""
+                        showRename = true
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Reassign to…") },
+                    onClick = {
+                        showMenu = false
+                        showReassign = true
+                    },
+                )
+            }
+            // Rename dialog.
+            if (showRename) {
+                AlertDialog(
+                    onDismissRequest = { showRename = false },
+                    title = { Text("Name speaker") },
+                    text = {
+                        OutlinedTextField(
+                            value = renameText,
+                            onValueChange = { renameText = it },
+                            singleLine = true,
+                            label = { Text("Display name") },
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            if (renameText.isNotBlank()) onRename(speakerId, renameText.trim())
+                            showRename = false
+                        }) { Text("Save") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showRename = false }) { Text("Cancel") }
+                    },
+                )
+            }
+            // Reassign picker: list the other known speakers from the cache.
+            if (showReassign) {
+                val others = speakerCache.snapshot().values.filter { it.speakerId != speakerId }
+                DropdownMenu(expanded = showReassign, onDismissRequest = { showReassign = false }) {
+                    if (others.isEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("No other speakers yet") },
+                            onClick = { showReassign = false },
+                        )
+                    } else {
+                        others.forEach { entry ->
+                            DropdownMenuItem(
+                                text = { Text(entry.name ?: "?") },
+                                onClick = {
+                                    showReassign = false
+                                    onReassign(speakerId, entry.speakerId)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
         Text(
             text = eventTitle(event),
             style = MaterialTheme.typography.bodyMedium,

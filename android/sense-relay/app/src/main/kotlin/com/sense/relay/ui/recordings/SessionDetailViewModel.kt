@@ -4,6 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sense.relay.core.result.Outcome
 import com.sense.relay.core.ui.toDisplayMessage
+import com.sense.relay.data.SpeakerActions
+import com.sense.relay.data.SpeakerCache
+import com.sense.relay.data.SpeakerControlPort
 import com.sense.relay.data.SessionRepository
 import com.sense.relay.domain.model.CaptureEvent
 import com.sense.relay.domain.model.SessionDetails
@@ -59,6 +62,8 @@ sealed interface SessionDetailUiState {
 class SessionDetailViewModel(
     private val id: SessionId,
     private val repo: SessionRepository,
+    val speakerCache: SpeakerCache = SpeakerCache(),
+    private val speakerActions: SpeakerActions = SpeakerControlPort,
 ) : ViewModel() {
 
     // Bumped by [onRefresh] to re-collect the one-shot per-session flows.
@@ -98,6 +103,28 @@ class SessionDetailViewModel(
         if (_isRefreshing.value) return
         _isRefreshing.value = true
         revision.value = revision.value + 1
+    }
+
+    /**
+     * Name (or rename) a speaker from the Recordings timeline. Sends the
+     * `name_speaker` control message; the server's `set_display_name` applies,
+     * and the next transcript §E / `/speakers` refresh carries the new name.
+     * Optimistically upserts the cache so the label updates immediately.
+     * Send failure does NOT crash (the port buffers; RelayService drains).
+     */
+    fun renameSpeaker(speakerId: String, name: String) {
+        val isWearer = speakerCache.get(speakerId)?.isWearer ?: false
+        speakerCache.upsert(speakerId, name, isWearer)
+        runCatching { speakerActions.nameSpeaker(id.value, speakerId, name) }
+    }
+
+    /**
+     * Reassign a speaker's utterances to another known speaker. v1 uses
+     * `scope="all"` (the server is session-scoped, so "all of this speaker" is
+     * "this conversation"). Labels refresh on the next transcript / refresh.
+     */
+    fun reassignSpeaker(fromId: String, toId: String) {
+        runCatching { speakerActions.reassignSpeaker(id.value, fromId, toId) }
     }
 }
 
