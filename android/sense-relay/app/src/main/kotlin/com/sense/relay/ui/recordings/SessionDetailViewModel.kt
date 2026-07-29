@@ -12,6 +12,7 @@ import com.sense.relay.domain.model.CaptureEvent
 import com.sense.relay.domain.model.SessionDetails
 import com.sense.relay.domain.model.SessionId
 import com.sense.relay.domain.model.SessionSummary
+import com.sense.relay.domain.model.TranscriptChunk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -37,6 +38,25 @@ sealed interface SessionDetailUiState {
         val events: List<CaptureEvent>,
     ) : SessionDetailUiState
     data class Failed(val reason: String) : SessionDetailUiState
+}
+
+/**
+ * One-time "is this you? what should I call you?" prompt for the wearer.
+ *
+ * - [Idle]: nothing to show (no wearer seen yet, or already named).
+ * - [Prompting]: the first transcript hop flagged `isWearer` whose resolved
+ *   name is still null or the placeholder `"You"`. Carries the wearer's
+ *   stable speaker id so [confirmYou] knows who to rename.
+ * - [Done]: the user confirmed a name; the prompt won't re-show this session.
+ *
+ * Session-scoped (not persisted): if the app restarts while the wearer is
+ * still called "You", the prompt re-shows — the right behavior for a
+ * confirmation the user might have dismissed accidentally.
+ */
+sealed interface YouConfirmationState {
+    data object Idle : YouConfirmationState
+    data class Prompting(val wearerId: String) : YouConfirmationState
+    data object Done : YouConfirmationState
 }
 
 /**
@@ -73,6 +93,12 @@ class SessionDetailViewModel(
     /** True while a pull-to-refresh re-fetch is in flight. */
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
+    private val _youConfirmation = MutableStateFlow<YouConfirmationState>(YouConfirmationState.Idle)
+    /** One-time wearer-confirmation prompt state; see [YouConfirmationState]. */
+    val youConfirmation: StateFlow<YouConfirmationState> = _youConfirmation.asStateFlow()
+    /** Guards against re-prompting within this session once the user has acted. */
+    private var youPromptShown = false
+
     val state: StateFlow<SessionDetailUiState> = revision
         .flatMapLatest {
             // Flow is covariant, so a non-null events flow binds to a nullable-
@@ -89,7 +115,11 @@ class SessionDetailViewModel(
                 // Clear the refresh flag on the first emission of this (re-)
                 // collection — the summary fetch has landed, the spinner can
                 // dismiss. A no-op for the initial collection (flag is false).
-                .onEach { if (_isRefreshing.value) _isRefreshing.value = false }
+                // Also scan the loaded events for a wearer needing confirmation.
+                .onEach { ui ->
+                    if (_isRefreshing.value) _isRefreshing.value = false
+                    (ui as? SessionDetailUiState.Loaded)?.events?.let { maybePromptYouConfirmation(it) }
+                }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SessionDetailUiState.Loading)
 
@@ -125,6 +155,42 @@ class SessionDetailViewModel(
      */
     fun reassignSpeaker(fromId: String, toId: String) {
         runCatching { speakerActions.reassignSpeaker(id.value, fromId, toId) }
+    }
+
+    /**
+     * Scan a freshly loaded event batch for the first wearer hop whose name
+     * is still unresolved (null) or the placeholder `"You"`, and surface the
+     * one-time confirmation prompt. Idempotent within a session via
+     * [youPromptShown]; skipped if the cache already holds a real name for
+     * the wearer (e.g. the user renamed them in a prior view).
+     */
+    private fun maybePromptYouConfirmation(events: List<CaptureEvent>) {
+        if (youPromptShown) return
+        val wearer = events.filterIsInstance<TranscriptChunk>().firstOrNull { chunk -> chunk.isWearer }
+            ?: return
+        if (wearer.speakerName != null && wearer.speakerName != "You") return
+        val wearerId = wearer.speaker ?: return
+        val cached = speakerCache.get(wearerId)
+        if (cached != null && cached.name != null && cached.name != "You") return
+        youPromptShown = true
+        _youConfirmation.value = YouConfirmationState.Prompting(wearerId)
+    }
+
+    /**
+     * Confirm the wearer's name. Sends `name_speaker` (via [renameSpeaker],
+     * which optimistically updates the cache) and flips the prompt to
+     * [YouConfirmationState.Done]. No-op unless the prompt is showing.
+     */
+    fun confirmYou(chosenName: String) {
+        val state = _youConfirmation.value
+        if (state !is YouConfirmationState.Prompting) return
+        renameSpeaker(state.wearerId, chosenName)
+        _youConfirmation.value = YouConfirmationState.Done
+    }
+
+    /** Dismiss the prompt without naming (it will re-show after a restart). */
+    fun dismissYouConfirmation() {
+        _youConfirmation.value = YouConfirmationState.Idle
     }
 }
 

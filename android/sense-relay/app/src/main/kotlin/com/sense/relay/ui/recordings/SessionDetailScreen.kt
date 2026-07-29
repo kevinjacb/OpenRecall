@@ -64,6 +64,7 @@ fun SessionDetailRoute(id: SessionId, onBack: () -> Unit, modifier: Modifier = M
     )
     val state by vm.state.collectAsState()
     val isRefreshing by vm.isRefreshing.collectAsState()
+    val youConfirmation by vm.youConfirmation.collectAsState()
     SessionDetailScreen(
         state = state,
         isRefreshing = isRefreshing,
@@ -72,6 +73,9 @@ fun SessionDetailRoute(id: SessionId, onBack: () -> Unit, modifier: Modifier = M
         speakerCache = vm.speakerCache,
         onRenameSpeaker = vm::renameSpeaker,
         onReassignSpeaker = vm::reassignSpeaker,
+        youConfirmation = youConfirmation,
+        onConfirmYou = vm::confirmYou,
+        onDismissYouConfirmation = vm::dismissYouConfirmation,
         modifier = modifier,
     )
 }
@@ -94,6 +98,9 @@ fun SessionDetailScreen(
     speakerCache: SpeakerCache = SpeakerCache(),
     onRenameSpeaker: (speakerId: String, name: String) -> Unit = { _, _ -> },
     onReassignSpeaker: (fromId: String, toId: String) -> Unit = { _, _ -> },
+    youConfirmation: YouConfirmationState = YouConfirmationState.Idle,
+    onConfirmYou: (name: String) -> Unit = {},
+    onDismissYouConfirmation: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Scaffold(
@@ -119,12 +126,18 @@ fun SessionDetailScreen(
                     speakerCache = speakerCache,
                     onRenameSpeaker = onRenameSpeaker,
                     onReassignSpeaker = onReassignSpeaker,
+                    youConfirmation = youConfirmation,
+                    onConfirmYou = onConfirmYou,
+                    onDismissYouConfirmation = onDismissYouConfirmation,
                 )
                 is SessionDetailUiState.Loaded -> Body(
                     state.summary, events = state.events, isRefreshing = isRefreshing, onRefresh = onRefresh,
                     speakerCache = speakerCache,
                     onRenameSpeaker = onRenameSpeaker,
                     onReassignSpeaker = onReassignSpeaker,
+                    youConfirmation = youConfirmation,
+                    onConfirmYou = onConfirmYou,
+                    onDismissYouConfirmation = onDismissYouConfirmation,
                 )
             }
         }
@@ -141,6 +154,9 @@ private fun Body(
     speakerCache: SpeakerCache = SpeakerCache(),
     onRenameSpeaker: (speakerId: String, name: String) -> Unit = { _, _ -> },
     onReassignSpeaker: (fromId: String, toId: String) -> Unit = { _, _ -> },
+    youConfirmation: YouConfirmationState = YouConfirmationState.Idle,
+    onConfirmYou: (name: String) -> Unit = {},
+    onDismissYouConfirmation: () -> Unit = {},
 ) {
     // The timeline is keyed by the stable event id (NOT the design system's
     // `timeline()` helper, which keys by title and would crash a LazyColumn
@@ -160,6 +176,16 @@ private fun Body(
                     title = "Duration",
                     value = formatHmMs(summary.durationMs),
                     subtitle = "${summary.transcriptCount} transcripts",
+                )
+            }
+            // One-time "is this you?" prompt, above the timeline. Composes
+            // nothing unless the state is Prompting, so it costs no space
+            // when idle/done.
+            item(key = "you-confirm") {
+                YouConfirmationBanner(
+                    state = youConfirmation,
+                    onConfirm = onConfirmYou,
+                    onDismiss = onDismissYouConfirmation,
                 )
             }
             when {
