@@ -12,6 +12,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
 
 /**
  * Thin HTTP wrapper for the agent endpoints.
@@ -45,7 +46,17 @@ open class AgentApi(
             .post(body)
             .addHeader("Authorization", "Bearer $token")
             .build()
-        client.newCall(request).execute().use { response ->
+        // The /agent endpoint runs the LLM planner (retrieval + generation)
+        // and routinely exceeds OkHttp's 10s default read timeout on a local
+        // model — which surfaced as a SocketTimeoutException that escaped the
+        // repository and crashed the app. Derive a patient client per call:
+        // newBuilder() shares the parent's connection pool + TLS config but
+        // overrides only the read timeout, so /status, /sessions, /memory
+        // keep the fast default. 60s matches the server's own LLM ceiling.
+        val patient = client.newBuilder()
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
+        patient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
                 val raw = response.body?.string()
                 val env = raw?.let { r ->

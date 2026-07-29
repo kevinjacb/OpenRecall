@@ -1,9 +1,11 @@
 package com.sense.relay.data
 
 import com.sense.relay.core.TraceContext
+import com.sense.relay.http.ErrorCode
 import com.sense.relay.http.HttpApiError
 import com.sense.relay.http.dto.AgentResponseDto
 import com.sense.relay.http.dto.AtomChipDto
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -38,6 +40,21 @@ open class AgentRepository(private val apiProvider: suspend () -> AgentApi) {
                 trace = TraceContext(
                     requestId = e.requestId ?: "",
                 ),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Network/timeout/IO failures (SocketTimeoutException,
+            // UnknownHostException, the "not provisioned" IOException) must
+            // never escape to the VM — the repository is the single boundary
+            // that turns wire errors into AgentOutcome.Error (INV-11). Before
+            // this catch, a slow /agent call timed out and the IOException
+            // propagated through viewModelScope and crashed the app (the
+            // "FATAL EXCEPTION: SocketTimeoutException" incident).
+            return@withContext AgentOutcome.Error(
+                code = ErrorCode.INTERNAL_ERROR,
+                message = e.message ?: e.javaClass.simpleName,
+                trace = TraceContext(requestId = ""),
             )
         }
         when (dto.outcome) {

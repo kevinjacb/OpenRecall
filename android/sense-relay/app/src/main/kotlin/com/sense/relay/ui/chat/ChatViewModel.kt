@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 /**
@@ -139,6 +140,27 @@ class ChatViewModel(
                         )
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Defense-in-depth: the repository maps every wire error to
+                // AgentOutcome.Error, but a programming error in the mapping
+                // (or anywhere in this block) must never crash the app — show
+                // an error bubble and log the throwable so the bug is still
+                // discoverable instead of killing the process.
+                store.append(
+                    ChatMessage(
+                        id = "msg-${System.currentTimeMillis()}-error",
+                        role = Role.AGENT,
+                        kind = ChatMessageKind.AGENT_ERROR,
+                        text = "Error: ${e.message ?: e.javaClass.simpleName}",
+                    )
+                )
+                SenseLog.e(
+                    tag = "ChatViewModel",
+                    msg = "agent ask crashed: ${e.javaClass.simpleName}",
+                    t = e,
+                )
             } finally {
                 _loading.value = false
             }

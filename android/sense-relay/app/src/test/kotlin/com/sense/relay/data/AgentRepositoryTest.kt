@@ -53,6 +53,19 @@ class AgentRepositoryTest {
         assertTrue(out is AgentOutcome.Error)
         assertEquals(ErrorCode.INTERNAL_ERROR, (out as AgentOutcome.Error).code)
     }
+
+    @Test
+    fun `maps IOException to Error outcome instead of crashing the app`() = runTest {
+        // Regression for the "FATAL EXCEPTION: SocketTimeoutException" crash:
+        // a slow /agent call throws IOException (a read timeout), which is NOT
+        // an HttpApiError. Before the broadened catch in ask(), this escaped
+        // viewModelScope and killed the process. The repository must turn it
+        // into AgentOutcome.Error.
+        val repo = AgentRepository(IoFailingAgentApi())
+        val out = repo.ask(null, "what?")
+        assertTrue(out is AgentOutcome.Error)
+        assertEquals(ErrorCode.INTERNAL_ERROR, (out as AgentOutcome.Error).code)
+    }
 }
 
 private fun sampleResponse(
@@ -121,4 +134,16 @@ private class FailingAgentApi : AgentApi(
         httpStatus = 500,
         message = "boom",
     )
+}
+
+private class IoFailingAgentApi : AgentApi(
+    baseUrl = "http://test",
+    token = "t",
+    client = OkHttpClient(),
+) {
+    override suspend fun postAgent(
+        sessionId: String?,
+        text: String,
+        limit: Int,
+    ): AgentResponseDto = throw java.net.SocketTimeoutException("timeout")
 }
