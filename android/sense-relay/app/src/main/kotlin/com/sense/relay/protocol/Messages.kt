@@ -46,6 +46,36 @@ fun Hello.encode(): String = Wire.json.encodeToString(Hello.serializer(), this)
 fun Bye.encode(): String = Wire.json.encodeToString(Bye.serializer(), this)
 fun CommandAck.encode(): String = Wire.json.encodeToString(CommandAck.serializer(), this)
 
+// ---- Outbound speaker control (relay -> server) ----
+
+/** Name (or rename) a speaker. The server's set_display_name overwrites, so this
+ *  one message works for both naming a "?" and renaming "Sarah"->"Sara". */
+@Serializable
+data class NameSpeakerMsg(
+    val session_id: String,
+    val speaker_id: String,
+    val name: String,
+    val type: String = "name_speaker",
+)
+
+/** Reassign utterances from one speaker to another. v1 uses scope="all"
+ *  (the server is session-scoped, so "all of this speaker" is "this conversation"). */
+@Serializable
+data class ReassignSpeakerMsg(
+    val session_id: String,
+    val from_speaker_id: String,
+    val to_speaker_id: String,
+    val scope: String = "all",
+    val type: String = "reassign_speaker",
+)
+
+fun NameSpeakerMsg.encode(): String = Wire.json.encodeToString(NameSpeakerMsg.serializer(), this)
+fun ReassignSpeakerMsg.encode(): String = Wire.json.encodeToString(ReassignSpeakerMsg.serializer(), this)
+
+/** Parsed from a proactive `propose` payload. Only `name_speaker` is recognized
+ *  today; unknown kinds yield null (forward-compat, matches the lenient parser). */
+data class NameSpeakerPropose(val speakerId: String)
+
 // ---- Inbound (server -> relay), decoded to a small sealed model ----
 
 sealed interface ServerMessage {
@@ -56,7 +86,13 @@ sealed interface ServerMessage {
     data class RequestChunks(val start: Int, val end: Int) : ServerMessage
 
     /** A transcribed window (informational to the relay). */
-    data class Transcript(val text: String, val durationMs: Int) : ServerMessage
+    data class Transcript(
+        val text: String,
+        val durationMs: Int,
+        val speaker: String? = null,
+        val speakerName: String? = null,
+        val isWearer: Boolean = false,
+    ) : ServerMessage
 
     /** A signed §D command to forward to the device. `payload` is canonical JSON,
      *  `sig` is base64 — the device needs raw signature bytes prepended to payload. */
@@ -64,11 +100,13 @@ sealed interface ServerMessage {
 
     /** P3: a server-initiated proactive answer. The relay forwards it
      *  into the phone's ChatHistoryStore; the chat screen renders it
-     *  as an AGENT_PROACTIVE ChatMessage. */
+     *  as an AGENT_PROACTIVE ChatMessage. When [propose] is non-null the
+     *  nudge is interactive (name-the-speaker), rendered as NAME_SPEAKER. */
     data class Proactive(
         val requestId: String,
         val text: String,
         val atoms: List<String>,
+        val propose: NameSpeakerPropose? = null,
     ) : ServerMessage
 
     /** Any type the relay doesn't handle. */
@@ -81,10 +119,17 @@ fun parseServerMessage(text: String): ServerMessage {
         ?: return ServerMessage.Unknown("malformed")
     fun str(k: String) = (obj[k]?.jsonPrimitive?.content)
     fun int(k: String) = (obj[k]?.jsonPrimitive?.content?.toIntOrNull())
+    fun bool(k: String): Boolean = obj[k]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false
     return when (str("type")) {
         "ack" -> ServerMessage.Ack(int("next_seq") ?: 0)
         "request_chunks" -> ServerMessage.RequestChunks(int("start") ?: 0, int("end") ?: 0)
-        "transcript" -> ServerMessage.Transcript(str("text") ?: "", int("duration_ms") ?: 0)
+        "transcript" -> ServerMessage.Transcript(
+            text = str("text") ?: "",
+            durationMs = int("duration_ms") ?: 0,
+            speaker = str("speaker"),
+            speakerName = str("speaker_name"),
+            isWearer = bool("is_wearer"),
+        )
         "command" -> ServerMessage.Command(str("payload") ?: "", str("sig") ?: "")
         "proactive" -> ServerMessage.Proactive(
             requestId = str("request_id") ?: "",
@@ -92,7 +137,17 @@ fun parseServerMessage(text: String): ServerMessage {
             atoms = (obj["atoms"] as? kotlinx.serialization.json.JsonArray)
                 ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() }
                 ?: emptyList(),
+            propose = parsePropose(obj["propose"] as? JsonObject),
         )
         else -> ServerMessage.Unknown(str("type") ?: "missing")
     }
+}
+
+/** Only `name_speaker` is recognized today; unknown kinds -> null (forward-compat). */
+fun parsePropose(propose: JsonObject?): NameSpeakerPropose? {
+    if (propose == null) return null
+    val kind = propose["kind"]?.jsonPrimitive?.content
+    if (kind != "name_speaker") return null
+    val speakerId = propose["speaker_id"]?.jsonPrimitive?.content ?: return null
+    return NameSpeakerPropose(speakerId = speakerId)
 }

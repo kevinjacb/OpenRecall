@@ -16,4 +16,10 @@ data class TranscriptChunk(
     override val createdAt: Instant,
     val text: String,
     val durationMs: Int,
+    /** Speaker UUID for this hop (stable; events store the UUID, never a name). */
+    val speaker: String? = null,
+    /** Display name resolved at read time; null when the hop has no speaker. */
+    val speakerName: String? = null,
+    /** True when this hop's speaker is the wearer. */
+    val isWearer: Boolean = false,
 ) : CaptureEvent

@@ -65,6 +65,11 @@ def _store(app: web.Application) -> "EventStore":
     return store
 
 
+def _speaker_registry(app: web.Application):
+    """The SpeakerRegistry wired into build_app, or None when disabled."""
+    return app.get("sense_speaker_registry")
+
+
 def _summary_to_wire(s: SessionSummary, *, now: datetime | None = None) -> dict:
     """Map a SessionSummary to the wire shape matching the Android DTO."""
     return {
@@ -77,8 +82,16 @@ def _summary_to_wire(s: SessionSummary, *, now: datetime | None = None) -> dict:
     }
 
 
-def _event_to_wire(e) -> dict:
-    """Map a CaptureEvent to the wire shape matching the Android DTO."""
+def _event_to_wire(e, registry=None) -> dict:
+    """Map a CaptureEvent to the wire shape matching the Android DTO.
+
+    Speaker display fields (``speakerName``/``isWearer``) are resolved at
+    read time from the registry so renames/reassigns reflect immediately
+    without a backfill. The stored event row keeps only the stable
+    ``speaker_id`` UUID. ``None``/``False`` when the hop has no speaker or
+    the registry has no row (e.g. speaker recognition disabled).
+    """
+    sp = registry.get(e.speaker) if (e.speaker and registry is not None) else None
     return {
         "id": e.event_id,
         "sessionId": e.session_id,
@@ -94,6 +107,11 @@ def _event_to_wire(e) -> dict:
         "codec": "",
         "sampleRateHz": 0,
         "byteCount": 0,
+        "speaker": e.speaker,
+        "speakerName": sp.display_name if sp is not None else None,
+        "isWearer": sp.is_wearer if sp is not None else False,
+        "speakerConfidence": e.speaker_confidence,
+        "speakerAssignment": e.speaker_assignment,
     }
 
 
@@ -141,10 +159,11 @@ async def get_session(request: web.Request) -> web.Response:
     if summary is None:
         return web.json_response({"error": "not_found"}, status=404)
     events = _store(request.app).events(session_id)
+    registry = _speaker_registry(request.app)
     return web.json_response(
         {
             "summary": _summary_to_wire(summary),
-            "events": [_event_to_wire(e) for e in events],
+            "events": [_event_to_wire(e, registry) for e in events],
         }
     )
 
@@ -156,4 +175,5 @@ async def get_session_events(request: web.Request) -> web.Response:
     if summary is None:
         return web.json_response({"error": "not_found"}, status=404)
     events = _store(request.app).events(session_id)
-    return web.json_response({"events": [_event_to_wire(e) for e in events]})
+    registry = _speaker_registry(request.app)
+    return web.json_response({"events": [_event_to_wire(e, registry) for e in events]})

@@ -38,4 +38,11 @@ class ChatMessageKindTest {
     fun `AGENT_ERROR has the expected name`() {
         assertEquals("AGENT_ERROR", ChatMessageKind.AGENT_ERROR.name)
     }
+
+    @Test
+    fun `NAME_SPEAKER has the expected name`() {
+        // The exhaustive `when` in ChatMessageList depends on this enum;
+        // adding a constant without handling it is a compile error there.
+        assertEquals("NAME_SPEAKER", ChatMessageKind.NAME_SPEAKER.name)
+    }
 }

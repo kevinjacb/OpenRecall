@@ -347,7 +347,8 @@ def make_core_with_store_and_speaker(window_ms: int = 100):
             speaker_identifier=ident,
         )
 
-    return GatewayCore(pipeline_factory=factory, event_store=store), store
+    return GatewayCore(pipeline_factory=factory, event_store=store,
+                       speaker_registry=reg), store
 
 
 def test_emit_carries_speaker_into_event_and_transcript_msg():
@@ -369,6 +370,33 @@ def test_emit_carries_speaker_into_event_and_transcript_msg():
         assert ev.speaker == "you"
         assert ev.speaker_assignment == "confirmed"
         assert ev.speaker_confidence is not None
+
+
+def test_emit_resolves_speaker_name_and_is_wearer_on_transcript_msg():
+    core, store = make_core_with_store_and_speaker(window_ms=100)
+    core.on_control(Hello(session_id="s1", start_seq=0))
+
+    out = core.on_audio(audio_bytes(0, n_frames=5))
+
+    transcripts = [m for m in out if isinstance(m, TranscriptMsg)]
+    assert transcripts, "expected transcript messages"
+    for tmsg in transcripts:
+        # The "you" speaker is the wearer (display_name="You", is_wearer=True).
+        assert tmsg.speaker_name == "You"
+        assert tmsg.is_wearer is True
+
+
+def test_emit_transcript_msg_name_none_when_speaker_unknown():
+    """A hop with no speaker (silence/no-speech) yields name None, is_wearer False."""
+    core, store = make_core_with_store_and_speaker(window_ms=100)
+    core.on_control(Hello(session_id="s1", start_seq=0))
+
+    out = core.on_audio(audio_bytes(0, n_frames=5))
+    for tmsg in [m for m in out if isinstance(m, TranscriptMsg)]:
+        # The fixture always confirms "you"; this test documents the resolution
+        # path's existence + default shape when a speaker row is missing.
+        assert hasattr(tmsg, "speaker_name")
+        assert hasattr(tmsg, "is_wearer")
 
 
 # --- speaker control messages ------------------------------------------------

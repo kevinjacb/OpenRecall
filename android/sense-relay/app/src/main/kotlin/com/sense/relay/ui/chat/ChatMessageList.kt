@@ -38,6 +38,7 @@ fun ChatMessageList(
     isThinking: Boolean,
     onAtomChipTap: (String) -> Unit,
     onBrowseMemory: () -> Unit,
+    onNameSpeaker: (speakerId: String, name: String) -> Unit,
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
 ) {
@@ -70,6 +71,12 @@ fun ChatMessageList(
                 // surface as an AGENT_ANSWER bubble, plus a "Proactive"
                 // tag so the user knows they didn't ask.
                 ChatMessageKind.AGENT_PROACTIVE -> ProactiveMessageBubble(message = msg)
+                // Speaker recognition: server asks the user to name an
+                // unknown speaker. Interactive bubble with a text field.
+                ChatMessageKind.NAME_SPEAKER -> NameSpeakerBubble(
+                    message = msg,
+                    onNameSpeaker = onNameSpeaker,
+                )
             }
         }
         if (isThinking) {

@@ -283,3 +283,109 @@ async def test_session_events_empty_session_returns_200_empty_list(tmp_path):
         assert body == {"events": []}
     finally:
         await cli.close()
+
+
+# ---- /sessions/{id}/events speaker fields -----------------------------------
+
+
+def _speaker(speaker_id, display_name, is_wearer=False):
+    from sense_server.ingest.speaker_config import SpeakerConfig  # noqa: F401
+    from sense_server.memory.speaker_registry import Speaker
+
+    return Speaker(
+        speaker_id=speaker_id, display_name=display_name, is_wearer=is_wearer,
+        enrollment_status="confirmed", centroid=None, embedding_model="fake",
+        dim=8, turn_count=2, first_seen="2026-07-29T00:00:00+00:00",
+        updated_at="2026-07-29T00:00:00+00:00",
+    )
+
+
+async def _client_with_speakers(tmp_path, registry):
+    """Like _client but also threads a speaker_registry into build_app."""
+    token = load_or_create_token(tmp_path / "tok")
+    index = SessionIndex()
+    store = InMemoryEventStore()
+    lifecycle = SessionLifecycle()
+    app = build_app(
+        token=token,
+        get_pubkey=lambda: bytes(32),
+        session_index=index,
+        session_lifecycle=lifecycle,
+        event_store=store,
+        speaker_registry=registry,
+    )
+    server = TestServer(app)
+    cli = TestClient(server)
+    await cli.start_server()
+    return cli, token, index, store
+
+
+async def test_session_events_carry_speaker_fields(tmp_path):
+    from sense_server.memory.speaker_registry import InMemorySpeakerRegistry
+    from sense_server.ingest.speaker_config import SpeakerConfig
+
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    reg.add_speaker(_speaker("sp-1", "Sarah"))
+    cli, token, index, store = await _client_with_speakers(tmp_path, reg)
+    try:
+        e = _ce("s1", 0, text="hello", speaker="sp-1",
+                speaker_confidence=0.9, speaker_assignment="confirmed")
+        store.append(e)
+        index.record(e)
+        resp = await cli.get("/sessions/s1/events",
+                             headers={"Authorization": f"Bearer {token}"})
+        assert resp.status == 200
+        ev = (await resp.json())["events"][0]
+        assert ev["speaker"] == "sp-1"
+        assert ev["speakerName"] == "Sarah"
+        assert ev["isWearer"] is False
+        assert ev["speakerConfidence"] == 0.9
+        assert ev["speakerAssignment"] == "confirmed"
+    finally:
+        await cli.close()
+
+
+async def test_session_events_rename_reflects_at_read_time_without_backfill(tmp_path):
+    """A registry rename shows up on the next read with no event backfill."""
+    from sense_server.memory.speaker_registry import InMemorySpeakerRegistry
+    from sense_server.ingest.speaker_config import SpeakerConfig
+
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    reg.add_speaker(_speaker("sp-2", "Sara"))
+    cli, token, index, store = await _client_with_speakers(tmp_path, reg)
+    try:
+        e = _ce("s2", 0, text="hi", speaker="sp-2",
+                speaker_confidence=0.8, speaker_assignment="confirmed")
+        store.append(e)
+        index.record(e)
+        r1 = await cli.get("/sessions/s2/events",
+                           headers={"Authorization": f"Bearer {token}"})
+        assert (await r1.json())["events"][0]["speakerName"] == "Sara"
+        # Rename on the registry (the WS name_speaker path does this). No backfill.
+        reg.set_display_name("sp-2", "Sarah")
+        r2 = await cli.get("/sessions/s2/events",
+                           headers={"Authorization": f"Bearer {token}"})
+        assert (await r2.json())["events"][0]["speakerName"] == "Sarah"
+    finally:
+        await cli.close()
+
+
+async def test_session_events_speaker_none_yields_no_name(tmp_path):
+    """A hop with no speaker (silence) yields speakerName=None, isWearer=False."""
+    from sense_server.memory.speaker_registry import InMemorySpeakerRegistry
+    from sense_server.ingest.speaker_config import SpeakerConfig
+
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    cli, token, index, store = await _client_with_speakers(tmp_path, reg)
+    try:
+        e = _ce("s3", 0, text="silence", speaker=None)
+        store.append(e)
+        index.record(e)
+        resp = await cli.get("/sessions/s3/events",
+                             headers={"Authorization": f"Bearer {token}"})
+        ev = (await resp.json())["events"][0]
+        assert ev["speaker"] is None
+        assert ev["speakerName"] is None
+        assert ev["isWearer"] is False
+    finally:
+        await cli.close()

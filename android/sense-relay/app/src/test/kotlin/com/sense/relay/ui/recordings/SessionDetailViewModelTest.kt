@@ -3,6 +3,8 @@ package com.sense.relay.ui.recordings
 import com.sense.relay.core.model.ApiError
 import com.sense.relay.core.model.PagedResult
 import com.sense.relay.core.result.Outcome
+import com.sense.relay.data.SpeakerActions
+import com.sense.relay.data.SpeakerCache
 import com.sense.relay.data.SessionRepository
 import com.sense.relay.domain.model.CaptureEvent
 import com.sense.relay.domain.model.SessionDetails
@@ -162,5 +164,139 @@ class SessionDetailViewModelTest {
         assertEquals("s1-v2", after.summary.id.value, "summary re-fetched")
         assertEquals(2, after.events.size, "events re-fetched")
         assertFalse(vm.isRefreshing.value, "refresh flag cleared after the re-fetch")
+    }
+
+    /** Captures nameSpeaker/reassignSpeaker calls so the VM tests can assert
+     *  the control was emitted with the right ids/scope — without a socket. */
+    private class RecordingSpeakerActions : SpeakerActions {
+        data class Named(val sessionId: String, val speakerId: String, val name: String)
+        data class Reassigned(val sessionId: String, val fromId: String, val toId: String, val scope: String)
+
+        val named = mutableListOf<Named>()
+        val reassigned = mutableListOf<Reassigned>()
+
+        override fun nameSpeaker(sessionId: String, speakerId: String, name: String) {
+            named += Named(sessionId, speakerId, name)
+        }
+
+        override fun reassignSpeaker(sessionId: String, fromId: String, toId: String, scope: String) {
+            reassigned += Reassigned(sessionId, fromId, toId, scope)
+        }
+    }
+
+    @Test fun renameSpeakerEmitsNameSpeakerControlAndUpdatesCacheOptimistically() = runTest(dispatcher) {
+        val cache = SpeakerCache()
+        // The hop had no name yet; the cache knows the speaker is the wearer.
+        cache.upsert("spk-1", null, isWearer = true)
+        val actions = RecordingSpeakerActions()
+        val summaryFlow = MutableStateFlow<Outcome<SessionDetails>>(
+            Outcome.Success(SessionDetails(summary("s1"), emptyList())),
+        )
+        val eventsFlow = MutableStateFlow<Outcome<List<CaptureEvent>>>(Outcome.Success(emptyList()))
+        val vm = SessionDetailViewModel(
+            id = SessionId("s1"),
+            repo = FakeDetailRepo(summaryFlow, eventsFlow),
+            speakerCache = cache,
+            speakerActions = actions,
+        )
+
+        vm.renameSpeaker("spk-1", "Sarah")
+
+        // Optimistic cache update: the label renders immediately.
+        assertEquals("Sarah", cache.get("spk-1")?.name)
+        assertEquals(true, cache.get("spk-1")?.isWearer, "rename preserves isWearer")
+        // Control emitted with the VM's session id + speaker id + new name.
+        assertEquals(1, actions.named.size)
+        assertEquals("s1", actions.named[0].sessionId)
+        assertEquals("spk-1", actions.named[0].speakerId)
+        assertEquals("Sarah", actions.named[0].name)
+    }
+
+    @Test fun reassignSpeakerEmitsReassignControlWithScopeAll() = runTest(dispatcher) {
+        val cache = SpeakerCache()
+        cache.upsert("spk-1", "Sarah", isWearer = false)
+        cache.upsert("spk-2", "Lee", isWearer = true)
+        val actions = RecordingSpeakerActions()
+        val summaryFlow = MutableStateFlow<Outcome<SessionDetails>>(
+            Outcome.Success(SessionDetails(summary("s1"), emptyList())),
+        )
+        val eventsFlow = MutableStateFlow<Outcome<List<CaptureEvent>>>(Outcome.Success(emptyList()))
+        val vm = SessionDetailViewModel(
+            id = SessionId("s1"),
+            repo = FakeDetailRepo(summaryFlow, eventsFlow),
+            speakerCache = cache,
+            speakerActions = actions,
+        )
+
+        vm.reassignSpeaker("spk-1", "spk-2")
+
+        assertEquals(1, actions.reassigned.size)
+        assertEquals("s1", actions.reassigned[0].sessionId)
+        assertEquals("spk-1", actions.reassigned[0].fromId)
+        assertEquals("spk-2", actions.reassigned[0].toId)
+        assertEquals("all", actions.reassigned[0].scope, "v1 uses scope=all (session-scoped server)")
+    }
+
+    @Test fun youConfirmationPromptsOnFirstWearerYouTranscript() = runTest(dispatcher) {
+        val cache = SpeakerCache()
+        val actions = RecordingSpeakerActions()
+        val summaryFlow = MutableStateFlow<Outcome<SessionDetails>>(
+            Outcome.Success(SessionDetails(summary("s1"), emptyList())),
+        )
+        val events = MutableSharedFlow<Outcome<List<CaptureEvent>>>(extraBufferCapacity = 8)
+        val vm = SessionDetailViewModel(
+            id = SessionId("s1"),
+            repo = FakeDetailRepo(summaryFlow, events),
+            speakerCache = cache,
+            speakerActions = actions,
+        )
+        backgroundScope.launch { vm.state.toList(mutableListOf()) }
+        testScheduler.advanceUntilIdle()
+
+        events.emit(Outcome.Success(listOf(
+            TranscriptChunk(
+                id = "e1", sessionId = SessionId("s1"), seq = 1, startMs = 1000L,
+                createdAt = Instant.EPOCH, text = "t", durationMs = 500,
+                speaker = "you", speakerName = "You", isWearer = true,
+            ),
+        )))
+        testScheduler.advanceUntilIdle()
+        assertEquals(YouConfirmationState.Prompting("you"), vm.youConfirmation.value)
+
+        vm.confirmYou("Kevin")
+        testScheduler.advanceUntilIdle()
+        assertEquals(YouConfirmationState.Done, vm.youConfirmation.value)
+        assertEquals("Kevin", cache.get("you")?.name, "confirmYou renames the wearer in the cache")
+        assertEquals(1, actions.named.size, "confirmYou emits a name_speaker control")
+        assertEquals("you", actions.named[0].speakerId)
+        assertEquals("Kevin", actions.named[0].name)
+    }
+
+    @Test fun youConfirmationDoesNotPromptWhenAlreadyNamed() = runTest(dispatcher) {
+        val cache = SpeakerCache()
+        cache.upsert("you", "Kevin", isWearer = true)
+        val actions = RecordingSpeakerActions()
+        val summaryFlow = MutableStateFlow<Outcome<SessionDetails>>(
+            Outcome.Success(SessionDetails(summary("s1"), emptyList())),
+        )
+        val events = MutableSharedFlow<Outcome<List<CaptureEvent>>>(extraBufferCapacity = 8)
+        val vm = SessionDetailViewModel(
+            id = SessionId("s1"),
+            repo = FakeDetailRepo(summaryFlow, events),
+            speakerCache = cache,
+            speakerActions = actions,
+        )
+        backgroundScope.launch { vm.state.toList(mutableListOf()) }
+        testScheduler.advanceUntilIdle()
+
+        events.emit(Outcome.Success(listOf(
+            TranscriptChunk(
+                id = "e1", sessionId = SessionId("s1"), seq = 1, startMs = 1000L,
+                createdAt = Instant.EPOCH, text = "t", durationMs = 500,
+                speaker = "you", speakerName = "Kevin", isWearer = true,
+            ),
+        )))
+        testScheduler.advanceUntilIdle()
+        assertEquals(YouConfirmationState.Idle, vm.youConfirmation.value)
     }
 }

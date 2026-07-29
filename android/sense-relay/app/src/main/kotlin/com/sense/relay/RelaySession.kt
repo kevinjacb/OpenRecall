@@ -23,7 +23,11 @@ import java.util.Base64
  * server `command` (base64 sig + JSON payload) into the device's on-wire command
  * frame `[raw 64-byte signature][payload JSON]`.
  */
-class RelaySession(val sessionId: String, private val startSeq: Int = 0) {
+class RelaySession(
+    val sessionId: String,
+    private val startSeq: Int = 0,
+    private val speakerCache: com.sense.relay.data.SpeakerCache? = null,
+) {
 
     /**
      * True once [start] has emitted `hello` for the current link. The BLE
@@ -62,8 +66,16 @@ class RelaySession(val sessionId: String, private val startSeq: Int = 0) {
             is ServerMessage.Command -> listOf(forwardCommand(msg))
             is ServerMessage.RequestChunks ->
                 listOf(RelayAction.Note("server requested backfill [${msg.start}, ${msg.end}) — not yet supported"))
-            is ServerMessage.Transcript ->
+            is ServerMessage.Transcript -> {
+                // Speaker recognition: upsert the cache so labels and the
+                // reassign picker resolve the UUID to the latest name. The
+                // store keeps only the UUID; the name is read-time-resolved.
+                val spk = msg.speaker
+                if (speakerCache != null && spk != null) {
+                    speakerCache.upsert(spk, msg.speakerName, msg.isWearer)
+                }
                 listOf(RelayAction.Note("transcript: ${msg.text}"))
+            }
             is ServerMessage.Ack -> emptyList()       // cursor ack; nothing to relay
             is ServerMessage.Proactive -> listOf(forwardProactive(msg))
             is ServerMessage.Unknown -> emptyList()   // forward-compatible: ignore
@@ -79,6 +91,22 @@ class RelaySession(val sessionId: String, private val startSeq: Int = 0) {
      * the contract is forward-compatible) dedup naturally.
      */
     private fun forwardProactive(msg: ServerMessage.Proactive): RelayAction {
+        // Speaker recognition: a name-the-speaker nudge (propose != null) is
+        // rendered as an interactive NAME_SPEAKER bubble; otherwise the normal
+        // proactive-answer bubble.
+        if (msg.propose != null) {
+            val chatMessage = ChatMessage(
+                id = msg.requestId,
+                role = Role.AGENT,
+                kind = ChatMessageKind.NAME_SPEAKER,
+                text = msg.text,
+                propose = msg.propose,
+                sessionId = sessionId,
+                speakerId = msg.propose.speakerId,
+                traceRequestId = msg.requestId,
+            )
+            return RelayAction.ForwardToChatHistory(chatMessage)
+        }
         val chatMessage = ChatMessage(
             id = msg.requestId,
             role = Role.AGENT,
@@ -99,6 +127,14 @@ class RelaySession(val sessionId: String, private val startSeq: Int = 0) {
         )
         return RelayAction.ForwardToChatHistory(chatMessage)
     }
+
+    /** Serialize + send a name_speaker control message over the WS. */
+    fun sendControl(msg: com.sense.relay.protocol.NameSpeakerMsg): List<RelayAction> =
+        listOf(RelayAction.SendServerText(msg.encode()))
+
+    /** Serialize + send a reassign_speaker control message over the WS. */
+    fun sendControl(msg: com.sense.relay.protocol.ReassignSpeakerMsg): List<RelayAction> =
+        listOf(RelayAction.SendServerText(msg.encode()))
 
     /** The device notified a command ack (the command_id bytes) — wrap it as §E. */
     fun onDeviceCommandAck(ackPayload: ByteArray): RelayAction {

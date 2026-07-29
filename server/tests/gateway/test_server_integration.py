@@ -93,6 +93,8 @@ async def test_full_session_over_a_real_socket():
                 "speaker": None,
                 "speaker_confidence": None,
                 "speaker_assignment": None,
+                "speaker_name": None,
+                "is_wearer": False,
             }
             assert ack2 == {"type": "ack", "session_id": "s1", "next_seq": 1}
 

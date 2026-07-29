@@ -76,7 +76,7 @@ class ChatHistoryStore {
  *   The chat screen renders a "Proactive" tag so the user knows
  *   the message wasn't a response to them.
  */
-enum class ChatMessageKind { USER_TEXT, AGENT_ANSWER, AGENT_REFUSE, AGENT_ERROR, AGENT_PROACTIVE }
+enum class ChatMessageKind { USER_TEXT, AGENT_ANSWER, AGENT_REFUSE, AGENT_ERROR, AGENT_PROACTIVE, NAME_SPEAKER }
 
 data class ChatMessage(
     val id: String,
@@ -94,6 +94,12 @@ data class ChatMessage(
     val traceRequestId: String = "",
     val traceRetrievalId: String = "",
     val traceAuditId: String = "",
+    /** NAME_SPEAKER only: the parsed propose payload (which speaker to name). */
+    val propose: com.sense.relay.protocol.NameSpeakerPropose? = null,
+    /** NAME_SPEAKER only: the session id to address the name_speaker control to. */
+    val sessionId: String? = null,
+    /** NAME_SPEAKER only: convenience copy of [propose]'s speakerId (or a reassign target). */
+    val speakerId: String? = null,
 )
 
 enum class Role { USER, AGENT }
