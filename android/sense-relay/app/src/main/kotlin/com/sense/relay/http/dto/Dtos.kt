@@ -56,7 +56,29 @@ data class CaptureEventDto(
     val codec: String = "",
     val sampleRateHz: Int = 0,
     val byteCount: Int = 0,
+    // Speaker fields resolved at read time by the server. Additive; default
+    // so an older server's payloads still deserialize. Biometrics are
+    // NEVER sent over HTTP (centroid/embedding_model/dim are server-only).
+    val speaker: String? = null,
+    val speakerName: String? = null,
+    val isWearer: Boolean = false,
+    val speakerConfidence: Double? = null,
+    val speakerAssignment: String? = null,
 )
+
+@Serializable
+data class SpeakerDto(
+    val speakerId: String,
+    val displayName: String? = null,
+    val isWearer: Boolean = false,
+    val enrollmentStatus: String = "",
+    val turnCount: Int = 0,
+    val firstSeen: String = "",
+    val updatedAt: String = "",
+)
+
+@Serializable
+data class SpeakersDto(val speakers: List<SpeakerDto> = emptyList())
 
 @Serializable
 data class ServerStatusDto(

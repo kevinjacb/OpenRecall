@@ -7,6 +7,8 @@ import com.sense.relay.http.dto.ServerStatusDto
 import com.sense.relay.http.dto.SessionDetailsDto
 import com.sense.relay.http.dto.SessionEventsDto
 import com.sense.relay.http.dto.SessionsPageDto
+import com.sense.relay.http.dto.SpeakerDto
+import com.sense.relay.http.dto.SpeakersDto
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
@@ -153,6 +155,16 @@ class SenseHttpClient(
                 if (resp.code == 404) throw HttpStatusException(404, "session ${id.value} not found")
                 if (resp.code !in 200..299) throw HttpStatusException(resp.code)
                 DtoJson.decodeFromString(SessionEventsDto.serializer(), resp.body?.string().orEmpty()).events
+            }
+        }
+
+    /** `GET /speakers` — the registry minus biometrics. Empty list when disabled. */
+    suspend fun getSpeakers(): List<SpeakerDto> =
+        withContext(Dispatchers.IO) {
+            client.newCall(req("/speakers")).execute().use { resp ->
+                if (resp.code == 401 || resp.code == 403) throw SecurityException("unauthorized")
+                if (resp.code !in 200..299) throw HttpStatusException(resp.code)
+                DtoJson.decodeFromString(SpeakersDto.serializer(), resp.body?.string().orEmpty()).speakers
             }
         }
 
