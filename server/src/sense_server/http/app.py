@@ -38,6 +38,7 @@ def build_app(
     id_generator=None,
     command_store=None,
     command_dispatcher=None,
+    speaker_registry=None,
 ):
     """Build the Sense HTTP control API.
 
@@ -70,6 +71,7 @@ def build_app(
     app["sense_id_generator"] = id_generator
     app["sense_command_store"] = command_store
     app["sense_command_dispatcher"] = command_dispatcher
+    app["sense_speaker_registry"] = speaker_registry
 
     from sense_server.http.routes.provisioning import add_routes as add_provisioning
     from sense_server.http.routes.sessions import add_routes as add_sessions
@@ -78,6 +80,7 @@ def build_app(
     from sense_server.http.routes.memory import add_routes as add_memory
     from sense_server.http.routes.metrics_route import add_routes as add_metrics_route
     from sense_server.http.routes.commands import add_routes as add_commands
+    from sense_server.http.routes.speakers import add_routes as add_speakers
 
     add_provisioning(app)
     add_sessions(app)
@@ -85,6 +88,7 @@ def build_app(
     add_agent(app)
     add_memory(app)
     add_metrics_route(app)
+    add_speakers(app)
     if command_store is not None and command_dispatcher is not None:
         add_commands(app)
     return app
