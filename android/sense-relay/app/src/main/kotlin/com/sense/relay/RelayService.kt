@@ -152,7 +152,10 @@ class RelayService : Service() {
             if (::sensor.isInitialized) sensor.stop()
         }
 
-        session = RelaySession(sessionId = UUID.randomUUID().toString())
+        session = RelaySession(
+            sessionId = UUID.randomUUID().toString(),
+            speakerCache = RepositoryModule.repos.speakerCache,
+        )
         sensor = SensorLink(this, sensorListener(gen))
         // Publish to RelayController: scanning for the device. The
         // device state machine in DeviceState captures this; the

@@ -10,6 +10,7 @@ import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -122,6 +123,87 @@ class RelaySessionTest {
         assertTrue(parseServerMessage("not json") is ServerMessage.Unknown)
         assertTrue(parseServerMessage("""{"type":"future_thing"}""") is ServerMessage.Unknown)
         assertTrue(RelaySession("s").onServerMessage("garbage").isEmpty())
+    }
+
+    // --- speaker recognition --------------------------------------------------
+
+    @Test
+    fun proactive_with_name_speaker_propose_forwards_speaker_nudge_chat_message() {
+        val session = RelaySession("s")
+        val actions = session.onServerMessage(
+            """{"type":"proactive","request_id":"r1","text":"Who was that?",
+               "atoms":[],"propose":{"kind":"name_speaker","speaker_id":"sp-9"}}"""
+        )
+        assertEquals(1, actions.size)
+        val forward = actions.single() as RelayAction.ForwardToChatHistory
+        val msg = forward.message
+        assertEquals(com.sense.relay.data.ChatMessageKind.NAME_SPEAKER, msg.kind)
+        assertEquals("sp-9", msg.propose?.speakerId)
+        assertEquals("s", msg.sessionId)
+        assertEquals("sp-9", msg.speakerId)
+    }
+
+    @Test
+    fun proactive_without_propose_still_forwards_text_as_proactive() {
+        val session = RelaySession("s")
+        val actions = session.onServerMessage(
+            """{"type":"proactive","request_id":"r2","text":"hi","atoms":[]}"""
+        )
+        val forward = actions.single() as RelayAction.ForwardToChatHistory
+        assertEquals(com.sense.relay.data.ChatMessageKind.AGENT_PROACTIVE, forward.message.kind)
+        assertNull(forward.message.propose)
+    }
+
+    @Test
+    fun transcript_with_speaker_upserts_speaker_cache() {
+        val cache = com.sense.relay.data.SpeakerCache()
+        val session = RelaySession("s", speakerCache = cache)
+        session.onServerMessage(
+            """{"type":"transcript","session_id":"s","text":"hi","duration_ms":1000,
+               "speaker":"sp-1","speaker_name":"Sarah","is_wearer":false}"""
+        )
+        assertEquals("Sarah", cache.get("sp-1")?.name)
+        assertEquals(false, cache.get("sp-1")?.isWearer)
+    }
+
+    @Test
+    fun transcript_without_speaker_does_not_touch_cache() {
+        val cache = com.sense.relay.data.SpeakerCache()
+        val session = RelaySession("s", speakerCache = cache)
+        session.onServerMessage(
+            """{"type":"transcript","session_id":"s","text":"silence","duration_ms":1000}"""
+        )
+        assertNull(cache.get("nothing"))
+        assertEquals(0, cache.snapshot().size)
+    }
+
+    @Test
+    fun send_control_serializes_name_speaker_message() {
+        val session = RelaySession("s")
+        val actions = session.sendControl(
+            com.sense.relay.protocol.NameSpeakerMsg(
+                session_id = "s", speaker_id = "sp-9", name = "Sarah"
+            )
+        )
+        assertEquals(1, actions.size)
+        val text = (actions.single() as RelayAction.SendServerText).text
+        assertTrue(text.contains("\"type\":\"name_speaker\""))
+        assertTrue(text.contains("\"speaker_id\":\"sp-9\""))
+        assertTrue(text.contains("\"name\":\"Sarah\""))
+    }
+
+    @Test
+    fun send_control_serializes_reassign_message_scope_all() {
+        val session = RelaySession("s")
+        val text = (session.sendControl(
+            com.sense.relay.protocol.ReassignSpeakerMsg(
+                session_id = "s", from_speaker_id = "sp-1", to_speaker_id = "sp-2"
+            )
+        ).single() as RelayAction.SendServerText).text
+        assertTrue(text.contains("\"type\":\"reassign_speaker\""))
+        assertTrue(text.contains("\"from_speaker_id\":\"sp-1\""))
+        assertTrue(text.contains("\"to_speaker_id\":\"sp-2\""))
+        assertTrue(text.contains("\"scope\":\"all\""))
     }
 
     // JSON-quote/escape a string as a field value.

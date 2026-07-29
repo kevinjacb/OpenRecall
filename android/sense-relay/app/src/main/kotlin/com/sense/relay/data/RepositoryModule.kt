@@ -57,6 +57,11 @@ object RepositoryModule {
         val chatHistoryStore: ChatHistoryStore,
         // P1 memory-browse user-facing surface (MemoryScreen):
         val memoryRepository: MemoryRepository,
+        // Speaker recognition: shared cache seeded from GET /speakers and
+        // upserted by every transcript §E. Drives Recordings labels + the
+        // reassign picker. v1 in-memory (rebuilt from GET /speakers after
+        // restart — the server is the source of truth).
+        val speakerCache: SpeakerCache,
         // The "Retry connection" escape hatch — re-launches the foreground
         // RelayService from its last-good config so a dropped link can be
         // recovered without re-running the setup wizard.
@@ -135,6 +140,7 @@ object RepositoryModule {
         )
         val device = DeviceRepositoryImpl(RelayController)
         val relayStarter = IntentRelayStarter(app)
+        val speakerCache = SpeakerCache()
         repos = Repositories(
             configuration = configuration,
             session = session,
@@ -146,6 +152,7 @@ object RepositoryModule {
             agentRepository = agentRepository,
             chatHistoryStore = chatHistoryStore,
             memoryRepository = memoryRepository,
+            speakerCache = speakerCache,
             relayStarter = relayStarter,
         )
     }
