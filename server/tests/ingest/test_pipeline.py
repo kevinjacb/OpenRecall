@@ -67,7 +67,7 @@ class FakeTranscriber:
         return f"seg{len(self.calls)}"
 
 
-def make_pipeline(window_ms: int = 100, hop_ms: int = 20, speaker_identifier=None):
+def make_pipeline(window_ms: int = 100, hop_ms: int = 20, speaker_identifier=None, speaker_window_ms: int = 2000):
     """Build a pipeline with streaming defaults scaled for the test.
 
     The old hard-cut pipeline used a single window. The new streaming
@@ -84,6 +84,7 @@ def make_pipeline(window_ms: int = 100, hop_ms: int = 20, speaker_identifier=Non
         window_ms=window_ms,
         sample_rate=16000,
         speaker_identifier=speaker_identifier,
+        speaker_window_ms=speaker_window_ms,
     )
     return pipe, dec, tr
 
@@ -225,3 +226,65 @@ def test_pipeline_without_identifier_leaves_speaker_none():
         assert t.speaker is None
         assert t.speaker_confidence is None
         assert t.speaker_assignment is None
+
+
+def test_rolling_speaker_window_decouples_embedder_from_hop():
+    """The embedder is fed a rolling window, not the hop slice, so a
+    min-length embedder (mirroring Resemblyzer's >=1.6s floor) still
+    produces a speaker even when the hop is far below its minimum.
+
+    With hop=20ms and a 60ms embedder floor, the hop slice (20ms) could
+    never embed — but the rolling window grows hop-by-hop until it
+    clears the floor, then keeps rolling. This is the regression pin for
+    the bug where run_gateway's 1s hop < Resemblyzer's 1.6s floor made
+    every Transcript carry speaker=None.
+    """
+    import math
+
+    from sense_server.ingest.speaker_config import SpeakerConfig
+    from sense_server.ingest.speaker_identifier import SpeakerIdentifier
+    from sense_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
+
+    v = [0.5] * 8
+    n = math.sqrt(sum(x * x for x in v))
+    unit = [x / n for x in v]
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    reg.add_speaker(Speaker(
+        speaker_id="you", display_name="You", is_wearer=True,
+        enrollment_status="confirmed", centroid=unit, embedding_model="fake",
+        dim=8, turn_count=0, first_seen="2026-07-26T00:00:00+00:00",
+        updated_at="2026-07-26T00:00:00+00:00"))
+
+    # Embedder that refuses too-short audio, exactly like Resemblyzer's
+    # _WARMUP_MS gate (speaker_embedder.embed returns None below the floor).
+    class _MinLenEmbed:
+        dim = 8
+
+        def __init__(self, min_bytes: int) -> None:
+            self.min_bytes = min_bytes
+
+        def embed(self, pcm, sr):
+            if len(pcm) < self.min_bytes:
+                return None
+            return list(unit)
+
+    # 60ms floor in bytes (16000 Hz * 2 bytes * 60ms / 1000). Hop is 20ms,
+    # so the hop slice alone (640 bytes = 20ms) can never clear it.
+    min_bytes = 16000 * 2 * 60 // 1000
+    ident = SpeakerIdentifier(_MinLenEmbed(min_bytes), reg, SpeakerConfig())
+    # 80ms rolling window: grows 20->40->60->80 then rolls at 80.
+    pipe, _dec, _tr = make_pipeline(
+        hop_ms=20, window_ms=100, speaker_identifier=ident, speaker_window_ms=80,
+    )
+
+    out = pipe.ingest(pkt(0, n_frames=5))  # 5 hops of 20ms each
+
+    assert len(out) == 5, "one transcript per 20ms hop"
+    speakers = [t.speaker for t in out]
+    # Hops 1-2: window (20ms, 40ms) below the 60ms floor -> no speaker.
+    assert speakers[0] is None, "20ms window below floor -> speaker=None"
+    assert speakers[1] is None, "40ms window below floor -> speaker=None"
+    # Hops 3-5: window (60ms, 80ms, 80ms rolled) at/above floor -> "you".
+    assert speakers[2] == "you", "60ms window clears floor -> speaker"
+    assert speakers[3] == "you", "80ms window clears floor -> speaker"
+    assert speakers[4] == "you", "rolled 80ms window clears floor -> speaker"

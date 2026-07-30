@@ -44,6 +44,14 @@ if TYPE_CHECKING:
 FRAME_MS = 20  # one Opus frame == 20 ms of audio (V1 audio spec)
 DEFAULT_HOP_MS = 1000  # streaming hop size (one Whisper call per second)
 DEFAULT_WINDOW_MS = 5000  # streaming context (5s of rolling audio)
+# Speaker-ID cadence is decoupled from the transcription hop: the embedder is
+# fed a rolling window this wide (not the hop slice). Resemblyzer needs >= ~1.6s
+# for a stable embedding (ResemblyzerSpeakerEmbedder._WARMUP_MS = 1600), but the
+# transcription hop is 1s for responsiveness — feeding the hop slice to the
+# embedder made every embed() return None (1000 < 1600), so every Transcript
+# carried speaker=None and no speaker was ever minted. 2s comfortably clears the
+# 1.6s floor while keeping the hop at 1s.
+DEFAULT_SPEAKER_WINDOW_MS = 2000
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +66,7 @@ class AudioIngestPipeline:
         window_ms: int = DEFAULT_WINDOW_MS,
         sample_rate: int = 16000,
         speaker_identifier: "SpeakerIdentifier | None" = None,
+        speaker_window_ms: int = DEFAULT_SPEAKER_WINDOW_MS,
     ) -> None:
         if window_ms % FRAME_MS != 0:
             raise ValueError(f"window_ms must be a multiple of {FRAME_MS}")
@@ -90,17 +99,33 @@ class AudioIngestPipeline:
         self._pcm_buffer: bytearray = bytearray()  # decoded PCM, appended as frames arrive
         self._absolute_ms: int = 0  # total ms of audio fed to the streamer
         self._identifier = speaker_identifier  # optional; None when disabled
+        # Rolling speaker-ID window, decoupled from the transcription hop. The
+        # embedder is fed the last `speaker_window_ms` of PCM on every hop, not
+        # the 1s hop slice, so it always sees >= ~1.6s (Resemblyzer's floor).
+        # Only used when a speaker identifier is wired; stays empty otherwise.
+        self._speaker_window: bytearray = bytearray()
+        self._speaker_window_bytes = speaker_window_ms * (sample_rate * 2 // 1000)
 
     def _speaker(self, pcm: bytes) -> "SpeakerAssignment | None":
-        """Identify the speaker of a PCM slice; None when disabled / no match.
+        """Identify the speaker of the rolling window ending at this hop.
 
-        Speaker ID never blocks transcription: any embed failure is swallowed
-        inside :meth:`SpeakerIdentifier.identify` and returns None, so the
-        hop is still transcribed (with ``speaker=None``).
+        Feeds the embedder the last ``speaker_window_ms`` of PCM (extended by
+        this hop's slice), not the 1s hop slice itself — Resemblyzer needs
+        >= ~1.6s for a stable embedding, which a 1s hop can never reach. The
+        window grows hop-by-hop until it fills, then rolls. Speaker ID never
+        blocks transcription: any embed failure is swallowed inside
+        :meth:`SpeakerIdentifier.identify` and returns None, so the hop is
+        still transcribed (with ``speaker=None``). Returns None while the
+        identifier is disabled or the window has not yet accumulated enough
+        audio for a stable embedding.
         """
         if self._identifier is None:
             return None
-        return self._identifier.identify(pcm, self._sample_rate)
+        self._speaker_window.extend(pcm)
+        if len(self._speaker_window) > self._speaker_window_bytes:
+            # Keep only the trailing window (drop the head).
+            del self._speaker_window[:-self._speaker_window_bytes]
+        return self._identifier.identify(bytes(self._speaker_window), self._sample_rate)
 
     @property
     def next_expected_seq(self) -> int:

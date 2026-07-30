@@ -105,6 +105,7 @@ def build_pipeline_factory(
     whisper_config=None,
     gap_timeout_ms: int | None = 3000,
     speaker_identifier=None,
+    speaker_window_ms: int = 2000,
 ) -> PipelineFactory:
     """Factory wiring the real Opus decoder + MLX-whisper transcriber per session.
 
@@ -184,6 +185,7 @@ def build_pipeline_factory(
             window_ms=window_ms,
             sample_rate=16000,
             speaker_identifier=speaker_identifier,
+            speaker_window_ms=speaker_window_ms,
         )
 
     return factory
