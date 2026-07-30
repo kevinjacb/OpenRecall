@@ -2,6 +2,7 @@ package com.sense.relay.data
 
 import com.sense.relay.http.SenseHttpClient
 import com.sense.relay.http.dto.SpeakerDto
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -25,12 +26,15 @@ private class HttpSpeakerApi(private val client: suspend () -> SenseHttpClient) 
  * [AgentRepository]/[MemoryRepository]). Maps DTOs to biometric-free
  * [SpeakerEntry]s for the [SpeakerCache].
  */
-class SpeakerRepository(private val apiProvider: suspend () -> SpeakerApi) {
+class SpeakerRepository(
+    private val apiProvider: suspend () -> SpeakerApi,
+    private val io: CoroutineDispatcher = Dispatchers.IO,
+) {
 
     /** Convenience constructor pinning a single api (test path). */
     constructor(api: SpeakerApi) : this(apiProvider = { api })
 
-    suspend fun loadSpeakers(): List<SpeakerEntry> = withContext(Dispatchers.IO) {
+    suspend fun loadSpeakers(): List<SpeakerEntry> = withContext(io) {
         apiProvider().getSpeakers().map { dto ->
             SpeakerEntry(
                 speakerId = dto.speakerId,

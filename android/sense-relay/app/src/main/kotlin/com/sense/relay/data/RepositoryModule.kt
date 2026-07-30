@@ -19,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.IOException
@@ -141,6 +142,17 @@ object RepositoryModule {
         val device = DeviceRepositoryImpl(RelayController)
         val relayStarter = IntentRelayStarter(app)
         val speakerCache = SpeakerCache()
+        // Seed the speaker cache from GET /speakers on every transition into
+        // ServerState.Authenticated (first connect, every reconnect, after a
+        // re-provision) so the Recordings Reassign picker is populated before
+        // the user opens a session detail (a session opened with no active
+        // relay stream would otherwise see an empty picker even when the
+        // server knows the speakers). seed() replaces the set, so idempotent
+        // re-seeding is safe; a fetch failure is logged, not thrown, so the
+        // collector survives to retry on the next authenticated tick.
+        val speakerRepository = SpeakerRepository.fromClient(clientProvider)
+        SpeakerCacheSeeder(speakerRepository, speakerCache)
+            .launchOnAuthenticated(scope, RelayController.state.map { it.server })
         repos = Repositories(
             configuration = configuration,
             session = session,

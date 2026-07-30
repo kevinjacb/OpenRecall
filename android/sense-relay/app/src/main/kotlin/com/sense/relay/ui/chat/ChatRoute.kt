@@ -38,6 +38,7 @@ fun ChatRoute(
                 ChatViewModel(
                     repo = RepositoryModule.repos.agentRepository,
                     store = RepositoryModule.repos.chatHistoryStore,
+                    relayController = RepositoryModule.repos.relayController,
                 )
             }
         },

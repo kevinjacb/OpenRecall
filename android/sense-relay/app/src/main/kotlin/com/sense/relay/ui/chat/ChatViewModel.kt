@@ -9,6 +9,8 @@ import com.sense.relay.data.ChatMessageKind
 import com.sense.relay.data.Role
 import com.sense.relay.core.SenseLog
 import com.sense.relay.core.TraceContext
+import com.sense.relay.relay.RelayConnectionState
+import com.sense.relay.relay.RelayController
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -33,7 +35,7 @@ import kotlinx.coroutines.launch
 class ChatViewModel(
     private val repo: AgentRepository,
     private val store: ChatHistoryStore,
-    private val sessionId: String? = null,
+    private val relayController: RelayController = RelayController,
     private val speakerActions: com.sense.relay.data.SpeakerActions = com.sense.relay.data.SpeakerControlPort,
     savedState: SavedStateHandle = SavedStateHandle(),
 ) : ViewModel() {
@@ -52,6 +54,19 @@ class ChatViewModel(
 
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
+
+    /**
+     * The live relay session id published app-wide by [RelayService] on
+     * socket open (`RelayConnectionState.Live(sessionId)`), read
+     * imperatively at call time. A `StateFlow.value` read is always
+     * current — no `stateIn`/subscription needed, avoiding the
+     * WhileSubscribed "nobody subscribes → stays null" trap. Returns
+     * null when the relay is not live, so [nameSpeaker] and [ask]
+     * gracefully no-op / send a server-less ask instead of dropping the
+     * request with a stale id.
+     */
+    private fun currentSessionId(): String? =
+        (relayController.state.value.connection as? RelayConnectionState.Live)?.sessionId
 
     init {
         // Persist draft across process death.
@@ -78,7 +93,7 @@ class ChatViewModel(
         _loading.value = true
         viewModelScope.launch {
             try {
-                val outcome = repo.ask(sessionId, text)
+                val outcome = repo.ask(currentSessionId(), text)
                 when (outcome) {
                     is AgentOutcome.Answer -> {
                         val agent = ChatMessage(
@@ -183,7 +198,7 @@ class ChatViewModel(
      * crash (the port buffers; RelayService drains on connect).
      */
     fun nameSpeaker(speakerId: String, name: String) {
-        val sid = sessionId
+        val sid = currentSessionId()
         if (sid.isNullOrEmpty()) return
         runCatching { speakerActions.nameSpeaker(sid, speakerId, name) }
             .onFailure { SenseLog.e(tag = "ChatViewModel", msg = "name_speaker send failed: ${it.javaClass.simpleName}", t = it) }

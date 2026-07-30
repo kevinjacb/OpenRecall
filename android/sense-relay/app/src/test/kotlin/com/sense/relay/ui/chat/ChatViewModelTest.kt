@@ -7,7 +7,10 @@ import com.sense.relay.data.AgentRepository
 import com.sense.relay.data.ChatHistoryStore
 import com.sense.relay.data.ChatMessageKind
 import com.sense.relay.data.Role
+import com.sense.relay.data.SpeakerActions
 import com.sense.relay.http.ErrorCode
+import com.sense.relay.relay.RelayConnectionState
+import com.sense.relay.relay.RelayController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -29,6 +32,10 @@ class ChatViewModelTest {
     @Before
     fun setUp() {
         Dispatchers.setMain(dispatcher)
+        // RelayController is a process singleton the VM reads imperatively
+        // for the live session id; reset it between tests so a prior test's
+        // Live connection never leaks into the next (mirrors DeviceViewModelTest).
+        RelayController.reset()
     }
 
     @After
@@ -127,6 +134,39 @@ class ChatViewModelTest {
         vm.clear()
         assertEquals(0, store.messages.value.size)
     }
+
+    @Test
+    fun `nameSpeaker uses the live session id from RelayController`() = runTest(dispatcher) {
+        val repo = FakeAgentRepo { _, _ -> error("ask should not be called") }
+        val store = ChatHistoryStore()
+        val actions = RecordingSpeakerActions()
+        // The VM's default relayController is the RelayController singleton;
+        // drive it Live so currentSessionId() resolves to the server session id
+        // published by RelayService on socket open.
+        RelayController.updateConnection(RelayConnectionState.Live("s-live", 0))
+        val vm = ChatViewModel(repo, store, speakerActions = actions)
+
+        vm.nameSpeaker("spk-1", "Sarah")
+
+        assertEquals(1, actions.named.size)
+        assertEquals("s-live", actions.named[0].sessionId)
+        assertEquals("spk-1", actions.named[0].speakerId)
+        assertEquals("Sarah", actions.named[0].name)
+    }
+
+    @Test
+    fun `nameSpeaker noops when the relay is not live`() = runTest(dispatcher) {
+        val repo = FakeAgentRepo { _, _ -> error("ask should not be called") }
+        val store = ChatHistoryStore()
+        val actions = RecordingSpeakerActions()
+        // RelayController is Initial (reset in setUp) → currentSessionId() is null
+        // → nameSpeaker must drop the request silently instead of crashing.
+        val vm = ChatViewModel(repo, store, speakerActions = actions)
+
+        vm.nameSpeaker("spk-1", "Sarah")
+
+        assertEquals("no control emitted with no live session", 0, actions.named.size)
+    }
 }
 
 private class FakeAgentRepo(
@@ -145,4 +185,21 @@ private class FakeAgentApiForRepo : com.sense.relay.data.AgentApi(
         text: String,
         limit: Int,
     ): com.sense.relay.http.dto.AgentResponseDto = error("not used in chat vm tests")
+}
+
+/** Captures nameSpeaker/reassignSpeaker calls so the VM tests can assert the
+ *  control was emitted with the live session id — without a socket. Mirrors
+ *  SessionDetailViewModelTest's RecordingSpeakerActions. */
+private class RecordingSpeakerActions : SpeakerActions {
+    data class Named(val sessionId: String, val speakerId: String, val name: String)
+
+    val named = mutableListOf<Named>()
+
+    override fun nameSpeaker(sessionId: String, speakerId: String, name: String) {
+        named += Named(sessionId, speakerId, name)
+    }
+
+    override fun reassignSpeaker(sessionId: String, fromId: String, toId: String, scope: String) {
+        // Not exercised by ChatViewModel; no-op capture.
+    }
 }
