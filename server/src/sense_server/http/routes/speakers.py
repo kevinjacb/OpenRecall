@@ -6,11 +6,15 @@ NEVER serialized here. Speaker embeddings never leave the Mac unless
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from aiohttp import web
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def add_routes(app: web.Application) -> None:
     app.router.add_get("/speakers", list_speakers)
+    app.router.add_post("/speakers/{speaker_id}/rename", rename_speaker)
 
 
 def _registry(app: web.Application):
@@ -40,3 +44,36 @@ async def list_speakers(request: web.Request) -> web.Response:
     except Exception:  # pragma: no cover - last-resort safety net
         return web.json_response({"speakers": []})
     return web.json_response({"speakers": [_speaker_to_wire(s) for s in speakers]})
+
+
+class RenameSpeakerDTO(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    name: str = Field(min_length=1, max_length=128)
+
+
+class ReassignSpeakerDTO(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    fromSpeakerId: str = Field(min_length=1)
+    toSpeakerId: str = Field(min_length=1)
+    scope: Literal["all"] = "all"
+
+
+def _bad_request(message: str) -> web.Response:
+    return web.json_response({"error": "bad_request", "message": message}, status=400)
+
+
+async def rename_speaker(request: web.Request) -> web.Response:
+    reg = _registry(request.app)
+    if reg is None:
+        return web.json_response({"error": "speaker_recognition_disabled"}, status=409)
+    speaker_id = request.match_info["speaker_id"]
+    try:
+        body = await request.json()
+        dto = RenameSpeakerDTO.model_validate(body)
+    except Exception as e:
+        return _bad_request(f"invalid request: {e}")
+    try:
+        reg.name(speaker_id, dto.name)
+    except KeyError:
+        return web.json_response({"error": "speaker_not_found"}, status=404)
+    return web.json_response({"speaker": _speaker_to_wire(reg.get(speaker_id))})

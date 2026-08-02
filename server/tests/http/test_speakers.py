@@ -66,6 +66,80 @@ async def test_speakers_empty_registry_returns_empty_list(tmp_path):
         await cli.close()
 
 
+async def test_rename_requires_token(tmp_path):
+    cli, _ = await _client(tmp_path, InMemorySpeakerRegistry(SpeakerConfig()))
+    try:
+        resp = await cli.post("/speakers/sp-1/rename", json={"name": "Sarah"})
+        assert resp.status == 401
+    finally:
+        await cli.close()
+
+
+async def test_rename_409_when_disabled(tmp_path):
+    cli, token = await _client(tmp_path, None)
+    try:
+        resp = await cli.post(
+            "/speakers/sp-1/rename",
+            json={"name": "Sarah"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status == 409
+        assert (await resp.json())["error"] == "speaker_recognition_disabled"
+    finally:
+        await cli.close()
+
+
+async def test_rename_400_on_empty_name(tmp_path):
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    reg.add_speaker(_speaker("sp-1", "Sarah"))
+    cli, token = await _client(tmp_path, reg)
+    try:
+        resp = await cli.post(
+            "/speakers/sp-1/rename",
+            json={"name": ""},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status == 400
+    finally:
+        await cli.close()
+
+
+async def test_rename_404_unknown_speaker(tmp_path):
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    cli, token = await _client(tmp_path, reg)
+    try:
+        resp = await cli.post(
+            "/speakers/nope/rename",
+            json={"name": "Sarah"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status == 404
+    finally:
+        await cli.close()
+
+
+async def test_rename_returns_updated_speaker_without_biometrics(tmp_path):
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    reg.add_speaker(_speaker("sp-1", None))
+    cli, token = await _client(tmp_path, reg)
+    try:
+        resp = await cli.post(
+            "/speakers/sp-1/rename",
+            json={"name": "Sarah"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status == 200
+        body = await resp.json()
+        sp = body["speaker"]
+        assert sp["speakerId"] == "sp-1"
+        assert sp["displayName"] == "Sarah"
+        assert sp["enrollmentStatus"] == "confirmed"
+        for key in ("centroid", "embeddingModel", "embedding_model", "dim"):
+            assert key not in sp
+    finally:
+        await cli.close()
+
+
 async def test_speakers_lists_all_excluding_biometrics(tmp_path):
     reg = InMemorySpeakerRegistry(SpeakerConfig())
     reg.add_speaker(_speaker("sp-1", "Sarah"))
