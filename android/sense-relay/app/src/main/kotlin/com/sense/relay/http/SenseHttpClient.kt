@@ -9,8 +9,13 @@ import com.sense.relay.http.dto.SessionEventsDto
 import com.sense.relay.http.dto.SessionsPageDto
 import com.sense.relay.http.dto.SpeakerDto
 import com.sense.relay.http.dto.SpeakersDto
+import com.sense.relay.http.dto.RenameSpeakerRequestDto
+import com.sense.relay.http.dto.ReassignSpeakerRequestDto
+import com.sense.relay.http.dto.RenameSpeakerResponseDto
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.net.URLEncoder
 import java.security.KeyStore
@@ -28,6 +33,10 @@ class SenseHttpClient(
     caPem: String? = null,
 ) {
     val client: OkHttpClient = buildClient(caPem)
+
+    companion object {
+        private val JSON = "application/json; charset=utf-8".toMediaType()
+    }
 
     private fun buildClient(caPem: String?): OkHttpClient {
         val builder = OkHttpClient.Builder()
@@ -165,6 +174,51 @@ class SenseHttpClient(
                 if (resp.code == 401 || resp.code == 403) throw SecurityException("unauthorized")
                 if (resp.code !in 200..299) throw HttpStatusException(resp.code)
                 DtoJson.decodeFromString(SpeakersDto.serializer(), resp.body?.string().orEmpty()).speakers
+            }
+        }
+
+    /** POST /speakers/{id}/rename — set a speaker's display name; returns the updated speaker. */
+    suspend fun renameSpeaker(speakerId: String, name: String): SpeakerDto =
+        withContext(Dispatchers.IO) {
+            val body = DtoJson.encodeToString(
+                RenameSpeakerRequestDto.serializer(),
+                RenameSpeakerRequestDto(name),
+            ).toRequestBody(JSON)
+            val request = Request.Builder()
+                .url(baseUrl.trimEnd('/') + "/speakers/$speakerId/rename")
+                .post(body)
+                .addHeader("Authorization", "Bearer $token")
+                .build()
+            client.newCall(request).execute().use { resp ->
+                if (resp.code == 401 || resp.code == 403) throw SecurityException("unauthorized")
+                if (resp.code == 404) throw HttpStatusException(404, "speaker $speakerId not found")
+                if (resp.code == 409) throw HttpStatusException(409)
+                if (resp.code !in 200..299) throw HttpStatusException(resp.code)
+                DtoJson.decodeFromString(
+                    RenameSpeakerResponseDto.serializer(),
+                    resp.body?.string().orEmpty(),
+                ).speaker
+            }
+        }
+
+    /** POST /speakers/reassign — move all of fromId's turns/embeddings to toId (v1 scope=all). */
+    suspend fun reassignSpeaker(fromId: String, toId: String, scope: String = "all"): Unit =
+        withContext(Dispatchers.IO) {
+            val body = DtoJson.encodeToString(
+                ReassignSpeakerRequestDto.serializer(),
+                ReassignSpeakerRequestDto(fromId, toId, scope),
+            ).toRequestBody(JSON)
+            val request = Request.Builder()
+                .url(baseUrl.trimEnd('/') + "/speakers/reassign")
+                .post(body)
+                .addHeader("Authorization", "Bearer $token")
+                .build()
+            client.newCall(request).execute().use { resp ->
+                if (resp.code == 401 || resp.code == 403) throw SecurityException("unauthorized")
+                if (resp.code == 404) throw HttpStatusException(404, "speaker not found")
+                if (resp.code == 409) throw HttpStatusException(409)
+                if (resp.code !in 200..299) throw HttpStatusException(resp.code)
+                // 204 No Content — nothing to parse.
             }
         }
 

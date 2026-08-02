@@ -15,6 +15,9 @@ class SpeakerRepositoryImplTest {
             error?.let { throw it }
             return speakers
         }
+        override suspend fun renameSpeaker(speakerId: String, name: String): SpeakerDto =
+            SpeakerDto(speakerId = speakerId, displayName = name, isWearer = true)
+        override suspend fun reassignSpeaker(fromId: String, toId: String, scope: String) {}
     }
 
     private fun dto(id: String, name: String?, wearer: Boolean = false) = SpeakerDto(
@@ -48,5 +51,37 @@ class SpeakerRepositoryImplTest {
     fun loadSpeakers_empty_when_no_speakers() = runTest {
         val repo = SpeakerRepository(FakeSpeakerApi())
         assertEquals(0, repo.loadSpeakers().size)
+    }
+
+    @Test
+    fun renameSpeakerDelegatesToApi() = runTest {
+        val api = object : SpeakerApi {
+            var renamed: Pair<String, String>? = null
+            override suspend fun getSpeakers(): List<SpeakerDto> = emptyList()
+            override suspend fun renameSpeaker(speakerId: String, name: String): SpeakerDto =
+                SpeakerDto(speakerId = speakerId, displayName = name, isWearer = true).also { renamed = speakerId to name }
+            override suspend fun reassignSpeaker(fromId: String, toId: String, scope: String) {}
+        }
+        val repo = SpeakerRepository(api)
+        val entry = repo.renameSpeaker("sp-1", "Sarah")
+        assertEquals("Sarah", entry.name)
+        assertEquals(true, entry.isWearer)
+        assertEquals("sp-1" to "Sarah", api.renamed)
+    }
+
+    @Test
+    fun reassignSpeakerDelegatesToApiWithScopeAll() = runTest {
+        val api = object : SpeakerApi {
+            var reassigned: Triple<String, String, String>? = null
+            override suspend fun getSpeakers(): List<SpeakerDto> = emptyList()
+            override suspend fun renameSpeaker(speakerId: String, name: String): SpeakerDto =
+                SpeakerDto(speakerId = speakerId)
+            override suspend fun reassignSpeaker(fromId: String, toId: String, scope: String) {
+                reassigned = Triple(fromId, toId, scope)
+            }
+        }
+        val repo = SpeakerRepository(api)
+        repo.reassignSpeaker("a", "b")
+        assertEquals(Triple("a", "b", "all"), api.reassigned)
     }
 }

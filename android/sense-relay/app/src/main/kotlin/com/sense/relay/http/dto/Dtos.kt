@@ -81,6 +81,19 @@ data class SpeakerDto(
 data class SpeakersDto(val speakers: List<SpeakerDto> = emptyList())
 
 @Serializable
+data class RenameSpeakerRequestDto(val name: String)
+
+@Serializable
+data class ReassignSpeakerRequestDto(
+    val fromSpeakerId: String,
+    val toSpeakerId: String,
+    val scope: String = "all",
+)
+
+@Serializable
+data class RenameSpeakerResponseDto(val speaker: SpeakerDto)
+
+@Serializable
 data class ServerStatusDto(
     val reachable: Boolean,
     val authenticated: Boolean,

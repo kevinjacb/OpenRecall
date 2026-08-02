@@ -14,10 +14,16 @@ import kotlinx.coroutines.withContext
  */
 interface SpeakerApi {
     suspend fun getSpeakers(): List<SpeakerDto>
+    suspend fun renameSpeaker(speakerId: String, name: String): SpeakerDto
+    suspend fun reassignSpeaker(fromId: String, toId: String, scope: String = "all")
 }
 
 private class HttpSpeakerApi(private val client: suspend () -> SenseHttpClient) : SpeakerApi {
     override suspend fun getSpeakers(): List<SpeakerDto> = client().getSpeakers()
+    override suspend fun renameSpeaker(speakerId: String, name: String): SpeakerDto =
+        client().renameSpeaker(speakerId, name)
+    override suspend fun reassignSpeaker(fromId: String, toId: String, scope: String) =
+        client().reassignSpeaker(fromId, toId, scope)
 }
 
 /**
@@ -42,6 +48,15 @@ class SpeakerRepository(
                 isWearer = dto.isWearer,
             )
         }
+    }
+
+    suspend fun renameSpeaker(speakerId: String, name: String): SpeakerEntry = withContext(io) {
+        val dto = apiProvider().renameSpeaker(speakerId, name)
+        SpeakerEntry(speakerId = dto.speakerId, name = dto.displayName, isWearer = dto.isWearer)
+    }
+
+    suspend fun reassignSpeaker(fromId: String, toId: String, scope: String = "all") = withContext(io) {
+        apiProvider().reassignSpeaker(fromId, toId, scope)
     }
 
     companion object {

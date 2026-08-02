@@ -49,6 +49,9 @@ class SpeakerCacheSeederTest {
             error?.let { throw it }
             return speakers
         }
+        override suspend fun renameSpeaker(speakerId: String, name: String): SpeakerDto =
+            SpeakerDto(speakerId = speakerId, displayName = name, isWearer = false)
+        override suspend fun reassignSpeaker(fromId: String, toId: String, scope: String) {}
     }
 
     private fun dto(id: String, name: String?, wearer: Boolean = false) = SpeakerDto(
