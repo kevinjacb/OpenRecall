@@ -36,7 +36,7 @@ class ChatViewModel(
     private val repo: AgentRepository,
     private val store: ChatHistoryStore,
     private val relayController: RelayController = RelayController,
-    private val speakerActions: com.sense.relay.data.SpeakerActions = com.sense.relay.data.SpeakerControlPort,
+    private val speakerActions: com.sense.relay.data.SpeakerActions = com.sense.relay.data.NoopSpeakerActions,
     savedState: SavedStateHandle = SavedStateHandle(),
 ) : ViewModel() {
 
@@ -190,18 +190,19 @@ class ChatViewModel(
 
     /**
      * Name (or rename) a speaker from a [com.sense.relay.data.ChatMessageKind.NAME_SPEAKER]
-     * nudge. Sends the `name_speaker` control message via the relay; the
-     * server's `set_display_name` applies, and the next transcript §E carries
-     * the new `speaker_name` (no server ack — correctness via the next hop).
+     * nudge. Calls the HTTP rename endpoint; the server's `set_display_name`
+     * applies, and the next transcript §E carries the new `speaker_name`.
      * Optimistically collapses the nudge bubble into a plain proactive line so
      * the user sees their choice reflected immediately. Send failure does NOT
-     * crash (the port buffers; RelayService drains on connect).
+     * crash (logged only).
      */
     fun nameSpeaker(speakerId: String, name: String) {
         val sid = currentSessionId()
         if (sid.isNullOrEmpty()) return
-        runCatching { speakerActions.nameSpeaker(sid, speakerId, name) }
-            .onFailure { SenseLog.e(tag = "ChatViewModel", msg = "name_speaker send failed: ${it.javaClass.simpleName}", t = it) }
+        viewModelScope.launch {
+            runCatching { speakerActions.nameSpeaker(sid, speakerId, name) }
+                .onFailure { SenseLog.e(tag = "ChatViewModel", msg = "name_speaker send failed: ${it.javaClass.simpleName}", t = it) }
+        }
     }
 
     companion object {

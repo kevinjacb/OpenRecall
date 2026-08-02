@@ -11,9 +11,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +61,7 @@ fun SessionDetailRoute(id: SessionId, onBack: () -> Unit, modifier: Modifier = M
                     id,
                     RepositoryModule.repos.session,
                     speakerCache = RepositoryModule.repos.speakerCache,
+                    speakerActions = RepositoryModule.repos.speakerActions,
                 )
             }
         },
@@ -65,6 +69,7 @@ fun SessionDetailRoute(id: SessionId, onBack: () -> Unit, modifier: Modifier = M
     val state by vm.state.collectAsState()
     val isRefreshing by vm.isRefreshing.collectAsState()
     val youConfirmation by vm.youConfirmation.collectAsState()
+    val speakerError by vm.speakerError.collectAsState()
     SessionDetailScreen(
         state = state,
         isRefreshing = isRefreshing,
@@ -76,6 +81,8 @@ fun SessionDetailRoute(id: SessionId, onBack: () -> Unit, modifier: Modifier = M
         youConfirmation = youConfirmation,
         onConfirmYou = vm::confirmYou,
         onDismissYouConfirmation = vm::dismissYouConfirmation,
+        speakerError = speakerError,
+        onDismissSpeakerError = vm::dismissSpeakerError,
         modifier = modifier,
     )
 }
@@ -101,11 +108,21 @@ fun SessionDetailScreen(
     youConfirmation: YouConfirmationState = YouConfirmationState.Idle,
     onConfirmYou: (name: String) -> Unit = {},
     onDismissYouConfirmation: () -> Unit = {},
+    speakerError: String? = null,
+    onDismissSpeakerError: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val snackbarHostState: SnackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(speakerError) {
+        if (speakerError != null) {
+            snackbarHostState.showSnackbar(message = speakerError)
+            onDismissSpeakerError()
+        }
+    }
     Scaffold(
         modifier = modifier,
         topBar = { SenseTopBar(TopBarState(title = "Session", onBack = onBack)) },
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
             when (state) {

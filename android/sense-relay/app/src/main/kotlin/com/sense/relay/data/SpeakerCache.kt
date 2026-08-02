@@ -35,6 +35,13 @@ class SpeakerCache {
         _flow.update { entries.toMap() }
     }
 
+    /** Drop a speaker entry (revert of an optimistic upsert on send failure). */
+    fun remove(speakerId: String) {
+        // same lock/synchronization as upsert/get — match the file's existing pattern
+        entries.remove(speakerId)
+        _flow.update { entries.toMap() }
+    }
+
     /** Replace the whole set (from `GET /speakers`). Empty list clears. */
     fun seed(speakers: List<SpeakerEntry>) {
         entries.clear()

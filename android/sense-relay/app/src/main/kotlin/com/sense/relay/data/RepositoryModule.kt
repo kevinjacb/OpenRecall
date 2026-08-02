@@ -63,6 +63,9 @@ object RepositoryModule {
         // reassign picker. v1 in-memory (rebuilt from GET /speakers after
         // restart — the server is the source of truth).
         val speakerCache: SpeakerCache,
+        // Speaker rename/reassign port. HTTP-always (works for offline/historical
+        // sessions); delegates to [SpeakerRepository]. See [HttpSpeakerActions].
+        val speakerActions: SpeakerActions,
         // The "Retry connection" escape hatch — re-launches the foreground
         // RelayService from its last-good config so a dropped link can be
         // recovered without re-running the setup wizard.
@@ -151,6 +154,7 @@ object RepositoryModule {
         // re-seeding is safe; a fetch failure is logged, not thrown, so the
         // collector survives to retry on the next authenticated tick.
         val speakerRepository = SpeakerRepository.fromClient(clientProvider)
+        val speakerActions = HttpSpeakerActions(speakerRepository)
         SpeakerCacheSeeder(speakerRepository, speakerCache)
             .launchOnAuthenticated(scope, RelayController.state.map { it.server })
         repos = Repositories(
@@ -165,6 +169,7 @@ object RepositoryModule {
             chatHistoryStore = chatHistoryStore,
             memoryRepository = memoryRepository,
             speakerCache = speakerCache,
+            speakerActions = speakerActions,
             relayStarter = relayStarter,
         )
     }

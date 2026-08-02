@@ -30,6 +30,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -175,11 +177,11 @@ class SessionDetailViewModelTest {
         val named = mutableListOf<Named>()
         val reassigned = mutableListOf<Reassigned>()
 
-        override fun nameSpeaker(sessionId: String, speakerId: String, name: String) {
+        override suspend fun nameSpeaker(sessionId: String, speakerId: String, name: String) {
             named += Named(sessionId, speakerId, name)
         }
 
-        override fun reassignSpeaker(sessionId: String, fromId: String, toId: String, scope: String) {
+        override suspend fun reassignSpeaker(sessionId: String, fromId: String, toId: String, scope: String) {
             reassigned += Reassigned(sessionId, fromId, toId, scope)
         }
     }
@@ -201,6 +203,7 @@ class SessionDetailViewModelTest {
         )
 
         vm.renameSpeaker("spk-1", "Sarah")
+        testScheduler.advanceUntilIdle()
 
         // Optimistic cache update: the label renders immediately.
         assertEquals("Sarah", cache.get("spk-1")?.name)
@@ -229,12 +232,75 @@ class SessionDetailViewModelTest {
         )
 
         vm.reassignSpeaker("spk-1", "spk-2")
+        testScheduler.advanceUntilIdle()
 
         assertEquals(1, actions.reassigned.size)
         assertEquals("s1", actions.reassigned[0].sessionId)
         assertEquals("spk-1", actions.reassigned[0].fromId)
         assertEquals("spk-2", actions.reassigned[0].toId)
         assertEquals("all", actions.reassigned[0].scope, "v1 uses scope=all (session-scoped server)")
+    }
+
+    /** A [SpeakerActions] whose calls throw, to exercise the revert path. */
+    private class ThrowingSpeakerActions : SpeakerActions {
+        override suspend fun nameSpeaker(sessionId: String, speakerId: String, name: String) =
+            error("rename failed")
+        override suspend fun reassignSpeaker(sessionId: String, fromId: String, toId: String, scope: String) =
+            error("reassign failed")
+    }
+
+    @Test fun renameSpeakerRevertsCacheOnFailure() = runTest(dispatcher) {
+        val cache = SpeakerCache()
+        cache.upsert("spk-1", "Old", isWearer = false)
+        val summaryFlow = MutableStateFlow<Outcome<SessionDetails>>(
+            Outcome.Success(SessionDetails(summary("s1"), emptyList())),
+        )
+        val eventsFlow = MutableStateFlow<Outcome<List<CaptureEvent>>>(Outcome.Success(emptyList()))
+        val vm = SessionDetailViewModel(
+            id = SessionId("s1"),
+            repo = FakeDetailRepo(summaryFlow, eventsFlow),
+            speakerCache = cache,
+            speakerActions = ThrowingSpeakerActions(),
+        )
+
+        vm.renameSpeaker("spk-1", "New")
+        testScheduler.advanceUntilIdle()
+
+        // The optimistic "New" was reverted to the prior "Old" on failure.
+        assertEquals("Old", cache.get("spk-1")?.name, "cache reverted to prior name on failure")
+        // The error banner surfaces.
+        assertNotNull(vm.speakerError.value, "speakerError set on failure")
+    }
+
+    @Test fun reassignSpeakerRefreshesOnSuccess() = runTest(dispatcher) {
+        // onRefresh re-collects the one-shot flows; with MutableStateFlow each
+        // (re-)collection replays the current value. Updating the events value
+        // before the reassign means a successful re-fetch (onRefresh fired)
+        // surfaces the new events in the UI state.
+        val summaryFlow = MutableStateFlow<Outcome<SessionDetails>>(
+            Outcome.Success(SessionDetails(summary("s1"), emptyList())),
+        )
+        val eventsFlow = MutableStateFlow<Outcome<List<CaptureEvent>>>(
+            Outcome.Success(listOf(chunk("e1", 1))),
+        )
+        val vm = SessionDetailViewModel(
+            id = SessionId("s1"),
+            repo = FakeDetailRepo(summaryFlow, eventsFlow),
+            speakerActions = RecordingSpeakerActions(),
+        )
+        backgroundScope.launch { vm.state.toList(mutableListOf()) }
+        testScheduler.advanceUntilIdle()
+        val before = assertIs<SessionDetailUiState.Loaded>(vm.state.value)
+        assertEquals(1, before.events.size)
+
+        // New server data the re-fetch should pick up.
+        eventsFlow.value = Outcome.Success(listOf(chunk("e1", 1), chunk("e2", 2)))
+        vm.reassignSpeaker("spk-1", "spk-2")
+        testScheduler.advanceUntilIdle()
+
+        val after = assertIs<SessionDetailUiState.Loaded>(vm.state.value)
+        assertEquals(2, after.events.size, "onRefresh re-fetched the events after a successful reassign")
+        assertNull(vm.speakerError.value, "no error on success")
     }
 
     @Test fun youConfirmationPromptsOnFirstWearerYouTranscript() = runTest(dispatcher) {

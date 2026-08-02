@@ -39,6 +39,7 @@ fun ChatRoute(
                     repo = RepositoryModule.repos.agentRepository,
                     store = RepositoryModule.repos.chatHistoryStore,
                     relayController = RepositoryModule.repos.relayController,
+                    speakerActions = RepositoryModule.repos.speakerActions,
                 )
             }
         },

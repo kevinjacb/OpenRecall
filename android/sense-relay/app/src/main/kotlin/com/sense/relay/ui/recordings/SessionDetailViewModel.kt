@@ -2,11 +2,12 @@ package com.sense.relay.ui.recordings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.sense.relay.core.SenseLog
 import com.sense.relay.core.result.Outcome
 import com.sense.relay.core.ui.toDisplayMessage
+import com.sense.relay.data.NoopSpeakerActions
 import com.sense.relay.data.SpeakerActions
 import com.sense.relay.data.SpeakerCache
-import com.sense.relay.data.SpeakerControlPort
 import com.sense.relay.data.SessionRepository
 import com.sense.relay.domain.model.CaptureEvent
 import com.sense.relay.domain.model.SessionDetails
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 /**
  * What the SessionDetail screen renders. Progressive: the summary lands
@@ -83,7 +85,7 @@ class SessionDetailViewModel(
     private val id: SessionId,
     private val repo: SessionRepository,
     val speakerCache: SpeakerCache = SpeakerCache(),
-    private val speakerActions: SpeakerActions = SpeakerControlPort,
+    private val speakerActions: SpeakerActions = NoopSpeakerActions,
 ) : ViewModel() {
 
     // Bumped by [onRefresh] to re-collect the one-shot per-session flows.
@@ -92,6 +94,10 @@ class SessionDetailViewModel(
     private val _isRefreshing = MutableStateFlow(false)
     /** True while a pull-to-refresh re-fetch is in flight. */
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
+    private val _speakerError = MutableStateFlow<String?>(null)
+    /** Non-null while a rename/reassign HTTP call failed; the banner shows it. */
+    val speakerError: StateFlow<String?> = _speakerError.asStateFlow()
 
     private val _youConfirmation = MutableStateFlow<YouConfirmationState>(YouConfirmationState.Idle)
     /** One-time wearer-confirmation prompt state; see [YouConfirmationState]. */
@@ -136,25 +142,48 @@ class SessionDetailViewModel(
     }
 
     /**
-     * Name (or rename) a speaker from the Recordings timeline. Sends the
-     * `name_speaker` control message; the server's `set_display_name` applies,
-     * and the next transcript §E / `/speakers` refresh carries the new name.
-     * Optimistically upserts the cache so the label updates immediately.
-     * Send failure does NOT crash (the port buffers; RelayService drains).
+     * Name (or rename) a speaker from the Recordings timeline. Calls the
+     * HTTP rename endpoint; the server's `set_display_name` applies, and the
+     * next transcript §E / `/speakers` refresh carries the new name.
+     * Optimistically upserts the cache so the label updates immediately, and
+     * reverts the cache + surfaces [speakerError] on a send failure.
      */
     fun renameSpeaker(speakerId: String, name: String) {
-        val isWearer = speakerCache.get(speakerId)?.isWearer ?: false
+        val prior = speakerCache.get(speakerId)
+        val isWearer = prior?.isWearer ?: false
         speakerCache.upsert(speakerId, name, isWearer)
-        runCatching { speakerActions.nameSpeaker(id.value, speakerId, name) }
+        viewModelScope.launch {
+            runCatching { speakerActions.nameSpeaker(id.value, speakerId, name) }
+                .onFailure {
+                    SenseLog.e(tag = "SessionDetail", msg = "renameSpeaker failed: ${it.javaClass.simpleName}", t = it)
+                    if (prior != null) speakerCache.upsert(speakerId, prior.name, prior.isWearer)
+                    else speakerCache.remove(speakerId)
+                    _speakerError.value = "Couldn't rename on the server"
+                }
+                .onSuccess { _speakerError.value = null }
+        }
     }
 
     /**
      * Reassign a speaker's utterances to another known speaker. v1 uses
      * `scope="all"` (the server is session-scoped, so "all of this speaker" is
-     * "this conversation"). Labels refresh on the next transcript / refresh.
+     * "this conversation"). On success re-fetches the session so the labels
+     * refresh; on failure surfaces [speakerError].
      */
     fun reassignSpeaker(fromId: String, toId: String) {
-        runCatching { speakerActions.reassignSpeaker(id.value, fromId, toId) }
+        viewModelScope.launch {
+            runCatching { speakerActions.reassignSpeaker(id.value, fromId, toId) }
+                .onSuccess { onRefresh() }
+                .onFailure {
+                    SenseLog.e(tag = "SessionDetail", msg = "reassignSpeaker failed: ${it.javaClass.simpleName}", t = it)
+                    _speakerError.value = "Couldn't reassign on the server"
+                }
+        }
+    }
+
+    /** Clear the speaker error banner (dismissed by the user). */
+    fun dismissSpeakerError() {
+        _speakerError.value = null
     }
 
     /**

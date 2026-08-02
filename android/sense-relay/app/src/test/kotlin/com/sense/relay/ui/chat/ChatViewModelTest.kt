@@ -147,6 +147,7 @@ class ChatViewModelTest {
         val vm = ChatViewModel(repo, store, speakerActions = actions)
 
         vm.nameSpeaker("spk-1", "Sarah")
+        advanceUntilIdle()
 
         assertEquals(1, actions.named.size)
         assertEquals("s-live", actions.named[0].sessionId)
@@ -164,6 +165,7 @@ class ChatViewModelTest {
         val vm = ChatViewModel(repo, store, speakerActions = actions)
 
         vm.nameSpeaker("spk-1", "Sarah")
+        advanceUntilIdle()
 
         assertEquals("no control emitted with no live session", 0, actions.named.size)
     }
@@ -195,11 +197,11 @@ private class RecordingSpeakerActions : SpeakerActions {
 
     val named = mutableListOf<Named>()
 
-    override fun nameSpeaker(sessionId: String, speakerId: String, name: String) {
+    override suspend fun nameSpeaker(sessionId: String, speakerId: String, name: String) {
         named += Named(sessionId, speakerId, name)
     }
 
-    override fun reassignSpeaker(sessionId: String, fromId: String, toId: String, scope: String) {
+    override suspend fun reassignSpeaker(sessionId: String, fromId: String, toId: String, scope: String) {
         // Not exercised by ChatViewModel; no-op capture.
     }
 }
