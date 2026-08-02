@@ -20,6 +20,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -153,6 +154,27 @@ class ChatViewModelTest {
         assertEquals("s-live", actions.named[0].sessionId)
         assertEquals("spk-1", actions.named[0].speakerId)
         assertEquals("Sarah", actions.named[0].name)
+        // A successful send leaves no transient error.
+        assertNull(vm.speakerError.value)
+    }
+
+    @Test
+    fun `nameSpeaker surfaces a speakerError when the send fails`() = runTest(dispatcher) {
+        val repo = FakeAgentRepo { _, _ -> error("ask should not be called") }
+        val store = ChatHistoryStore()
+        RelayController.updateConnection(RelayConnectionState.Live("s-live", 0))
+        // A flaky link / disabled speaker-recognition surfaces as a thrown
+        // error from SpeakerActions — the VM must NOT crash; it surfaces a
+        // transient speakerError so the user knows the name wasn't saved.
+        val vm = ChatViewModel(repo, store, speakerActions = ThrowingSpeakerActions())
+
+        vm.nameSpeaker("spk-1", "Sarah")
+        advanceUntilIdle()
+
+        assertEquals("Couldn't save the name on the server", vm.speakerError.value)
+        // And it can be cleared (the Snackbar dismiss path).
+        vm.dismissSpeakerError()
+        assertNull(vm.speakerError.value)
     }
 
     @Test
@@ -203,5 +225,17 @@ private class RecordingSpeakerActions : SpeakerActions {
 
     override suspend fun reassignSpeaker(sessionId: String, fromId: String, toId: String, scope: String) {
         // Not exercised by ChatViewModel; no-op capture.
+    }
+}
+
+/** A [SpeakerActions] whose nameSpeaker always throws, to exercise the
+ *  speakerError surfacing path (a failed HTTP rename). */
+private class ThrowingSpeakerActions : SpeakerActions {
+    override suspend fun nameSpeaker(sessionId: String, speakerId: String, name: String) {
+        throw RuntimeException("boom")
+    }
+
+    override suspend fun reassignSpeaker(sessionId: String, fromId: String, toId: String, scope: String) {
+        // Not exercised here.
     }
 }

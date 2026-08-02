@@ -56,6 +56,21 @@ class ChatViewModel(
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
     /**
+     * Transient error surfaced when a nudge-driven rename (the
+     * [com.sense.relay.data.ChatMessageKind.NAME_SPEAKER] bubble) fails to
+     * reach the server. The old WS control-frame path buffered silently; HTTP
+     * cannot buffer across restarts, so a send failure is surfaced here and
+     * shown as a Snackbar in [ChatScreen] (and cleared via
+     * [dismissSpeakerError] once the snackbar dismisses). Null when idle.
+     */
+    private val _speakerError = MutableStateFlow<String?>(null)
+    val speakerError: StateFlow<String?> = _speakerError.asStateFlow()
+
+    fun dismissSpeakerError() {
+        _speakerError.value = null
+    }
+
+    /**
      * The live relay session id published app-wide by [RelayService] on
      * socket open (`RelayConnectionState.Live(sessionId)`), read
      * imperatively at call time. A `StateFlow.value` read is always
@@ -194,14 +209,19 @@ class ChatViewModel(
      * applies, and the next transcript §E carries the new `speaker_name`.
      * Optimistically collapses the nudge bubble into a plain proactive line so
      * the user sees their choice reflected immediately. Send failure does NOT
-     * crash (logged only).
+     * crash: it is logged and surfaced via [speakerError] (shown as a Snackbar
+     * in [ChatScreen]) so the user knows the server didn't record the name.
      */
     fun nameSpeaker(speakerId: String, name: String) {
         val sid = currentSessionId()
         if (sid.isNullOrEmpty()) return
         viewModelScope.launch {
             runCatching { speakerActions.nameSpeaker(sid, speakerId, name) }
-                .onFailure { SenseLog.e(tag = "ChatViewModel", msg = "name_speaker send failed: ${it.javaClass.simpleName}", t = it) }
+                .onSuccess { _speakerError.value = null }
+                .onFailure {
+                    SenseLog.e(tag = "ChatViewModel", msg = "name_speaker send failed: ${it.javaClass.simpleName}", t = it)
+                    _speakerError.value = "Couldn't save the name on the server"
+                }
         }
     }
 

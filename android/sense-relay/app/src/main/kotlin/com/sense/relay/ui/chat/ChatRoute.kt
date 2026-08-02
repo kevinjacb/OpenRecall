@@ -47,6 +47,7 @@ fun ChatRoute(
     val messages by vm.messages.collectAsState()
     val loading by vm.loading.collectAsState()
     val draft by vm.draft.collectAsState()
+    val speakerError by vm.speakerError.collectAsState()
 
     ChatScreen(
         messages = messages,
@@ -57,6 +58,8 @@ fun ChatRoute(
         onAtomChipTap = onOpenAtom,
         onBrowseMemory = onOpenMemory,
         onNameSpeaker = vm::nameSpeaker,
+        speakerError = speakerError,
+        onDismissSpeakerError = vm::dismissSpeakerError,
         modifier = modifier,
     )
 }
