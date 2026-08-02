@@ -46,36 +46,8 @@ class CommandAck(_Strict):
     command_id: str
 
 
-ReassignScope = Literal["one", "range", "all"]
-
-
-class NameSpeaker(_Strict):
-    """§E control: name a corroborated-but-unnamed speaker (reply to a name nudge)."""
-
-    type: Literal["name_speaker"] = "name_speaker"
-    session_id: str
-    speaker_id: str
-    name: str
-
-
-class ReassignSpeaker(_Strict):
-    """§E control: manual correction — re-label a speaker's turns to another.
-
-    ``scope``: ``one`` (relabel the single utterance — identified by context on
-    the phone), ``range`` (a time range), ``all`` (every turn attributed to
-    ``from_speaker_id``). The server moves those turns' embeddings out of
-    ``from``'s ring buffer into ``to``'s and recomputes both centroids.
-    """
-
-    type: Literal["reassign_speaker"] = "reassign_speaker"
-    session_id: str
-    from_speaker_id: str
-    to_speaker_id: str
-    scope: ReassignScope
-
-
 Inbound = Annotated[
-    Union[Hello, Bye, CommandAck, NameSpeaker, ReassignSpeaker],
+    Union[Hello, Bye, CommandAck],
     Field(discriminator="type"),
 ]
 _INBOUND = TypeAdapter(Inbound)

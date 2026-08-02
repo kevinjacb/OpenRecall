@@ -1,9 +1,11 @@
 """Tests for manual speaker correction — name + reassign.
 
-ReassignSpeaker (scope "all" in v1) relabels every event/atom attributed to the
-``from`` speaker onto the ``to`` speaker, moves the from-speaker's ring-buffer
-embeddings into the to-speaker's, and recomputes both centroids (de-poisoning).
-NameSpeaker sets a display name + bumps enrollment to confirmed.
+``reassign_speaker`` (scope "all" in v1) relabels every event/atom attributed to
+the ``from`` speaker onto the ``to`` speaker, moves the from-speaker's
+ring-buffer embeddings into the to-speaker's, and recomputes both centroids
+(de-poisoning). ``SpeakerRegistry.name`` sets a display name + bumps enrollment
+to confirmed. Both are exercised here via the HTTP-path entry points (the
+inbound WS control-frame handlers were retired in favour of HTTP-always).
 """
 from __future__ import annotations
 

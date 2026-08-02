@@ -72,36 +72,3 @@ def test_outbound_messages_serialize_with_their_type_tag():
         "speaker_name": None,
         "is_wearer": False,
     }
-
-
-# --- speaker control messages ------------------------------------------------
-
-
-def test_parse_name_speaker():
-    from sense_server.protocol.messages import NameSpeaker
-
-    m = parse_control('{"type":"name_speaker","session_id":"s1","speaker_id":"uuid-1","name":"Sarah"}')
-    assert isinstance(m, NameSpeaker)
-    assert m.speaker_id == "uuid-1"
-    assert m.name == "Sarah"
-
-
-def test_parse_reassign_speaker_one_scope():
-    from sense_server.protocol.messages import ReassignSpeaker
-
-    m = parse_control('{"type":"reassign_speaker","session_id":"s1","from_speaker_id":"a","to_speaker_id":"b","scope":"one"}')
-    assert isinstance(m, ReassignSpeaker)
-    assert m.scope == "one"
-
-
-def test_parse_reassign_speaker_all_scope():
-    from sense_server.protocol.messages import ReassignSpeaker
-
-    m = parse_control('{"type":"reassign_speaker","session_id":"s1","from_speaker_id":"a","to_speaker_id":"b","scope":"all"}')
-    assert isinstance(m, ReassignSpeaker)
-    assert m.scope == "all"
-
-
-def test_parse_reassign_speaker_rejects_bad_scope():
-    with pytest.raises(Exception):
-        parse_control('{"type":"reassign_speaker","session_id":"s1","from_speaker_id":"a","to_speaker_id":"b","scope":"bogus"}')

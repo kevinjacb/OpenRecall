@@ -38,9 +38,7 @@ from ..protocol.messages import (
     CommandMessage,
     Hello,
     Inbound,
-    NameSpeaker,
     ProactiveMessage,
-    ReassignSpeaker,
     RequestChunks,
     TranscriptMsg,
 )
@@ -180,10 +178,6 @@ class GatewayCore:
             return self._on_bye(msg)
         if isinstance(msg, CommandAck):
             return self._on_command_ack(msg)
-        if isinstance(msg, NameSpeaker):
-            return self._on_name_speaker(msg)
-        if isinstance(msg, ReassignSpeaker):
-            return self._on_reassign_speaker(msg)
         raise GatewayError(f"unhandled control message: {msg!r}")  # pragma: no cover
 
     def on_audio(self, data: bytes) -> list[Outbound]:
@@ -286,33 +280,6 @@ class GatewayCore:
             raise GatewayError("command_ack received but no dispatcher is configured")
         self._dispatcher.ack(msg.command_id)
         return list(self._pending_commands())  # pull the remainder
-
-    def _on_name_speaker(self, msg: NameSpeaker) -> list[Outbound]:
-        if self._speaker_registry is None:
-            raise GatewayError("name_speaker received but no speaker registry is configured")
-        self._speaker_registry.name(msg.speaker_id, msg.name)
-        logger.info(
-            "name_speaker session=%s speaker=%s name=%r",
-            msg.session_id, msg.speaker_id, msg.name,
-        )
-        return []  # no outbound frames; server persistence is the source of truth
-
-    def _on_reassign_speaker(self, msg: ReassignSpeaker) -> list[Outbound]:
-        if self._speaker_registry is None or self._store is None or self._atom_store is None:
-            raise GatewayError(
-                "reassign_speaker received but speaker registry/store not configured"
-            )
-        from ..memory.speaker_registry import reassign_speaker
-
-        reassign_speaker(
-            self._speaker_registry, self._store, self._atom_store,
-            msg.from_speaker_id, msg.to_speaker_id, msg.scope,
-        )
-        logger.info(
-            "reassign_speaker session=%s %s->%s scope=%s",
-            msg.session_id, msg.from_speaker_id, msg.to_speaker_id, msg.scope,
-        )
-        return []  # no outbound frames; the phone applies the change locally
 
     def _pending_commands(self) -> list[CommandMessage]:
         """Signed commands still awaiting *this* session, as §E command messages."""
