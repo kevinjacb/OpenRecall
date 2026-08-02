@@ -90,6 +90,8 @@ class SessionDetailViewModel(
 
     // Bumped by [onRefresh] to re-collect the one-shot per-session flows.
     private val revision = MutableStateFlow(0)
+    /** Test-only read-only view of [revision]; bumped (0→1→…) by [onRefresh]. */
+    internal val revisionValue: StateFlow<Int> get() = revision
 
     private val _isRefreshing = MutableStateFlow(false)
     /** True while a pull-to-refresh re-fetch is in flight. */

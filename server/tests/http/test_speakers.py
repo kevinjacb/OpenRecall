@@ -231,6 +231,23 @@ async def test_reassign_404_unknown_speaker(tmp_path):
         await cli.close()
 
 
+async def test_reassign_400_on_self_reassign(tmp_path):
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    reg.add_speaker(_speaker("a", "A"))
+    cli, token = await _client(tmp_path, reg, InMemoryAtomStore())
+    try:
+        resp = await cli.post(
+            "/speakers/reassign",
+            json={"fromSpeakerId": "a", "toSpeakerId": "a", "scope": "all"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status == 400
+        body = await resp.json()
+        assert body["error"] == "bad_request"
+    finally:
+        await cli.close()
+
+
 async def test_reassign_204_rel_labels_events_and_atoms(tmp_path):
     reg = InMemorySpeakerRegistry(SpeakerConfig())
     reg.add_speaker(_speaker("a", "A"))

@@ -93,6 +93,8 @@ async def reassign_speaker_route(request: web.Request) -> web.Response:
         return _bad_request(f"invalid request: {e}")
     if reg.get(dto.fromSpeakerId) is None or reg.get(dto.toSpeakerId) is None:
         return web.json_response({"error": "speaker_not_found"}, status=404)
+    if dto.fromSpeakerId == dto.toSpeakerId:
+        return _bad_request("fromSpeakerId and toSpeakerId must differ")
     from sense_server.memory.speaker_registry import reassign_speaker
 
     reassign_speaker(reg, store, atoms, dto.fromSpeakerId, dto.toSpeakerId, dto.scope)

@@ -277,6 +277,13 @@ class SessionDetailViewModelTest {
         // (re-)collection replays the current value. Updating the events value
         // before the reassign means a successful re-fetch (onRefresh fired)
         // surfaces the new events in the UI state.
+        //
+        // NOTE: asserting events.size 1→2 alone is TAUTOLOGICAL here — the
+        // revision=0 combine collector is still active, so a hot
+        // MutableStateFlow eventsFlow propagates the new value to vm.state
+        // WHETHER OR NOT onRefresh fires. The revision assertion below is the
+        // load-bearing check: it bumps 0→1 only if reassignSpeaker's
+        // onSuccess { onRefresh() } actually ran.
         val summaryFlow = MutableStateFlow<Outcome<SessionDetails>>(
             Outcome.Success(SessionDetails(summary("s1"), emptyList())),
         )
@@ -292,6 +299,7 @@ class SessionDetailViewModelTest {
         testScheduler.advanceUntilIdle()
         val before = assertIs<SessionDetailUiState.Loaded>(vm.state.value)
         assertEquals(1, before.events.size)
+        assertEquals(0, vm.revisionValue.value, "revision starts at 0 before any refresh")
 
         // New server data the re-fetch should pick up.
         eventsFlow.value = Outcome.Success(listOf(chunk("e1", 1), chunk("e2", 2)))
@@ -300,6 +308,10 @@ class SessionDetailViewModelTest {
 
         val after = assertIs<SessionDetailUiState.Loaded>(vm.state.value)
         assertEquals(2, after.events.size, "onRefresh re-fetched the events after a successful reassign")
+        // The load-bearing assertion: onRefresh fired (bumped revision 0→1).
+        // This FAILS if onSuccess { onRefresh() } is deleted, even though the
+        // hot-flow events-size assertion above would still pass.
+        assertEquals(1, vm.revisionValue.value, "reassign on success bumped the refresh revision")
         assertNull(vm.speakerError.value, "no error on success")
     }
 
