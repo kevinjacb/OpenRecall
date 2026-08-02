@@ -1,13 +1,18 @@
 """Tests for GET /speakers — lists the registry without biometrics."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from aiohttp.test_utils import TestClient, TestServer
 
 from sense_server.auth import load_or_create_token
+from sense_server.events.model import CaptureEvent
 from sense_server.events.store import InMemoryEventStore
 from sense_server.http.app import build_app
 from sense_server.ingest.speaker_config import SpeakerConfig
+from sense_server.memory.atom import MemoryAtom
 from sense_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
+from sense_server.memory.store import InMemoryAtomStore
 from sense_server.sessions.index import SessionIndex
 from sense_server.sessions.lifecycle import SessionLifecycle
 
@@ -21,7 +26,7 @@ def _speaker(speaker_id, display_name, is_wearer=False):
     )
 
 
-async def _client(tmp_path, registry):
+async def _client(tmp_path, registry, atom_store=None):
     token = load_or_create_token(tmp_path / "tok")
     app = build_app(
         token=token,
@@ -29,6 +34,7 @@ async def _client(tmp_path, registry):
         session_index=SessionIndex(),
         session_lifecycle=SessionLifecycle(),
         event_store=InMemoryEventStore(),
+        atom_store=atom_store,
         speaker_registry=registry,
     )
     server = TestServer(app)
@@ -165,5 +171,105 @@ async def test_speakers_lists_all_excluding_biometrics(tmp_path):
             assert "turnCount" in s
             assert "firstSeen" in s
             assert "updatedAt" in s
+    finally:
+        await cli.close()
+
+
+async def test_reassign_requires_token(tmp_path):
+    cli, _ = await _client(
+        tmp_path, InMemorySpeakerRegistry(SpeakerConfig()), InMemoryAtomStore()
+    )
+    try:
+        resp = await cli.post(
+            "/speakers/reassign",
+            json={"fromSpeakerId": "a", "toSpeakerId": "b", "scope": "all"},
+        )
+        assert resp.status == 401
+    finally:
+        await cli.close()
+
+
+async def test_reassign_409_when_disabled(tmp_path):
+    cli, token = await _client(tmp_path, None, InMemoryAtomStore())
+    try:
+        resp = await cli.post(
+            "/speakers/reassign",
+            json={"fromSpeakerId": "a", "toSpeakerId": "b"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status == 409
+    finally:
+        await cli.close()
+
+
+async def test_reassign_400_on_bad_scope(tmp_path):
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    cli, token = await _client(tmp_path, reg, InMemoryAtomStore())
+    try:
+        resp = await cli.post(
+            "/speakers/reassign",
+            json={"fromSpeakerId": "a", "toSpeakerId": "b", "scope": "one"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status == 400
+    finally:
+        await cli.close()
+
+
+async def test_reassign_404_unknown_speaker(tmp_path):
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    reg.add_speaker(_speaker("a", "A"))
+    cli, token = await _client(tmp_path, reg, InMemoryAtomStore())
+    try:
+        resp = await cli.post(
+            "/speakers/reassign",
+            json={"fromSpeakerId": "a", "toSpeakerId": "missing"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status == 404
+    finally:
+        await cli.close()
+
+
+async def test_reassign_204_rel_labels_events_and_atoms(tmp_path):
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    reg.add_speaker(_speaker("a", "A"))
+    reg.add_speaker(_speaker("b", "B", is_wearer=True))
+    atoms = InMemoryAtomStore()
+    events = InMemoryEventStore()
+    # NOTE: build_app wires event_store=InMemoryEventStore() internally; to
+    # assert relabeling we must use the SAME store the app uses. Re-build the
+    # app by hand so the stores are the instances we seed:
+    token = load_or_create_token(tmp_path / "tok")
+    app = build_app(
+        token=token, get_pubkey=lambda: bytes(32),
+        session_index=SessionIndex(), session_lifecycle=SessionLifecycle(),
+        event_store=events, atom_store=atoms, speaker_registry=reg,
+    )
+    server = TestServer(app)
+    cli = TestClient(server)
+    await cli.start_server()
+    try:
+        for seq in range(2):
+            events.append(CaptureEvent(
+                event_id=f"s:{seq}", session_id="s", seq=seq, kind="transcript",
+                created_at=datetime(2026, 8, 1, tzinfo=timezone.utc), text="x",
+                duration_ms=1000, start_ms=seq * 1000, speaker="a",
+                speaker_confidence=0.9, speaker_assignment="confirmed"))
+        atoms.append(MemoryAtom(
+            atom_id="m1", session_id="s", source_event_id="s:0", kind="fact",
+            text="y", created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            start_ms=0, speaker="a", speaker_confidence=0.9,
+            speaker_assignment="confirmed"))
+
+        resp = await cli.post(
+            "/speakers/reassign",
+            json={"fromSpeakerId": "a", "toSpeakerId": "b", "scope": "all"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status == 204
+
+        assert [e.speaker for e in events.events("s")] == ["b", "b"]
+        assert atoms.atoms("s")[0].speaker == "b"
     finally:
         await cli.close()

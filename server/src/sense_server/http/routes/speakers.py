@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 def add_routes(app: web.Application) -> None:
     app.router.add_get("/speakers", list_speakers)
+    app.router.add_post("/speakers/reassign", reassign_speaker_route)
     app.router.add_post("/speakers/{speaker_id}/rename", rename_speaker)
 
 
@@ -77,3 +78,22 @@ async def rename_speaker(request: web.Request) -> web.Response:
     except KeyError:
         return web.json_response({"error": "speaker_not_found"}, status=404)
     return web.json_response({"speaker": _speaker_to_wire(reg.get(speaker_id))})
+
+
+async def reassign_speaker_route(request: web.Request) -> web.Response:
+    reg = _registry(request.app)
+    store = request.app.get("sense_event_store")
+    atoms = request.app.get("sense_atom_store")
+    if reg is None or store is None or atoms is None:
+        return web.json_response({"error": "speaker_recognition_disabled"}, status=409)
+    try:
+        body = await request.json()
+        dto = ReassignSpeakerDTO.model_validate(body)
+    except Exception as e:
+        return _bad_request(f"invalid request: {e}")
+    if reg.get(dto.fromSpeakerId) is None or reg.get(dto.toSpeakerId) is None:
+        return web.json_response({"error": "speaker_not_found"}, status=404)
+    from sense_server.memory.speaker_registry import reassign_speaker
+
+    reassign_speaker(reg, store, atoms, dto.fromSpeakerId, dto.toSpeakerId, dto.scope)
+    return web.Response(status=204)
