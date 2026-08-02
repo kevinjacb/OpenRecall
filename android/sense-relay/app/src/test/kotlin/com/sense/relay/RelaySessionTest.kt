@@ -177,35 +177,6 @@ class RelaySessionTest {
         assertEquals(0, cache.snapshot().size)
     }
 
-    @Test
-    fun send_control_serializes_name_speaker_message() {
-        val session = RelaySession("s")
-        val actions = session.sendControl(
-            com.sense.relay.protocol.NameSpeakerMsg(
-                session_id = "s", speaker_id = "sp-9", name = "Sarah"
-            )
-        )
-        assertEquals(1, actions.size)
-        val text = (actions.single() as RelayAction.SendServerText).text
-        assertTrue(text.contains("\"type\":\"name_speaker\""))
-        assertTrue(text.contains("\"speaker_id\":\"sp-9\""))
-        assertTrue(text.contains("\"name\":\"Sarah\""))
-    }
-
-    @Test
-    fun send_control_serializes_reassign_message_scope_all() {
-        val session = RelaySession("s")
-        val text = (session.sendControl(
-            com.sense.relay.protocol.ReassignSpeakerMsg(
-                session_id = "s", from_speaker_id = "sp-1", to_speaker_id = "sp-2"
-            )
-        ).single() as RelayAction.SendServerText).text
-        assertTrue(text.contains("\"type\":\"reassign_speaker\""))
-        assertTrue(text.contains("\"from_speaker_id\":\"sp-1\""))
-        assertTrue(text.contains("\"to_speaker_id\":\"sp-2\""))
-        assertTrue(text.contains("\"scope\":\"all\""))
-    }
-
     // JSON-quote/escape a string as a field value.
     private fun quote(s: String) = JsonPrimitive(s).toString()
 }

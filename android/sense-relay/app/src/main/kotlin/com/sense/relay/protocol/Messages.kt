@@ -46,32 +46,6 @@ fun Hello.encode(): String = Wire.json.encodeToString(Hello.serializer(), this)
 fun Bye.encode(): String = Wire.json.encodeToString(Bye.serializer(), this)
 fun CommandAck.encode(): String = Wire.json.encodeToString(CommandAck.serializer(), this)
 
-// ---- Outbound speaker control (relay -> server) ----
-
-/** Name (or rename) a speaker. The server's set_display_name overwrites, so this
- *  one message works for both naming a "?" and renaming "Sarah"->"Sara". */
-@Serializable
-data class NameSpeakerMsg(
-    val session_id: String,
-    val speaker_id: String,
-    val name: String,
-    val type: String = "name_speaker",
-)
-
-/** Reassign utterances from one speaker to another. v1 uses scope="all"
- *  (the server is session-scoped, so "all of this speaker" is "this conversation"). */
-@Serializable
-data class ReassignSpeakerMsg(
-    val session_id: String,
-    val from_speaker_id: String,
-    val to_speaker_id: String,
-    val scope: String = "all",
-    val type: String = "reassign_speaker",
-)
-
-fun NameSpeakerMsg.encode(): String = Wire.json.encodeToString(NameSpeakerMsg.serializer(), this)
-fun ReassignSpeakerMsg.encode(): String = Wire.json.encodeToString(ReassignSpeakerMsg.serializer(), this)
-
 /** Parsed from a proactive `propose` payload. Only `name_speaker` is recognized
  *  today; unknown kinds yield null (forward-compat, matches the lenient parser). */
 data class NameSpeakerPropose(val speakerId: String)

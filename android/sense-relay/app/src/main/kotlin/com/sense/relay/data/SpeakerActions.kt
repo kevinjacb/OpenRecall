@@ -1,12 +1,8 @@
 package com.sense.relay.data
 
-import com.sense.relay.protocol.NameSpeakerMsg
-import com.sense.relay.protocol.ReassignSpeakerMsg
-import com.sense.relay.protocol.encode
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
  * The UI's port for renaming/reassigning speakers. Production wiring is
@@ -37,17 +33,4 @@ class HttpSpeakerActions(
 object NoopSpeakerActions : SpeakerActions {
     override suspend fun nameSpeaker(sessionId: String, speakerId: String, name: String) {}
     override suspend fun reassignSpeaker(sessionId: String, fromId: String, toId: String, scope: String) {}
-}
-
-/** Legacy WS queue — removed in Task 5; kept compiling here by implementing the suspend iface. */
-object SpeakerControlPort : SpeakerActions {
-    private val queue = ConcurrentLinkedQueue<String>()
-    override suspend fun nameSpeaker(sessionId: String, speakerId: String, name: String) {
-        queue.add(NameSpeakerMsg(session_id = sessionId, speaker_id = speakerId, name = name).encode())
-    }
-    override suspend fun reassignSpeaker(sessionId: String, fromId: String, toId: String, scope: String) {
-        queue.add(ReassignSpeakerMsg(session_id = sessionId, from_speaker_id = fromId, to_speaker_id = toId, scope = scope).encode())
-    }
-    fun poll(): String? = queue.poll()
-    fun hasPending(): Boolean = !queue.isEmpty()
 }

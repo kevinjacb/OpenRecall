@@ -23,7 +23,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.util.UUID
@@ -95,10 +94,6 @@ class RelayService : Service() {
      *  re-provision / destroy. */
     private var reconnectJob: Job? = null
 
-    /** Drains [com.sense.relay.data.SpeakerControlPort] and sends each frame
-     *  over the socket while it's open. Cancelled on re-provision / destroy. */
-    private var controlDrainJob: Job? = null
-
     /** Scope for reconnect coroutines. A [SupervisorJob] so one failed retry
      *  doesn't cancel siblings; cancelled in [onDestroy]. */
     private val serviceScope = CoroutineScope(SupervisorJob())
@@ -128,17 +123,6 @@ class RelayService : Service() {
         // resets the backoff schedule.
         reconnectJob?.cancel(); reconnectJob = null
         reconnectAttempt = 0
-        // (Re)start the speaker-control drain: the UI enqueues name_speaker /
-        // reassign_speaker frames onto SpeakerControlPort; this loop sends them
-        // while the socket is open. Generation-guarded so a re-provision kills
-        // the stale loop. Frames buffered while disconnected drain on connect.
-        controlDrainJob?.cancel()
-        controlDrainJob = serviceScope.launch {
-            while (gen == generation && isActive) {
-                sendPendingSpeakerControls()
-                delay(50)
-            }
-        }
         // Re-provision: if we're already running (a re-delivery with new
         // server_url/token), tear down the prior session/sensor/socket before
         // re-initializing. The per-call listeners below capture `gen`, so the
@@ -256,21 +240,6 @@ class RelayService : Service() {
     }
 
     /**
-     * Send any speaker-control frames the UI enqueued (name_speaker /
-     * reassign_speaker) while the socket is open. Frames stay buffered in
-     * [com.sense.relay.data.SpeakerControlPort] while disconnected and drain
-     * on the next connect. The socket-null guard means a disconnect between
-     * polls leaves the frames in the queue rather than dropping them.
-     */
-    private fun sendPendingSpeakerControls() {
-        if (socket == null) return
-        while (socket != null) {
-            val json = com.sense.relay.data.SpeakerControlPort.poll() ?: break
-            execute(RelayAction.SendServerText(json))
-        }
-    }
-
-    /**
      * Transient drop (BLE or WS): stop the current link WITHOUT `stopSelf`, then
      * schedule an auto-reconnect with backoff. The service stays alive so the
      * retry can re-scan / re-open the socket. Generation-guarded via [gen] — a
@@ -330,7 +299,6 @@ class RelayService : Service() {
 
     override fun onDestroy() {
         reconnectJob?.cancel()
-        controlDrainJob?.cancel()
         serviceScope.cancel()
         socket?.close()
         if (::sensor.isInitialized) sensor.stop()

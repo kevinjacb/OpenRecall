@@ -128,14 +128,6 @@ class RelaySession(
         return RelayAction.ForwardToChatHistory(chatMessage)
     }
 
-    /** Serialize + send a name_speaker control message over the WS. */
-    fun sendControl(msg: com.sense.relay.protocol.NameSpeakerMsg): List<RelayAction> =
-        listOf(RelayAction.SendServerText(msg.encode()))
-
-    /** Serialize + send a reassign_speaker control message over the WS. */
-    fun sendControl(msg: com.sense.relay.protocol.ReassignSpeakerMsg): List<RelayAction> =
-        listOf(RelayAction.SendServerText(msg.encode()))
-
     /** The device notified a command ack (the command_id bytes) — wrap it as §E. */
     fun onDeviceCommandAck(ackPayload: ByteArray): RelayAction {
         val commandId = String(ackPayload, Charsets.UTF_8)
