@@ -1,9 +1,11 @@
 # Host-side contract tests for dependency-free firmware modules (no ESP toolchain).
 # Run:  make
 CC ?= cc
-CFLAGS ?= -std=c11 -Wall -Wextra -I../main
+CFLAGS ?= -std=c11 -Wall -Wextra -I../main -I../managed_components/espressif__cjson/cJSON
 
-test: c6 vad dsp provisioning
+CJSON_SRC = ../managed_components/espressif__cjson/cJSON/cJSON.c
+
+test: c6 vad dsp provisioning exec
 
 c6: /tmp/c6test
 	/tmp/c6test
@@ -17,6 +19,9 @@ dsp: /tmp/dsptest
 provisioning: /tmp/provtest
 	/tmp/provtest
 
+exec: /tmp/exectest
+	/tmp/exectest
+
 /tmp/c6test: test_c6_packet.c ../main/c6_packet.c ../main/c6_packet.h ../main/config.h
 	$(CC) $(CFLAGS) ../main/c6_packet.c test_c6_packet.c -o $@
 
@@ -29,7 +34,10 @@ provisioning: /tmp/provtest
 /tmp/dsptest: test_mic_dsp.c ../main/mic_dsp.c ../main/mic_dsp.h ../main/config.h
 	$(CC) $(CFLAGS) ../main/mic_dsp.c test_mic_dsp.c -o $@
 
-clean:
-	rm -f /tmp/c6test /tmp/vadtest /tmp/dsptest /tmp/provtest
+/tmp/exectest: test_executors.c ../main/executor_core.c ../main/executor_core.h ../main/config.h $(CJSON_SRC)
+	$(CC) $(CFLAGS) $(CJSON_SRC) ../main/executor_core.c test_executors.c -o $@
 
-.PHONY: test c6 vad dsp provisioning clean
+clean:
+	rm -f /tmp/c6test /tmp/vadtest /tmp/dsptest /tmp/provtest /tmp/exectest
+
+.PHONY: test c6 vad dsp provisioning exec clean

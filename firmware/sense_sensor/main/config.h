@@ -138,3 +138,10 @@ enum c6_vad_state
  * Replace with your gateway's 32-byte Ed25519 public key (run_gateway.py prints it
  * as hex on startup). Placeholder all-zeros rejects everything until provisioned. */
 static const uint8_t SERVER_ED25519_PUBKEY[32] = {0};
+
+/* ---- §D command executors (P4a) ----
+ * Bounds for the request_buffer replay window (seconds of retrospective audio
+ * to ship). Mirrors the server's _TYPE_SCHEMAS (validator_command.py): seconds
+ * ∈ [1, 60]. Used by executor_core.c's replay_window + parse/validate. */
+#define REQ_BUFFER_MIN_SECONDS 1
+#define REQ_BUFFER_MAX_SECONDS 60
