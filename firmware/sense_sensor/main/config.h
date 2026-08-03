@@ -139,9 +139,14 @@ enum c6_vad_state
  * as hex on startup). Placeholder all-zeros rejects everything until provisioned. */
 static const uint8_t SERVER_ED25519_PUBKEY[32] = {0};
 
-/* ---- §D command executors (P4a) ----
- * Bounds for the request_buffer replay window (seconds of retrospective audio
- * to ship). Mirrors the server's _TYPE_SCHEMAS (validator_command.py): seconds
- * ∈ [1, 60]. Used by executor_core.c's replay_window + parse/validate. */
+/* ---- §D command executors (P4a) ---- */
+#define EXECUTOR_TASK_STACK      4096   /* core-0; cJSON parse + queue send only */
+#define EXECUTOR_TASK_PRIO       5      /* same as the other app tasks */
+#define EXECUTOR_TASK_CORE       0      /* with radio/drain, opposite audio encode */
+#define EXECUTOR_QUEUE_DEPTH     8      /* SPSC; 8 in-flight commands is generous */
+
+/* request_buffer bounds — mirror server _TYPE_SCHEMAS (defense-in-depth).
+ * Seconds of retrospective audio to ship; used by executor_core.c's
+ * replay_window + parse/validate. */
 #define REQ_BUFFER_MIN_SECONDS 1
 #define REQ_BUFFER_MAX_SECONDS 60

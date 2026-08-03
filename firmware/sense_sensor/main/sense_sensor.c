@@ -21,10 +21,12 @@
  *   [x] commands      — Ed25519 verify (libsodium) + execute + ack
  */
 #include "audio_capture.h"
+#include "audio_gate.h"
 #include "ble_drain.h"
 #include "ble_link.h"
 #include "commands.h"
 #include "config.h"
+#include "executor.h"
 #include "opus_stream.h"
 #include "provisioning.h"
 #include "provisioning_core.h"
@@ -71,6 +73,17 @@ static void audio_task(void *arg) {
       continue;  // DMA not ready yet; retry next tick
     }
 
+    if (audio_gate_paused()) {
+      // stop_audio: drain DMA (read above) but capture no speech. Push a gap
+      // marker so the ring stays contiguous (chunk_seq + rel_ts keep advancing
+      // via the drainer's empty packets). Skip energy/VAD/encode; fall through to
+      // the shared per-frame tail so monitoring (per-second log, stack high-water)
+      // stays identical to the live path.
+      ring_buffer_push(C6_GAP_MARKER, rel_ts_ms, NULL, 0);
+      gaps++;
+      goto frame_tail;
+    }
+
     // DEBUG: accumulate per-sample energy of each channel for the per-second
     // calibration log. int32 squared into uint64 — 320 samples, no overflow.
     for (int i = 0; i < FRAME_SAMPLES; i++) {
@@ -107,6 +120,7 @@ static void audio_task(void *arg) {
       gaps++;
     }
 
+  frame_tail:
     frames++;
     rel_ts_ms += FRAME_MS;
 
@@ -164,6 +178,10 @@ void app_main(void) {
   }
   if (provisioning_state_byte() == 1) {
     commands_set_pubkey(provisioning_core_server_key());  /* belt-and-suspenders: ensure live key */
+  }
+
+  if (executor_init() != ESP_OK) {
+    ESP_LOGE(TAG, "executor_init failed");
   }
 
   // Audio pinned to core 1; NimBLE host task + drainer on core 0.

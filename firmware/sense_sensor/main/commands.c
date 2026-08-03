@@ -2,6 +2,7 @@
 
 #include "cJSON.h"
 #include "esp_log.h"
+#include "executor.h"
 #include "sodium.h"
 
 #include <stdio.h>
@@ -54,12 +55,13 @@ static void ack(const char *command_id) {
   }
 }
 
-// Dispatch an executed command. Hardware actions land here as their drivers arrive.
-static void execute(const char *type, const cJSON *root) {
-  (void)root;  // params consumed per-type once actions are implemented
-  ESP_LOGI(TAG, "execute command: %s", type);
-  // e.g. capture_photo / record_video / start_audio / stop_audio /
-  //      play_audio / display_text / show_status / request_buffer
+// Dispatch a verified, deduped command to the executor. Returns true if the
+// command was accepted (enqueued -> ack); false if the executor queue was full
+// (no ack -> server re-issues). BAD_PARAMS/UNKNOWN_TYPE are enqueued (and acked)
+// but the executor task does no work — see spec §6.1/§6.2.
+static bool execute(const char *type, const cJSON *root) {
+  const cJSON *params = cJSON_GetObjectItemCaseSensitive(root, "params");
+  return executor_submit(type, params);
 }
 
 void commands_handle(const uint8_t *data, size_t len) {
@@ -93,8 +95,11 @@ void commands_handle(const uint8_t *data, size_t len) {
     ack(id->valuestring);  // at-least-once: re-ack, but execute only once
   } else {
     remember(id->valuestring);
-    execute(type->valuestring, root);
-    ack(id->valuestring);
+    if (execute(type->valuestring, root)) {
+      ack(id->valuestring);   // accepted -> ack (at-least-once)
+    } else {
+      ESP_LOGW(TAG, "executor queue full — no ack for %s", id->valuestring);
+    }
   }
   cJSON_Delete(root);
 }
