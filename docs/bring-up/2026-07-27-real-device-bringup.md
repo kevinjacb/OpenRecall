@@ -222,7 +222,9 @@ Start the gateway (Tier 0 command). Reconnect the relay. Then issue commands and
     while paused. The ring keeps advancing (contiguous).
 - **`start_audio`**:
   - Device monitor: `exec: start_audio`; speech at the device resumes
-    transcription. `voiced>0` returns.
+    transcription. `opus_bytes/s>0` returns (the per-second counter that went to
+    0 while paused) and `voiced` resumes climbing — NOT `voiced>0` "returns",
+    since `voiced` is cumulative and never dropped to 0.
 - **`request_buffer seconds=5`** (e.g. "play back the last 5 seconds"):
   - Device monitor: the executor enqueues the replay with **no `exec:` log on
     success** (only failures log: `exec: replay queue full — dropped seconds=%u`
