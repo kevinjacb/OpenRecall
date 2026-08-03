@@ -24,6 +24,8 @@
 #pragma once
 
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,6 +33,16 @@ extern "C" {
 
 // Create the drainer task on core 0. Call once after ring_buffer_init().
 esp_err_t ble_drain_start(void);
+
+/* A request_buffer replay request, sent by the executor task and serviced by the
+   drain task (the single owner of chunk_seq + ble_link_notify_audio). */
+typedef struct {
+  uint32_t seconds;   /* validated 1..60 */
+} replay_request_t;
+
+/* The drain task's replay queue. Created by ble_drain_start(); NULL before that.
+   The executor task sends replay_request_t items here. */
+QueueHandle_t ble_drain_replay_queue(void);
 
 #ifdef __cplusplus
 }

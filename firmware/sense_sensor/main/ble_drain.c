@@ -22,8 +22,123 @@
 
 static const char *TAG = "drain";
 
+static QueueHandle_t s_replay_queue;
+
+QueueHandle_t ble_drain_replay_queue(void) { return s_replay_queue; }
+
 // Per-chunk scratch: enough for the worst-case 1 s of audio (50 * (1 + 255) + 12).
 #define PACKET_BUF_CAP  (C6_HEADER_LEN + C6_FRAMES_PER_CHUNK * (1 + MAX_OPUS_BYTES))
+
+/* Emit the last `seconds` of ring frames as C6_MEMORY_CHUNK packets, continuing the
+ * same monotonic chunk_seq the live path uses, with C6_FLAG_LAST_OF_REQ on the final
+ * packet. Single owner of chunk_seq + notify => runs here on the drain task.
+ *
+ * The packetization mirrors the live path's MTU-sizing but is self-contained (no
+ * shared helper) to avoid touching the proven live drain loop. The window math
+ * agrees with replay_window() in executor_core.c (host-tested). */
+static void drain_replay(uint32_t seconds, uint32_t *chunk_seq, uint8_t *pkt, size_t pkt_cap) {
+  uint32_t write_idx = ring_buffer_write_index();
+  uint32_t want = seconds * (1000u / FRAME_MS);   /* seconds * 50 */
+  uint32_t N = want;
+  if (N > RING_FRAMES) N = RING_FRAMES;
+  if (N > write_idx)   N = write_idx;
+  uint32_t start_idx = write_idx - N;
+  if (want != N) {
+    ESP_LOGI(TAG, "replay capped: requested %u s, have %u frames", (unsigned)seconds, (unsigned)N);
+  }
+
+  uint16_t mtu = ble_link_att_mtu();
+  size_t max_payload = (mtu >= 23) ? (size_t)(mtu - 3) : 244;
+  size_t budget = max_payload > C6_HEADER_LEN ? max_payload - C6_HEADER_LEN : 0;
+
+  bool emitted_any = false;
+  uint32_t i = 0;
+  while (i < N) {
+    c6_frame_t   frames[C6_FRAMES_PER_CHUNK];
+    uint8_t      frame_vad[C6_FRAMES_PER_CHUNK];
+    uint32_t     frame_rel_ts[C6_FRAMES_PER_CHUNK];
+    uint8_t      count = 0;
+    uint32_t     first_rel_ts = 0;
+    size_t       used = 0;
+
+    while (i < N) {
+      uint32_t idx = start_idx + i;
+      ring_frame_t f;
+      if (!ring_buffer_get(idx, &f)) {
+        /* overwritten mid-replay: suppress (chunk_seq still advances via packets) */
+        i++;
+        continue;
+      }
+      if (count == 0) first_rel_ts = f.rel_ts_ms;
+      if (f.vad_state == C6_GAP_MARKER || f.len == 0) {
+        i++;            /* suppress silence in body, like the live path */
+        continue;
+      }
+      if (used + 1u + (size_t)f.len > budget) {
+        if (count == 0) {
+          /* single frame bigger than budget: drop it (matches live guard) */
+          ESP_LOGW(TAG, "replay frame %u len %u > budget %u; dropping",
+                   (unsigned)i, (unsigned)f.len, (unsigned)budget);
+          i++;
+        }
+        break;          /* flush this packet, start a new one */
+      }
+      frames[count] = (c6_frame_t){ .data = f.data, .len = f.len };
+      frame_vad[count] = f.vad_state;
+      frame_rel_ts[count] = f.rel_ts_ms;
+      used += 1u + (size_t)f.len;
+      count++;
+      i++;
+    }
+
+    bool last = (i >= N);
+    uint8_t flags = last ? C6_FLAG_LAST_OF_REQ : 0;
+
+    if (count == 0) {
+      /* all-silence (or overwritten) span: emit one empty packet so chunk_seq
+         advances and the request boundary is marked. */
+      size_t n = c6_write_packet(pkt, pkt_cap, C6_MEMORY_CHUNK, *chunk_seq,
+                                 first_rel_ts, (uint8_t)C6_GAP_MARKER, flags, frames, 0);
+      if (n > 0) ble_link_notify_audio(pkt, n);
+      (*chunk_seq)++;
+      emitted_any = true;
+    } else {
+      size_t k = 0;
+      while (k < count) {
+        size_t start = k, seg_used = 0;
+        while (k < count && seg_used + 1u + (size_t)frames[k].len <= budget) {
+          seg_used += 1u + (size_t)frames[k].len;
+          k++;
+        }
+        size_t n_in_pkt = k - start;
+        if (n_in_pkt == 0) { k++; continue; }   /* unreachable given the outer check */
+        bool pkt_last = last && (k >= count);
+        uint8_t fl = pkt_last ? C6_FLAG_LAST_OF_REQ : 0;
+        size_t n = c6_write_packet(pkt, pkt_cap, C6_MEMORY_CHUNK, *chunk_seq,
+                                   frame_rel_ts[start], frame_vad[start], fl,
+                                   &frames[start], n_in_pkt);
+        if (n == 0) {
+          ESP_LOGE(TAG, "replay packet overflow: n_in_pkt=%u cap=%u",
+                   (unsigned)n_in_pkt, (unsigned)pkt_cap);
+        } else {
+          ble_link_notify_audio(pkt, n);
+        }
+        (*chunk_seq)++;
+      }
+      emitted_any = true;
+    }
+  }
+
+  if (!emitted_any) {
+    /* N == 0 (e.g. seconds=0 path / empty ring): emit one boundary packet. */
+    size_t n = c6_write_packet(pkt, pkt_cap, C6_MEMORY_CHUNK, *chunk_seq,
+                               0, (uint8_t)C6_GAP_MARKER, C6_FLAG_LAST_OF_REQ, NULL, 0);
+    if (n > 0) ble_link_notify_audio(pkt, n);
+    (*chunk_seq)++;
+  }
+  ESP_LOGI(TAG, "replay done: seconds=%u frames=%u chunk_seq->%u",
+           (unsigned)seconds, (unsigned)N, (unsigned)*chunk_seq);
+}
 
 static void drain_task(void *arg) {
   (void)arg;
@@ -44,6 +159,14 @@ static void drain_task(void *arg) {
            C6_FRAMES_PER_CHUNK);
 
   for (;;) {
+    // Service any pending request_buffer replays before live draining. Replays
+    // run to completion here (single owner of chunk_seq + notify), so live audio
+    // is briefly delayed for the replay's duration (well under a second).
+    replay_request_t rr;
+    while (xQueueReceive(s_replay_queue, &rr, 0) == pdPASS) {
+      drain_replay(rr.seconds, &chunk_seq, pkt, sizeof pkt);
+    }
+
     uint32_t write_idx = ring_buffer_write_index();
     uint32_t available = write_idx - cursor;
     if (available < C6_FRAMES_PER_CHUNK) {
@@ -206,6 +329,11 @@ static void drain_task(void *arg) {
 }
 
 esp_err_t ble_drain_start(void) {
+  s_replay_queue = xQueueCreate(DRAIN_REPLAY_QUEUE_DEPTH, sizeof(replay_request_t));
+  if (s_replay_queue == NULL) {
+    ESP_LOGE(TAG, "replay queue create failed");
+    return ESP_FAIL;
+  }
   // Core 0 — opposite the audio task (core 1). The drainer calls into NimBLE
   // (ble_gatts_notify_custom → GATT → L2CAP → ATT → HCI), whose frame depth
   // exceeds 4 KB on Xtensa LX7. 16 KB is enough headroom; the high-water-mark

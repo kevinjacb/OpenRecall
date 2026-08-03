@@ -150,3 +150,4 @@ static const uint8_t SERVER_ED25519_PUBKEY[32] = {0};
  * replay_window + parse/validate. */
 #define REQ_BUFFER_MIN_SECONDS 1
 #define REQ_BUFFER_MAX_SECONDS 60
+#define DRAIN_REPLAY_QUEUE_DEPTH 4      /* SPSC; replays serialize in the drain task */
