@@ -37,6 +37,18 @@ QueueHandle_t ble_drain_replay_queue(void) { return s_replay_queue; }
  * shared helper) to avoid touching the proven live drain loop. The window math
  * agrees with replay_window() in executor_core.c (host-tested). */
 static void drain_replay(uint32_t seconds, uint32_t *chunk_seq, uint8_t *pkt, size_t pkt_cap) {
+  /* Scratch for copied frame data. Static (not on the 16 KB stack) — single drain
+   * task, single instance, no reentrancy, matching the pkt[] pattern in drain_task.
+   * PACKET_BUF_CAP - C6_HEADER_LEN == C6_FRAMES_PER_CHUNK * (1 + MAX_OPUS_BYTES),
+   * which is >= any runtime budget (= max_payload - C6_HEADER_LEN), so it always
+   * holds one outer-iteration's worth of copied data.
+   * Static-reuse safety: the inner while(k<count) shipping loop calls
+   * c6_write_packet (which memcpys frame data into pkt synchronously) for ALL of
+   * this outer iteration's frames[] before the outer loop iterates and resets
+   * data_off, so no outer iteration overwrites data_scratch while a prior
+   * iteration's sub-packets are still being read. */
+  static uint8_t data_scratch[PACKET_BUF_CAP - C6_HEADER_LEN];
+
   uint32_t write_idx = ring_buffer_write_index();
   uint32_t want = seconds * (1000u / FRAME_MS);   /* seconds * 50 */
   uint32_t N = want;
@@ -60,11 +72,14 @@ static void drain_replay(uint32_t seconds, uint32_t *chunk_seq, uint8_t *pkt, si
     uint8_t      count = 0;
     uint32_t     first_rel_ts = 0;
     size_t       used = 0;
+    /* data_off accumulates only f.len (data bytes, not the 1-byte len tag), while
+     * `used` accumulates 1+f.len, so data_off <= used <= budget <= sizeof(data_scratch). */
+    size_t       data_off = 0;
 
     while (i < N) {
       uint32_t idx = start_idx + i;
       ring_frame_t f;
-      if (!ring_buffer_get(idx, &f)) {
+      if (!ring_buffer_get_copy(idx, &f, &data_scratch[data_off])) {
         /* overwritten mid-replay: suppress (chunk_seq still advances via packets) */
         i++;
         continue;
@@ -87,6 +102,7 @@ static void drain_replay(uint32_t seconds, uint32_t *chunk_seq, uint8_t *pkt, si
       frame_vad[count] = f.vad_state;
       frame_rel_ts[count] = f.rel_ts_ms;
       used += 1u + (size_t)f.len;
+      data_off += f.len;   /* advance for next frame's copy target */
       count++;
       i++;
     }

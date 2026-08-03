@@ -67,6 +67,8 @@ esp_err_t executor_init(void) {
                                           EXECUTOR_TASK_PRIO, NULL, EXECUTOR_TASK_CORE);
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "executor task create failed");
+    vQueueDelete(s_queue);
+    s_queue = NULL;
     return ESP_FAIL;
   }
   ESP_LOGI(TAG, "executor up: queue=%d task_stack=%d core=%d",

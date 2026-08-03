@@ -67,3 +67,23 @@ bool ring_buffer_get(uint32_t index, ring_frame_t *out) {
   taskEXIT_CRITICAL(&s_mux);
   return ok;
 }
+
+bool ring_buffer_get_copy(uint32_t index, ring_frame_t *out, uint8_t *data_buf) {
+  bool ok = false;
+  taskENTER_CRITICAL(&s_mux);
+  uint32_t w = s_write_index;
+  bool in_range = index < w && (w - index) <= RING_FRAMES;
+  if (in_range) {
+    const ring_slot_t *slot = &s_slots[index % RING_FRAMES];
+    out->rel_ts_ms = slot->rel_ts_ms;
+    out->vad_state = slot->vad_state;
+    out->len = slot->len;
+    if (slot->len > 0) {
+      memcpy(data_buf, slot->data, slot->len);
+    }
+    out->data = data_buf;
+    ok = true;
+  }
+  taskEXIT_CRITICAL(&s_mux);
+  return ok;
+}

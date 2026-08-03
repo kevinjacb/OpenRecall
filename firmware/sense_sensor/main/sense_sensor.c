@@ -191,8 +191,11 @@ void app_main(void) {
   // this back to the true peak + ~2 KB safety margin. The drainer on core 0
   // doesn't call into Opus, so 4 KB is fine for it.
   xTaskCreatePinnedToCore(audio_task, "audio", 32768, NULL, 5, NULL, 1);
-  ESP_ERROR_CHECK(ble_link_start(commands_handle));
+  // Drain starts before the link so the replay queue + drain task exist before
+  // the link can accept a request_buffer command (otherwise the executor would
+  // log "drain replay queue not ready — dropped").
   ESP_ERROR_CHECK(ble_drain_start());
+  ESP_ERROR_CHECK(ble_link_start(commands_handle));
 
   ESP_LOGI(TAG, "capture + VAD + Opus on core 1, drain + BLE advertising on core 0, "
                 "§D verify ready");

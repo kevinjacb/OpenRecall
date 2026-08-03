@@ -41,6 +41,14 @@ uint32_t ring_buffer_write_index(void);
 // already been overwritten or hasn't been written yet.
 bool ring_buffer_get(uint32_t index, ring_frame_t *out);
 
+/* Copy variant: copies the slot's data bytes into `data_buf` under the lock so
+ * the caller never reads through a pointer into the ring after release. Use this
+ * for retrospective reads (drain_replay) where the slot may be overwritten by
+ * ring_buffer_push before the caller consumes the data. `data_buf` must point to
+ * at least MAX_OPUS_BYTES writable bytes. Returns false if `index` is outside the
+ * valid window [w-RING_FRAMES, w) (already overwritten). */
+bool ring_buffer_get_copy(uint32_t index, ring_frame_t *out, uint8_t *data_buf);
+
 #ifdef __cplusplus
 }
 #endif
