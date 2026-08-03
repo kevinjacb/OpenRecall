@@ -212,27 +212,37 @@ Start the gateway (Tier 0 command). Reconnect the relay. Then issue commands and
 
 - **`stop_audio`** (e.g. ask the agent "stop listening for a bit", or POST an
   `issue_command` with `type=stop_audio`):
-  - Device monitor: `exec: stop_audio`, then the audio per-second log shows
-    `voiced=0 (no new speech) opus_bytes/s=0` and `cal e_pri=0 e_ref=0 ratio=0`.
+  - Device monitor: `exec: stop_audio`, then the per-second audio log
+    (`frames=%u voiced=%u gap=%u opus_bytes/s=%u`) shows `opus_bytes/s=0` and
+    `voiced` stops climbing — `voiced` is a **cumulative** counter (incremented
+    per voiced frame, never reset), so it holds at its last value (nonzero if
+    you spoke before pausing), NOT `voiced=0`. The cal log reads
+    `cal e_pri=0 e_ref=0 ratio=0` (energy accumulation is skipped while paused).
   - Gateway: only empty live packets (`C6_GAP_MARKER`) arrive; no transcripts
     while paused. The ring keeps advancing (contiguous).
 - **`start_audio`**:
   - Device monitor: `exec: start_audio`; speech at the device resumes
     transcription. `voiced>0` returns.
 - **`request_buffer seconds=5`** (e.g. "play back the last 5 seconds"):
-  - Device monitor: `exec` enqueues, then `drain: replay done: seconds=5 frames=250
-    chunk_seq->N`. `C6_MEMORY_CHUNK` packets are notified, the last one with
-    `C6_FLAG_LAST_OF_REQ`.
+  - Device monitor: the executor enqueues the replay with **no `exec:` log on
+    success** (only failures log: `exec: replay queue full — dropped seconds=%u`
+    or `exec: request_buffer: drain replay queue not ready — dropped`). Then the
+    drain task emits `drain: replay done: seconds=%u frames=%u chunk_seq->%u`
+    (e.g. `seconds=5 frames=250 chunk_seq->N`). `C6_MEMORY_CHUNK` packets are
+    notified, the last one with `C6_FLAG_LAST_OF_REQ`.
   - Gateway: a retrospective transcript segment appears for the last ~5 s
     (the reassembler orders the MEMORY_CHUNK packets by chunk_seq after the
     live head).
 - **`request_buffer seconds=60` on a freshly-booted device** (<60 s of audio
-  captured): device logs `replay capped: requested 60 s, have <3000> frames` and
-  still emits a final `LAST_OF_REQ` packet.
+  captured): device logs `drain: replay capped: requested 60 s, have %u frames`
+  (the `have` value is the actual captured frame count, < 3000) and still emits
+  a final `LAST_OF_REQ` packet.
 - **`capture_photo` / `record_video`** (only if you manually issue one — they are
   in the server allowlist but not implemented in P4b yet):
-  - Device monitor: `exec: capture_photo not implemented (P4b)`. The command acks
-    (valid, authentic) but does nothing. Expected in P4a; do not file a bug.
+  - Device monitor: `exec: capture_photo not implemented (P4b)` for a photo, or
+    `exec: record_video not implemented (P4b) dur=%u` for a video (the `dur` is
+    the requested duration in seconds). The command acks (valid, authentic) but
+    does nothing. Expected in P4a; do not file a bug.
 
 **Exit criteria:** stop/start gate visibly silences/resumes transcription;
 `request_buffer` produces a retrospective transcript segment with a clean
