@@ -10,11 +10,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -78,8 +79,7 @@ fun LiveBars(
 
 /**
  * The scrubber: real audio peaks, with the played portion filled and the rest
- * in the track colour. Tapping or dragging reports a 0..1 position through
- * [onSeek].
+ * in the track colour, plus a playhead you can drag like a music player.
  *
  * [peaks] are amplitudes in `0f..1f`, already resampled to the bar count the
  * caller wants — the server publishes fixed 500 ms buckets precisely so it
@@ -87,6 +87,16 @@ fun LiveBars(
  *
  * Bars are laid out with fixed weights, so bar `i` covers a known fraction of
  * the width and the fill boundary lines up with the playhead exactly.
+ *
+ * Gestures are one pointer stream rather than a tap detector plus a drag
+ * detector: a single `awaitEachGesture` loop means the touch-down already
+ * reports a position (so a tap seeks), every move reports the new one (so a
+ * drag runs forwards *and* backwards), and the release reports the final one.
+ * The caller decides what each means — the convention here is that [onScrub]
+ * previews (move the playhead, don't touch the decoder) and [onScrubEnd]
+ * commits the seek, which keeps a drag from firing dozens of `seekTo` calls.
+ *
+ * Passing a null [onScrub] leaves the strip inert — no gestures, no playhead.
  */
 @Composable
 fun WaveformScrubber(
@@ -94,47 +104,82 @@ fun WaveformScrubber(
     progress: Float,
     modifier: Modifier = Modifier,
     height: Dp = 36.dp,
-    onSeek: ((Float) -> Unit)? = null,
+    onScrub: ((Float) -> Unit)? = null,
+    onScrubEnd: ((Float) -> Unit)? = null,
     playedColor: Color = RecallTheme.colors.accent,
     remainingColor: Color = RecallTheme.colors.track,
 ) {
     val clamped = progress.coerceIn(0f, 1f)
-    val seekModifier = if (onSeek != null) {
-        Modifier
-            .pointerInput(Unit) {
-                detectTapGestures { offset ->
-                    if (size.width > 0) onSeek(offset.x / size.width)
+    val scrubModifier = if (onScrub != null) {
+        Modifier.pointerInput(Unit) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                val width = size.width.toFloat()
+                if (width <= 0f) return@awaitEachGesture
+                // Consuming from the down onwards is what stops an enclosing
+                // scrollable from reading the drag as a scroll and stealing it.
+                down.consume()
+                var fraction = (down.position.x / width).coerceIn(0f, 1f)
+                onScrub(fraction)
+                while (true) {
+                    val change = awaitPointerEvent().changes
+                        .firstOrNull { it.id == down.id } ?: break
+                    if (!change.pressed) break
+                    fraction = (change.position.x / width).coerceIn(0f, 1f)
+                    onScrub(fraction)
+                    change.consume()
                 }
+                onScrubEnd?.invoke(fraction)
             }
-            .pointerInput(Unit) {
-                detectHorizontalDragGestures { change, _ ->
-                    if (size.width > 0) onSeek(change.position.x / size.width)
-                }
-            }
+        }
     } else {
         Modifier
     }
-    Row(
+    Box(
         modifier = modifier
             .fillMaxWidth()
             .height(height)
-            .then(seekModifier),
-        verticalAlignment = Alignment.Bottom,
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
+            .then(scrubModifier),
     ) {
-        peaks.forEachIndexed { i, peak ->
-            // A zero-amplitude bucket (silence, or a gap the reassembler
-            // dropped) still needs a visible baseline, or the strip reads as
-            // missing data rather than as quiet.
-            val fraction = (0.08f + peak.coerceIn(0f, 1f) * 0.92f)
-            val played = peaks.isNotEmpty() && (i + 1f) / peaks.size <= clamped
+        Row(
+            modifier = Modifier.fillMaxSize(),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            peaks.forEachIndexed { i, peak ->
+                // A zero-amplitude bucket (silence, or a gap the reassembler
+                // dropped) still needs a visible baseline, or the strip reads as
+                // missing data rather than as quiet.
+                val fraction = (0.08f + peak.coerceIn(0f, 1f) * 0.92f)
+                val played = peaks.isNotEmpty() && (i + 1f) / peaks.size <= clamped
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight(fraction)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(if (played) playedColor else remainingColor),
+                )
+            }
+        }
+        if (onScrub != null) {
+            // The playhead: a full-height rule at the progress boundary, so the
+            // strip reads as draggable and the drag has something to follow.
+            // Width is never quite 0 — at fraction 0 the rule would otherwise
+            // have nothing to end-align against.
             Box(
                 Modifier
-                    .weight(1f)
-                    .fillMaxHeight(fraction)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(if (played) playedColor else remainingColor),
-            )
+                    .fillMaxHeight()
+                    .fillMaxWidth(clamped.coerceIn(0.012f, 1f)),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Box(
+                    Modifier
+                        .width(3.dp)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(playedColor),
+                )
+            }
         }
     }
 }
