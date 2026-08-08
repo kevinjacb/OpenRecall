@@ -8,17 +8,18 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.opensapien.relay.core.ui.SenseTheme
 
 /**
- * A two-column "label : value" row. The value column uses the mono-ish
- * family when available so server URLs, IDs, and durations align
- * vertically across rows; the label column is the regular body text.
+ * A two-column "label → value" row for a free-standing context (the Device
+ * screen). Inside a grouped settings card use [SettingsValueRow], which adds
+ * the group's padding and divider.
  *
- * The value is single-line + ellipsized on purpose: a long server URL
- * is still useful truncated, never wraps to a new line that breaks the
- * row rhythm.
+ * The value is right-aligned, single-line and ellipsized: a truncated server
+ * URL is still useful, whereas a wrapped one breaks the row rhythm.
  */
 @Composable
 fun InfoRow(
@@ -26,6 +27,7 @@ fun InfoRow(
     value: String,
     modifier: Modifier = Modifier,
 ) {
+    val colors = SenseTheme.colors
     Row(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -34,16 +36,17 @@ fun InfoRow(
         Text(
             label,
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = colors.inkMuted,
             modifier = Modifier.weight(1f),
         )
         Text(
             value,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.titleSmall,
+            color = colors.ink,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(2f),
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1.5f),
         )
     }
 }

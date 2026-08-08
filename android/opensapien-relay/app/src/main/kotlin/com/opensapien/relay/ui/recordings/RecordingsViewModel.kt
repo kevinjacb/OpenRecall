@@ -48,12 +48,23 @@ class RecordingsViewModel(
     private val repo: SessionRepository,
 ) : ViewModel() {
 
+    private val _query = MutableStateFlow("")
+    /** The search box's current text. Drives the filter in [state]. */
+    val query: StateFlow<String> = _query.asStateFlow()
+
     val state: StateFlow<RecordingsUiState> = combine(
         repo.observeSessions(),
         repo.observeLoadErrors(),
-    ) { paged, loadError ->
-        paged.toUiState(loadError)
+        _query,
+    ) { paged, loadError, query ->
+        paged.toUiState(loadError, query)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RecordingsUiState.Loading)
+
+    /** Update the search text. Filtering is local and immediate — no
+     *  debounce is needed because nothing is fetched. */
+    fun onQueryChange(value: String) {
+        _query.value = value
+    }
 
     // Read/written from viewModelScope (Main) and onLoadMore (Main). Main-
     // only today, but @Volatile guards against a future dispatcher change.
@@ -110,18 +121,38 @@ class RecordingsViewModel(
     }
 }
 
-private fun PagedResult<SessionSummary>.toUiState(loadError: ApiError?): RecordingsUiState =
-    when (this) {
-        is PagedResult.Loading -> RecordingsUiState.Loading
-        is PagedResult.Exhausted -> RecordingsUiState.Empty
-        is PagedResult.Error -> RecordingsUiState.Error(
-            httpApiError(cause).toDisplayMessage(),
-        )
-        is PagedResult.Page ->
-            if (items.isEmpty()) RecordingsUiState.Empty
-            else RecordingsUiState.Loaded(
-                items = items,
+/**
+ * Project a page into UI state, applying the [query] filter.
+ *
+ * The filter is client-side over the pages already loaded: the sessions API
+ * takes only `limit` and `cursor`, with no search parameter, so there is
+ * nothing to push down to the server. A query therefore searches what has
+ * been paged in so far — scrolling further widens it. `canLoadMore` is left
+ * as the page reports it, so paging keeps working while filtered.
+ */
+private fun PagedResult<SessionSummary>.toUiState(
+    loadError: ApiError?,
+    query: String,
+): RecordingsUiState = when (this) {
+    is PagedResult.Loading -> RecordingsUiState.Loading
+    is PagedResult.Exhausted -> RecordingsUiState.Empty
+    is PagedResult.Error -> RecordingsUiState.Error(httpApiError(cause).toDisplayMessage())
+    is PagedResult.Page -> {
+        val matches = items.filter { it.matches(query) }
+        if (matches.isEmpty()) {
+            RecordingsUiState.Empty
+        } else {
+            RecordingsUiState.Loaded(
+                items = matches,
                 canLoadMore = nextCursor != null,
                 loadError = loadError,
             )
+        }
     }
+}
+
+private fun SessionSummary.matches(query: String): Boolean {
+    val q = query.trim()
+    if (q.isEmpty()) return true
+    return preview.contains(q, ignoreCase = true) || id.value.contains(q, ignoreCase = true)
+}

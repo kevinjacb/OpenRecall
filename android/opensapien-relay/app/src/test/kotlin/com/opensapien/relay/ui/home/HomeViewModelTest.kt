@@ -1,13 +1,16 @@
 package com.opensapien.relay.ui.home
 
 import com.opensapien.relay.core.result.Outcome
+import com.opensapien.relay.data.ConfigurationRepository
 import com.opensapien.relay.data.DashboardRepository
 import com.opensapien.relay.data.DashboardState
 import com.opensapien.relay.domain.model.ServerStatus
 import com.opensapien.relay.relay.RelayState
 import com.opensapien.relay.relay.RelayStarter
+import com.opensapien.relay.store.Config
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.toList
@@ -53,6 +56,24 @@ class HomeViewModelTest {
         override fun start() { startCount++ }
     }
 
+    /** Config source for the provisioning flag Home reads. Defaults to a
+     *  provisioned device so the mapping tests aren't about first-run. */
+    private class FakeConfigurationRepository(
+        private val flow: MutableStateFlow<Config> = MutableStateFlow(Config(provisioned = true)),
+    ) : ConfigurationRepository {
+        override fun observe(): Flow<Config> = flow
+        override suspend fun save(c: Config) { flow.value = c }
+        override suspend fun saveCredentials(url: String, token: String) {
+            flow.value = flow.value.copy(serverUrl = url, token = token)
+        }
+    }
+
+    private fun viewModel(
+        repo: DashboardRepository,
+        starter: RelayStarter = FakeRelayStarter(),
+        config: ConfigurationRepository = FakeConfigurationRepository(),
+    ) = HomeViewModel(repo, starter, config)
+
     private fun loaded() = DashboardState.Loaded(
         relay = RelayState.Initial,
         server = Outcome.Success(
@@ -66,14 +87,14 @@ class HomeViewModelTest {
 
     @Test fun initialStateIsLoading() = runTest(dispatcher) {
         val repo = FakeDashboardRepository(MutableStateFlow(DashboardState.Loading))
-        val vm = HomeViewModel(repo, FakeRelayStarter())
+        val vm = viewModel(repo)
         // Before anyone collects, the stateIn seed is Loading.
         assertEquals(HomeUiState.Loading, vm.state.value)
     }
 
     @Test fun mapsLoadedFromRepository() = runTest(dispatcher) {
         val flow = MutableStateFlow<DashboardState>(DashboardState.Loading)
-        val vm = HomeViewModel(FakeDashboardRepository(flow), FakeRelayStarter())
+        val vm = viewModel(FakeDashboardRepository(flow))
         val seen = mutableListOf<HomeUiState>()
         val job = backgroundScope.launch { vm.state.toList(seen) }
 
@@ -87,7 +108,7 @@ class HomeViewModelTest {
 
     @Test fun mapsFailedFromRepository() = runTest(dispatcher) {
         val flow = MutableStateFlow<DashboardState>(DashboardState.Loading)
-        val vm = HomeViewModel(FakeDashboardRepository(flow), FakeRelayStarter())
+        val vm = viewModel(FakeDashboardRepository(flow))
         val job = backgroundScope.launch { vm.state.toList(mutableListOf()) }
 
         flow.value = DashboardState.Failed("boom")
@@ -100,7 +121,7 @@ class HomeViewModelTest {
 
     @Test fun onRefreshCallsDashboardRefreshAndTogglesIsRefreshing() = runTest(dispatcher) {
         val repo = FakeDashboardRepository(MutableStateFlow(DashboardState.Loading))
-        val vm = HomeViewModel(repo, FakeRelayStarter())
+        val vm = viewModel(repo)
         assertFalse(vm.isRefreshing.value, "not refreshing before the gesture")
 
         vm.onRefresh()
@@ -110,9 +131,31 @@ class HomeViewModelTest {
         assertFalse(vm.isRefreshing.value, "isRefreshing cleared after the refresh completes")
     }
 
+    @Test fun surfacesProvisioningFlagFromConfig() = runTest(dispatcher) {
+        // Home is the launch screen, so it must be able to tell a first-run
+        // user (no device paired) from a returning one whose device is just
+        // offline — the two render very differently.
+        val flow = MutableStateFlow<DashboardState>(DashboardState.Loading)
+        val config = MutableStateFlow(Config(provisioned = false))
+        val vm = viewModel(
+            FakeDashboardRepository(flow),
+            config = FakeConfigurationRepository(config),
+        )
+        val job = backgroundScope.launch { vm.state.toList(mutableListOf()) }
+
+        flow.value = loaded()
+        testScheduler.advanceUntilIdle()
+        assertFalse(assertIs<HomeUiState.Loaded>(vm.state.value).provisioned)
+
+        config.value = Config(provisioned = true)
+        testScheduler.advanceUntilIdle()
+        assertTrue(assertIs<HomeUiState.Loaded>(vm.state.value).provisioned)
+        job.cancel()
+    }
+
     @Test fun onRetryConnectionCallsRelayStarter() = runTest(dispatcher) {
         val starter = FakeRelayStarter()
-        val vm = HomeViewModel(FakeDashboardRepository(MutableStateFlow(DashboardState.Loading)), starter)
+        val vm = viewModel(FakeDashboardRepository(MutableStateFlow(DashboardState.Loading)), starter)
 
         vm.onRetryConnection()
 

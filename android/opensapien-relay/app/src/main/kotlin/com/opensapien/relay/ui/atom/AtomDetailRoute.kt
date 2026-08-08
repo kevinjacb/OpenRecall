@@ -38,9 +38,5 @@ fun AtomDetailRoute(
             .firstOrNull { it.atomId == atomId }
             ?.text
     }
-    AtomDetailScreen(atomId = atomId, text = text, modifier = modifier)
-    // onBack is accepted for API parity with SessionDetailRoute;
-    // the stub does not surface a back button (SenseTopBar with
-    // no onBack shows no back arrow, matching the spec).
-    @Suppress("UNUSED_EXPRESSION") onBack
+    AtomDetailScreen(atomId = atomId, text = text, onBack = onBack, modifier = modifier)
 }

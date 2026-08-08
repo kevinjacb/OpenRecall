@@ -24,23 +24,30 @@
         android:allowBackup="false"
         android:label="OpenSapien Relay"
         android:supportsRtl="true"
+        android:theme="@style/Theme.OpenSapien"
         android:usesCleartextTraffic="true">
 
+        <!-- The launcher. The app always opens on Home, which renders a
+             "Not connected" state and a set-up call to action when no device
+             has been provisioned yet. Making the wizard the launcher (as it
+             was) meant a returning user with a paired device still had to
+             walk past a connect form to reach their recordings. -->
         <activity
-            android:name=".ui.SetupActivity"
-            android:exported="true">
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <!-- Post-setup single-Activity host. Not the launcher (SetupActivity
-             stays the launcher per the spec); reached by an explicit Intent
-             from SetupActivity's success path (wired in Phase 7). -->
+        <!-- The pairing wizard. Reached explicitly from Home's first-run CTA
+             and from Settings → Reconfigure; never launched directly. -->
         <activity
-            android:name=".ui.MainActivity"
-            android:exported="false" />
+            android:name=".ui.SetupActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
 
         <service
             android:name=".RelayService"

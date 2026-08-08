@@ -1,63 +1,81 @@
 package com.opensapien.relay.ui.home
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import androidx.compose.runtime.collectAsState
 import com.opensapien.relay.core.result.Outcome
-import com.opensapien.relay.core.ui.Spacing
+import com.opensapien.relay.core.ui.SenseTheme
 import com.opensapien.relay.core.util.formatHmMs
+import com.opensapien.relay.core.util.formatRelative
 import com.opensapien.relay.data.DashboardState
 import com.opensapien.relay.data.RepositoryModule
 import com.opensapien.relay.domain.model.ServerStatus
+import com.opensapien.relay.domain.model.SessionId
 import com.opensapien.relay.domain.model.SessionSummary
 import com.opensapien.relay.relay.DeviceState
 import com.opensapien.relay.relay.RelayConnectionState
 import com.opensapien.relay.relay.RelayState
-import com.opensapien.relay.ui.design.ConnectionBadge
+import com.opensapien.relay.ui.design.DeviceVisual
+import com.opensapien.relay.ui.design.DeviceVisualState
 import com.opensapien.relay.ui.design.EmptyState
-import com.opensapien.relay.ui.design.MetricCard
+import com.opensapien.relay.ui.design.LiveBars
+import com.opensapien.relay.ui.design.PlaceholderTag
+import com.opensapien.relay.ui.design.PrimaryButton
+import com.opensapien.relay.ui.design.SecondaryButton
 import com.opensapien.relay.ui.design.SectionHeader
-import com.opensapien.relay.ui.design.Tone
+import com.opensapien.relay.ui.design.SectionHeaderAction
+import com.opensapien.relay.ui.design.SenseAppHeader
+import com.opensapien.relay.ui.design.SenseCard
+import com.opensapien.relay.ui.design.SenseIcons
+import com.opensapien.relay.ui.design.StatTile
+import com.opensapien.relay.ui.design.StatusBadge
+import com.opensapien.relay.ui.design.StatusDot
+import com.opensapien.relay.ui.design.StatusTone
+import com.opensapien.relay.ui.design.TileMeter
+import com.opensapien.relay.ui.design.TileSegments
+import com.opensapien.relay.ui.recordings.sessionTitle
 
 /**
- * Home route. Constructs the [HomeViewModel] from the process-singleton
- * [RepositoryModule] (manual DI — no Hilt in this slice) and renders the
- * stateless [HomeScreen]. Kept separate from [HomeScreen] so the screen
- * itself is preview-/test-friendly (it takes a plain [HomeUiState]).
+ * Home route. Builds the [HomeViewModel] from the process-singleton
+ * [RepositoryModule] (manual DI — no Hilt in this project) and renders the
+ * stateless [HomeScreen], which takes a plain [HomeUiState] so it stays
+ * preview- and test-friendly.
  *
- * The two [onOpenDevice] / [onOpenCommands] callbacks are passed in by
- * [com.opensapien.relay.ui.nav.AppNavigation] and translate to
- * `navController.navigate(Destination.Device.route)` /
- * `navController.navigate(Destination.Commands.route)`. Device and
- * Commands lost their bar slots when the 6-tab bottom bar was
- * collapsed back to 4 tabs (INV-13 compliant); Home is now the
- * drill-down entry point for both admin surfaces.
+ * Home is the app's launch screen. [onSetUpDevice] opens the pairing wizard;
+ * [onOpenSession] pushes a session detail; [onSeeAllRecordings] and
+ * [onOpenSettings] switch tabs.
  */
 @Composable
 fun HomeRoute(
-    onOpenDevice: () -> Unit,
-    onOpenCommands: () -> Unit,
+    onSetUpDevice: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onSeeAllRecordings: () -> Unit,
+    onOpenSession: (SessionId) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val vm: HomeViewModel = viewModel(
@@ -66,6 +84,7 @@ fun HomeRoute(
                 HomeViewModel(
                     RepositoryModule.repos.dashboard,
                     RepositoryModule.repos.relayStarter,
+                    RepositoryModule.repos.configuration,
                 )
             }
         },
@@ -77,24 +96,18 @@ fun HomeRoute(
         isRefreshing = isRefreshing,
         onRefresh = vm::onRefresh,
         onRetryConnection = vm::onRetryConnection,
-        onOpenDevice = onOpenDevice,
-        onOpenCommands = onOpenCommands,
+        onSetUpDevice = onSetUpDevice,
+        onOpenSettings = onOpenSettings,
+        onSeeAllRecordings = onSeeAllRecordings,
+        onOpenSession = onOpenSession,
         modifier = modifier,
     )
 }
 
 /**
- * Stateless Home content. Renders the three dashboard branches:
- * `Loading` (a centered spinner), `Loaded` (the glanceable dashboard),
- * and `Failed` (a calm empty state). The `Loaded` branch composes the
- * design system's [MetricCard], [ConnectionBadge], [SectionHeader], and
- * [EmptyState] — no bespoke layout primitives.
- *
- * The Loaded branch also surfaces the Device + Commands cards (the
- * drill-down entry points for the two admin surfaces that are not
- * in the bottom bar). The Loaded branch is wrapped in a
- * [PullToRefreshBox] so a pull-down gesture re-fetches status + sessions;
- * a "Retry connection" button appears when the relay link has dropped.
+ * Stateless Home content — the comp's dashboard: brand header, the device
+ * hero with its status, two stat tiles, the live-capture card, the relay
+ * server row, and the most recent sessions.
  */
 @Composable
 fun HomeScreen(
@@ -102,139 +115,159 @@ fun HomeScreen(
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
     onRetryConnection: () -> Unit = {},
-    onOpenDevice: () -> Unit = {},
-    onOpenCommands: () -> Unit = {},
+    onSetUpDevice: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
+    onSeeAllRecordings: () -> Unit = {},
+    onOpenSession: (SessionId) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    when (state) {
-        is HomeUiState.Loading -> CenteredSpinner(modifier)
-        is HomeUiState.Loaded -> DashboardContent(
-            dashboard = state.dashboard,
-            isRefreshing = isRefreshing,
-            onRefresh = onRefresh,
-            onRetryConnection = onRetryConnection,
-            onOpenDevice = onOpenDevice,
-            onOpenCommands = onOpenCommands,
-            modifier = modifier,
-        )
-        is HomeUiState.Failed -> FailedContent(
-            reason = state.reason,
-            isRefreshing = isRefreshing,
-            onRefresh = onRefresh,
-            modifier = modifier,
-        )
-    }
-}
+    val colors = SenseTheme.colors
+    Box(modifier.fillMaxSize().background(colors.canvas)) {
+        when (state) {
+            is HomeUiState.Loading -> Box(
+                Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) { CircularProgressIndicator(color = colors.accent) }
 
-@Composable
-private fun CenteredSpinner(modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier.fillMaxSize().padding(Spacing.lg),
-        contentAlignment = Alignment.Center,
-    ) {
-        CircularProgressIndicator()
-    }
-}
+            is HomeUiState.Failed -> Box(
+                Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                EmptyState(
+                    title = "Can't reach your relay",
+                    body = state.reason,
+                    ctaLabel = "Try again",
+                    onCta = onRefresh,
+                )
+            }
 
-@Composable
-private fun FailedContent(
-    reason: String,
-    isRefreshing: Boolean = false,
-    onRefresh: () -> Unit = {},
-    modifier: Modifier = Modifier,
-) {
-    Box(
-        modifier = modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center,
-    ) {
-        EmptyState(
-            title = "Can't reach OpenSapien",
-            body = reason,
-            // Pull-to-refresh / "Try again": forces an immediate status
-            // poll + session-list reset instead of waiting for the 2s
-            // poll cadence.
-            ctaLabel = "Try again",
-            onCta = onRefresh,
-        )
+            is HomeUiState.Loaded -> Dashboard(
+                dashboard = state.dashboard,
+                provisioned = state.provisioned,
+                isRefreshing = isRefreshing,
+                onRefresh = onRefresh,
+                onRetryConnection = onRetryConnection,
+                onSetUpDevice = onSetUpDevice,
+                onOpenSettings = onOpenSettings,
+                onSeeAllRecordings = onSeeAllRecordings,
+                onOpenSession = onOpenSession,
+            )
+        }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DashboardContent(
+private fun Dashboard(
     dashboard: DashboardState.Loaded,
+    provisioned: Boolean,
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
     onRetryConnection: () -> Unit,
-    onOpenDevice: () -> Unit,
-    onOpenCommands: () -> Unit,
-    modifier: Modifier = Modifier,
+    onSetUpDevice: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onSeeAllRecordings: () -> Unit,
+    onOpenSession: (SessionId) -> Unit,
 ) {
+    val colors = SenseTheme.colors
+    val relay = dashboard.relay
+    val status = deviceStatus(relay, provisioned)
+
     PullToRefreshBox(
         isRefreshing = isRefreshing,
         onRefresh = onRefresh,
-        modifier = modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize(),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(Spacing.md),
-            verticalArrangement = Arrangement.spacedBy(Spacing.md),
+                .statusBarsPadding()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
         ) {
-            MetricCard(
-                title = "Connection",
-                value = connectionLabel(dashboard.relay.connection),
+            SenseAppHeader(title = "OpenSapien Relay", onSettings = onOpenSettings)
+
+            DeviceVisual(
+                state = status.visual,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                val (label, tone) = deviceBadge(dashboard.relay.device)
-                ConnectionBadge(state = label, tone = tone)
+                Text(
+                    text = deviceName(relay.device),
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = colors.ink,
+                )
+                StatusBadge(
+                    label = status.label,
+                    tone = status.tone,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
             }
 
-            // When the relay link has dropped to a recoverable-but-stopped
-            // state, surface a "Retry connection" button at the top so the
-            // user can re-launch the service without re-running setup.
-            if (shouldOfferRetry(dashboard.relay)) {
-                RetryConnectionButton(onRetryConnection)
+            // First run: the wizard is no longer the launcher, so Home owns
+            // the call to action that gets a device paired.
+            if (!provisioned) {
+                PrimaryButton(
+                    label = "Set up your OpenSapien",
+                    onClick = onSetUpDevice,
+                    modifier = Modifier.padding(top = 22.dp),
+                )
+            } else if (status.canRetry) {
+                SecondaryButton(
+                    label = "Retry connection",
+                    onClick = onRetryConnection,
+                    modifier = Modifier.padding(top = 22.dp),
+                )
             }
 
-            val (serverValue, serverSubtitle) = serverMetric(dashboard.server)
-            MetricCard(
-                title = "Server",
-                value = serverValue,
-                subtitle = serverSubtitle,
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 22.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                BatteryTile(Modifier.weight(1f))
+                BleLinkTile(device = relay.device, modifier = Modifier.weight(1f))
+            }
+
+            HearingNowCard(
+                relay = relay,
+                lastSession = dashboard.recentSessions.firstOrNull(),
+                modifier = Modifier.padding(top = 10.dp),
             )
 
-            // Drill-down entry points for the two admin surfaces that
-            // are not in the bottom bar (Device + Commands). Tapping a
-            // card navigates to the corresponding route via the callback
-            // the AppNavigation wired in.
-            SectionHeader(
-                title = "Device & commands",
-                modifier = Modifier.padding(top = Spacing.sm),
-            )
-            DrillDownCard(
-                title = "Device",
-                subtitle = "BLE link, server status, provisioning",
-                onClick = onOpenDevice,
-            )
-            DrillDownCard(
-                title = "Commands",
-                subtitle = "Active and recent agent requests",
-                onClick = onOpenCommands,
+            RelayServerCard(
+                server = dashboard.server,
+                modifier = Modifier.padding(top = 10.dp),
             )
 
             SectionHeader(
                 title = "Recent sessions",
-                modifier = Modifier.padding(top = Spacing.sm),
+                modifier = Modifier.padding(top = 28.dp),
+                trailing = { SectionHeaderAction("See all", onSeeAllRecordings) },
             )
+
             if (dashboard.recentSessions.isEmpty()) {
-                EmptyState(
-                    title = "No sessions yet",
-                    body = "Recordings from your OpenSapien device show up here.",
-                )
+                SenseCard(modifier = Modifier.padding(top = 12.dp)) {
+                    Text(
+                        text = "Nothing recorded yet. Sessions land here as soon as " +
+                            "your OpenSapien starts hearing.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.grey,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                    )
+                }
             } else {
                 dashboard.recentSessions.forEach { session ->
-                    SessionRow(session)
+                    SessionCard(
+                        session = session,
+                        onClick = { onOpenSession(session.id) },
+                        modifier = Modifier.padding(top = 10.dp),
+                    )
                 }
             }
         }
@@ -242,123 +275,249 @@ private fun DashboardContent(
 }
 
 /**
- * A tappable card for a Home drill-down entry point. Mirrors the
- * existing [SessionRow] visual rhythm (Card + Column + Text) but
- * the entire card is clickable.
+ * Battery level.
+ *
+ * **Placeholder.** The firmware exposes no battery characteristic over the
+ * relay's BLE link and the server's `/status` carries no device telemetry,
+ * so there is nothing to read. The tile keeps its slot in the layout and
+ * reads "—" rather than inventing a number.
  */
 @Composable
-private fun DrillDownCard(
-    title: String,
-    subtitle: String,
-    onClick: () -> Unit,
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
-            contentColor = MaterialTheme.colorScheme.onSurface,
-        ),
-        onClick = onClick,
-    ) {
-        Column(modifier = Modifier.padding(Spacing.md)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
-private fun SessionRow(session: SessionSummary) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
-            contentColor = MaterialTheme.colorScheme.onSurface,
-        ),
-    ) {
-        Column(modifier = Modifier.padding(Spacing.md)) {
-            Text(
-                text = session.preview.ifBlank { "(no transcript yet)" },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                text = formatHmMs(session.durationMs),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-/** A short, user-facing label for the relay/connection lifecycle. */
-private fun connectionLabel(c: RelayConnectionState): String = when (c) {
-    RelayConnectionState.Idle -> "Idle"
-    RelayConnectionState.BleScanning -> "Scanning"
-    is RelayConnectionState.BleConnected -> "Device linked"
-    is RelayConnectionState.SocketConnecting -> "Connecting"
-    is RelayConnectionState.Live -> "Live"
-    is RelayConnectionState.Reconnecting -> "Reconnecting"
-    is RelayConnectionState.Failed -> "Disconnected"
+private fun BatteryTile(modifier: Modifier = Modifier) {
+    val colors = SenseTheme.colors
+    StatTile(
+        label = "Battery",
+        value = "—",
+        icon = SenseIcons.Battery,
+        modifier = modifier,
+        meter = { TileMeter(fraction = 0f, color = colors.ok) },
+    )
 }
 
 /**
- * Whether the relay link is in a stopped-but-recoverable state where a
- * manual "Retry connection" is worth offering. Shown when the connection
- * is [RelayConnectionState.Failed] (terminal) or [RelayConnectionState.Idle]
- * (never started / stopped itself), OR when the BLE device is
- * [DeviceState.Disconnected]. Active states (Scanning/Connecting/Live/
- * Reconnecting) hide it — the system is already trying.
+ * BLE link quality. The connected/disconnected state is real; the bar count
+ * is a coarse stand-in, since the relay does not sample RSSI after the GATT
+ * connection is established.
  */
-private fun shouldOfferRetry(relay: RelayState): Boolean =
-    when (relay.connection) {
-        is RelayConnectionState.Failed, RelayConnectionState.Idle -> true
-        is RelayConnectionState.Reconnecting -> false
-        else -> relay.device is DeviceState.Disconnected
-    }
-
-/** A full-width "Retry connection" button — the manual escape hatch that
- *  re-launches [com.opensapien.relay.RelayService] from its last-good config. */
 @Composable
-private fun RetryConnectionButton(onRetryConnection: () -> Unit) {
-    Button(
-        onClick = onRetryConnection,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Text("Retry connection")
+private fun BleLinkTile(device: DeviceState, modifier: Modifier = Modifier) {
+    val (label, bars) = when (device) {
+        is DeviceState.Connected -> "Linked" to 3
+        DeviceState.Scanning -> "Searching" to 1
+        is DeviceState.Disconnected -> "Dropped" to 0
+        DeviceState.Unknown -> "—" to 0
     }
+    StatTile(
+        label = "BLE link",
+        value = label,
+        icon = SenseIcons.Signal,
+        modifier = modifier,
+        meter = { TileSegments(filled = bars) },
+    )
 }
 
-/** The device badge label + tone. `Connected` is the only accent state; the
- *  rest are muted so the dashboard stays calm. */
-private fun deviceBadge(d: DeviceState): Pair<String, Tone> = when (d) {
-    is DeviceState.Connected -> (d.name ?: d.address) to Tone.Accent
-    DeviceState.Scanning -> "Searching…" to Tone.Neutral
-    DeviceState.Unknown -> "Not connected" to Tone.Muted
-    is DeviceState.Disconnected -> "Disconnected" to Tone.Muted
-}
-
-/** The server metric card's big value + subtitle. A [Outcome.Failure]
- *  renders as "Offline" with the reason; success shows the 24h event count
- *  with the version as subtitle. */
-private fun serverMetric(server: Outcome<ServerStatus>): Pair<String, String> =
-    when (server) {
-        is Outcome.Success -> {
-            val s = server.value
-            val value = if (s.reachable) "${s.recentEvents24h}" else "Offline"
-            val subtitle = buildString {
-                append(if (s.reachable) "events (24h)" else "unreachable")
-                s.version?.let { append(" · v$it") }
+/**
+ * The live-capture card. The elapsed clock and the live/idle state are real
+ * (both come from [RelayConnectionState.Live]).
+ *
+ * **Partial placeholder.** The comp shows the sentence currently being
+ * transcribed; the app has no live-transcript stream — transcripts are only
+ * readable per-session over HTTP after the fact — so the body falls back to
+ * the most recent session's preview, labelled as such.
+ */
+@Composable
+private fun HearingNowCard(
+    relay: RelayState,
+    lastSession: SessionSummary?,
+    modifier: Modifier = Modifier,
+) {
+    val colors = SenseTheme.colors
+    val live = relay.connection as? RelayConnectionState.Live
+    SenseCard(modifier = modifier, contentPadding = PaddingValues(18.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(9.dp),
+            ) {
+                if (live != null) {
+                    LiveBars()
+                } else {
+                    StatusDot(color = colors.greyFaint, size = 8.dp)
+                }
+                Text(
+                    text = if (live != null) "Hearing now" else "Not capturing",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = colors.ink,
+                )
             }
-            value to subtitle
+            if (live != null) {
+                Text(
+                    text = formatHmMs(live.sinceMs),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = colors.greyLight,
+                )
+            }
         }
-        is Outcome.Failure -> "Offline" to "unreachable"
+        Row(
+            modifier = Modifier.padding(top = 11.dp),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = when {
+                    lastSession != null && lastSession.preview.isNotBlank() -> lastSession.preview
+                    live != null -> "Listening. Nothing transcribed yet."
+                    else -> "Your OpenSapien isn't streaming right now."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.inkMuted,
+                modifier = Modifier.weight(1f),
+            )
+            if (live != null) PlaceholderTag(label = "Last heard")
+        }
     }
+}
+
+/** Relay server health: reachability dot, 24h event count, version, and — */
+@Composable
+private fun RelayServerCard(server: Outcome<ServerStatus>, modifier: Modifier = Modifier) {
+    val colors = SenseTheme.colors
+    val status = (server as? Outcome.Success)?.value
+    val online = status?.reachable == true
+    SenseCard(
+        modifier = modifier,
+        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 15.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            StatusDot(color = if (online) colors.ok else colors.greyFaint, size = 7.dp)
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Relay server",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = colors.ink,
+                )
+                Text(
+                    text = if (online) {
+                        buildString {
+                            append("${status.recentEvents24h} events today")
+                            status.version?.let { append(" · v$it") }
+                        }
+                    } else {
+                        "Unreachable"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.grey,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            if (online) {
+                Text(
+                    text = "${status.activeSessions} live",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.greyLight,
+                )
+            }
+        }
+    }
+}
+
+/** A recent-session card: preview, relative time, duration and hop count. */
+@Composable
+private fun SessionCard(
+    session: SessionSummary,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = SenseTheme.colors
+    SenseCard(modifier = modifier, onClick = onClick) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Text(
+                text = sessionTitle(session),
+                style = MaterialTheme.typography.titleSmall,
+                color = colors.ink,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = formatRelative(System.currentTimeMillis(), session.startedAt.toEpochMilli()),
+                style = MaterialTheme.typography.labelMedium,
+                color = colors.greyLight,
+            )
+        }
+        Text(
+            text = session.preview.ifBlank { "No transcript yet." },
+            style = MaterialTheme.typography.bodyMedium,
+            color = colors.inkMuted,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+        Text(
+            text = "${formatHmMs(session.durationMs)} · ${session.transcriptCount} segments",
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.greyLight,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+    }
+}
+
+/** The device hero's label, visual state and tone, resolved together so they
+ *  can never disagree. */
+private data class DeviceStatus(
+    val label: String,
+    val tone: StatusTone,
+    val visual: DeviceVisualState,
+    val canRetry: Boolean,
+)
+
+private fun deviceStatus(relay: RelayState, provisioned: Boolean): DeviceStatus = when {
+    !provisioned -> DeviceStatus(
+        label = "Not connected",
+        tone = StatusTone.Idle,
+        visual = DeviceVisualState.Off,
+        canRetry = false,
+    )
+    else -> when (val c = relay.connection) {
+        is RelayConnectionState.Live -> DeviceStatus(
+            "Connected · listening", StatusTone.Healthy, DeviceVisualState.Connected, false,
+        )
+        is RelayConnectionState.BleConnected -> DeviceStatus(
+            "Linked · connecting", StatusTone.Working, DeviceVisualState.Searching, false,
+        )
+        is RelayConnectionState.SocketConnecting -> DeviceStatus(
+            "Connecting…", StatusTone.Working, DeviceVisualState.Searching, false,
+        )
+        RelayConnectionState.BleScanning -> DeviceStatus(
+            "Searching…", StatusTone.Working, DeviceVisualState.Searching, false,
+        )
+        is RelayConnectionState.Reconnecting -> DeviceStatus(
+            "Reconnecting…", StatusTone.Working, DeviceVisualState.Searching, false,
+        )
+        is RelayConnectionState.Failed -> DeviceStatus(
+            "Disconnected", StatusTone.Problem, DeviceVisualState.Off, true,
+        )
+        RelayConnectionState.Idle -> DeviceStatus(
+            "Not connected", StatusTone.Idle, DeviceVisualState.Off, true,
+        )
+    }.let { status ->
+        // An Idle/active connection with a dropped BLE link still warrants
+        // the manual retry affordance.
+        if (relay.device is DeviceState.Disconnected) status.copy(canRetry = true) else status
+    }
+}
+
+private fun deviceName(device: DeviceState): String =
+    (device as? DeviceState.Connected)?.name ?: "OpenSapien"

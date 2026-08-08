@@ -6,20 +6,26 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
+import com.opensapien.relay.core.SenseLog
 import com.opensapien.relay.core.ui.OpenSapienTheme
+import com.opensapien.relay.data.RepositoryModule
 import com.opensapien.relay.relay.RelayController
 import com.opensapien.relay.ui.nav.AppNavigation
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /**
- * Single-Activity host for the post-setup UI. The wizard lives in
- * [SetupActivity] (the launcher); once it's done, it launches this Activity
- * (first launch) or returns `RESULT_OK` to it (re-provision from Settings).
+ * The launcher Activity and single-Activity host for the whole app.
  *
- * Renders the monochrome [OpenSapienTheme] and the [AppNavigation] host (NavHost +
- * BottomBar). The Settings tab's "Reconfigure device" launches SetupActivity
- * through [reconfigureLauncher]; on `RESULT_OK` the relay state is refreshed
- * (the server poller picks up the new config on the next poll — the
- * `clientProvider` reads `Config` per call — so no explicit re-init is needed).
+ * Home is the start destination, provisioned or not — a first-run user sees
+ * a "Not connected" device with a set-up call to action rather than a bare
+ * connect form. The wizard ([SetupActivity]) is now a push from here, via
+ * [reconfigureLauncher], reached from Home's CTA and Settings → Reconfigure.
+ *
+ * Because the wizard is no longer the launcher, it is also no longer the only
+ * thing that starts the relay: [startRelayIfProvisioned] does that on every
+ * cold start when a device is already paired.
  */
 class MainActivity : ComponentActivity() {
 
@@ -28,24 +34,48 @@ class MainActivity : ComponentActivity() {
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             // Re-emit the current relay state so collectors (Home, Device)
-            // re-render with fresh config. The poller's next 2s tick fetches
-            // the new server; the session repo's next request uses the new
-            // client. Nothing to re-construct.
+            // re-render against the fresh config. The status poller picks the
+            // new server up on its next tick and the client provider reads
+            // Config per call, so there is nothing to re-construct.
             RelayController.requestRefresh()
         }
     }
 
-    private fun launchReconfigure() {
-        reconfigureLauncher.launch(
-            Intent(this, SetupActivity::class.java).putExtra(SetupActivity.EXTRA_RECONFIGURE, true),
-        )
+    private fun launchSetup() {
+        reconfigureLauncher.launch(Intent(this, SetupActivity::class.java))
+    }
+
+    /**
+     * Start the foreground relay service if a device has been provisioned.
+     *
+     * No intent extras: [com.opensapien.relay.RelayService]'s `onStartCommand`
+     * restores the URL, token and gateway port from the persisted config when
+     * they are absent, and a start on an already-running service is a
+     * no-op re-assertion of its state — so this is safe on every launch.
+     */
+    private fun startRelayIfProvisioned() {
+        lifecycleScope.launch {
+            val config = runCatching {
+                RepositoryModule.repos.configuration.observe().first()
+            }.getOrNull() ?: return@launch
+            if (!config.provisioned) return@launch
+            runCatching { RepositoryModule.repos.relayStarter.start() }
+                .onFailure {
+                    SenseLog.w(
+                        tag = "MainActivity",
+                        msg = "relay auto-start failed: ${it.javaClass.simpleName}",
+                    )
+                }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdgeLight()
+        startRelayIfProvisioned()
         setContent {
             OpenSapienTheme {
-                AppNavigation(onReconfigure = ::launchReconfigure)
+                AppNavigation(onReconfigure = ::launchSetup)
             }
         }
     }

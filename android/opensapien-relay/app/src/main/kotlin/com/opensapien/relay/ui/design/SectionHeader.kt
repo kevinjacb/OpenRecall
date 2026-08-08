@@ -1,20 +1,19 @@
 package com.opensapien.relay.ui.design
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.opensapien.relay.core.ui.SenseTheme
 
 /**
- * Section header. Title uses `titleMedium`; the optional trailing slot
- * is the right-hand action (e.g. "View all") and is a composable so a
- * future caller can pass a row of buttons or an icon without a new
- * SectionHeader variant.
+ * Section header — a title with an optional trailing action, e.g.
+ * "Recent sessions ————— See all".
  */
 @Composable
 fun SectionHeader(
@@ -29,21 +28,24 @@ fun SectionHeader(
     ) {
         Text(
             text = title,
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.titleLarge,
+            color = SenseTheme.colors.ink,
         )
         trailing?.invoke()
     }
 }
 
 /**
- * Convenience: a "View all" text button for the trailing slot. We expose
- * a real Button here (not just text) so accessibility / touch-target
- * sizing is right out of the box; consumers wire the onClick.
+ * The trailing action for a [SectionHeader] — accent text with no button
+ * chrome (the comp's "See all"). A composable rather than a bare `Text` so
+ * the accent colour and weight stay in one place.
  */
 @Composable
 fun SectionHeaderAction(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    TextButton(onClick = onClick, modifier = modifier) {
-        Text(label, style = MaterialTheme.typography.labelLarge)
-    }
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelMedium,
+        color = SenseTheme.colors.accent,
+        modifier = modifier.clickable(onClick = onClick),
+    )
 }

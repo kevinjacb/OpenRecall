@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  body { margin: 0; background: #EFEDE8; }
+  a { color: #D9642F; text-decoration: none; }
+  a:hover { color: #B34E20; }
+  ::-webkit-scrollbar { width: 0; height: 0; }
+  @keyframes bar { 0%,100% { transform: scaleY(0.22); } 50% { transform: scaleY(1); } }
+  @keyframes ping { 0% { transform: scale(0.6); opacity: 0.55; } 100% { transform: scale(2.4); opacity: 0; } }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+</style>
+</helmet>
+
+<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:48px 24px;background:#EFEDE8;font-family:'Instrument Sans',system-ui,sans-serif">
+<x-import component-from-global-scope="AndroidDevice" from="./android-frame.jsx" hint-size="412px,892px">
+
+<div style="height:100%;display:flex;flex-direction:column;background:#FBFAF8;color:#17181A;font-family:'Instrument Sans',system-ui,sans-serif;-webkit-font-smoothing:antialiased">
+
+  <!-- ══ PAIRING ══ -->
+  <sc-if value="{{ showPair }}">
+  <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+    <div style="display:flex;align-items:center;gap:12px;padding:8px 16px 4px">
+      <button onClick="{{ exitPair }}" style="width:36px;height:36px;border:none;background:none;padding:0;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#17181A">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"></path></svg>
+      </button>
+      <span style="font-size:15px;font-weight:600;letter-spacing:-0.01em">Set up your Sense</span>
+    </div>
+
+    <div style="flex:1;overflow-y:auto;padding:0 20px 24px">
+      <div style="position:relative;height:280px;margin:4px -20px 0">
+        <x-import component-from-global-scope="sense-device" from="./sense-device.js?v=7" style="position:absolute;top:0;left:0;width:100%;height:100%" state="scanning" hint-size="100%,100%"></x-import>
+      </div>
+
+      <sc-if value="{{ pairScanning }}" hint-placeholder-val="{{ true }}">
+      <div style="text-align:center;margin-top:-8px">
+        <div style="font-size:24px;font-weight:600;letter-spacing:-0.02em">Looking for your Sense</div>
+        <div style="font-size:14px;color:#75797F;margin-top:6px;line-height:1.5">Hold the button until the light breathes amber, then keep it near your phone.</div>
+      </div>
+      <div style="margin-top:24px;display:flex;flex-direction:column;gap:10px">
+        <button onClick="{{ pickDevice }}" style="display:flex;align-items:center;gap:14px;text-align:left;width:100%;background:#fff;border:1px solid #EDEAE5;border-radius:18px;padding:16px;cursor:pointer;font-family:inherit;box-shadow:0 1px 2px rgba(23,24,26,.03)">
+          <span style="position:relative;width:36px;height:36px;border-radius:12px;background:#FBEFE7;display:flex;align-items:center;justify-content:center;flex:none">
+            <span style="width:8px;height:8px;border-radius:50%;background:#D9642F"></span>
+            <span style="position:absolute;inset:0;border-radius:12px;border:1px solid #D9642F;animation:ping 1.8s ease-out infinite"></span>
+          </span>
+          <span style="flex:1;min-width:0">
+            <span style="display:block;font-size:15px;font-weight:600">Sense · 3D7E</span>
+            <span style="display:block;font-size:13px;color:#8B8F95;margin-top:2px;font-variant-numeric:tabular-nums">10:B4:1D:EC:3D:7E · −48 dBm</span>
+          </span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#B6B9BE" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"></path></svg>
+        </button>
+        <div style="display:flex;align-items:center;justify-content:center;gap:8px;padding:10px 0;font-size:13px;color:#9A9EA5">
+          <span style="width:6px;height:6px;border-radius:50%;background:#D9642F;animation:bar 1.2s ease-in-out infinite"></span>
+          Still scanning for other devices
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ pairServer }}">
+      <div style="text-align:center;margin-top:-8px">
+        <div style="font-size:24px;font-weight:600;letter-spacing:-0.02em">Point it at your relay</div>
+        <div style="font-size:14px;color:#75797F;margin-top:6px;line-height:1.5">Your Sense found. Now tell it where to send what it hears.</div>
+      </div>
+      <div style="margin-top:24px;display:flex;flex-direction:column;gap:14px">
+        <label style="display:block">
+          <span style="display:block;font-size:12px;font-weight:600;color:#8B8F95;letter-spacing:0.04em;text-transform:uppercase;margin-bottom:8px">Server URL</span>
+          <input value="http://192.168.126.68:8766" style="width:100%;box-sizing:border-box;background:#fff;border:1px solid #EDEAE5;border-radius:14px;padding:15px 16px;font-size:15px;font-family:inherit;color:#17181A;outline:none" />
+        </label>
+        <label style="display:block">
+          <span style="display:block;font-size:12px;font-weight:600;color:#8B8F95;letter-spacing:0.04em;text-transform:uppercase;margin-bottom:8px">Bearer token</span>
+          <input value="195a8af8fb8ab38e447d85795bd9e9a64d" style="width:100%;box-sizing:border-box;background:#fff;border:1px solid #EDEAE5;border-radius:14px;padding:15px 16px;font-size:15px;font-family:inherit;color:#17181A;outline:none" />
+        </label>
+        <button onClick="{{ finishPair }}" style="margin-top:6px;width:100%;background:#17181A;color:#fff;border:none;border-radius:16px;padding:17px;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer">Connect Sense</button>
+        <button onClick="{{ exitPair }}" style="width:100%;background:none;border:none;padding:6px;font-size:14px;color:#8B8F95;font-family:inherit;cursor:pointer">Not now</button>
+      </div>
+      </sc-if>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ══ RECORDING DETAIL ══ -->
+  <sc-if value="{{ showDetail }}">
+  <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+    <div style="display:flex;align-items:center;gap:8px;padding:8px 12px 8px;border-bottom:1px solid #F0EDE8">
+      <button onClick="{{ closeDetail }}" style="width:36px;height:36px;border:none;background:none;padding:0;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#17181A">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"></path></svg>
+      </button>
+      <span style="flex:1;min-width:0;font-size:15px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ detail.title }}</span>
+      <button style="width:36px;height:36px;border:none;background:none;padding:0;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#75797F">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="5" r="1.4"></circle><circle cx="12" cy="12" r="1.4"></circle><circle cx="12" cy="19" r="1.4"></circle></svg>
+      </button>
+    </div>
+
+    <div style="flex:1;overflow-y:auto;padding:18px 20px 32px">
+      <div style="font-size:13px;color:#8B8F95;font-variant-numeric:tabular-nums">{{ detail.when }} · {{ detail.dur }} · {{ detail.count }} segments</div>
+
+      <div style="margin-top:16px;background:#fff;border:1px solid #EDEAE5;border-radius:20px;padding:16px;box-shadow:0 1px 2px rgba(23,24,26,.03)">
+        <div style="display:flex;align-items:center;gap:14px">
+          <button onClick="{{ togglePlay }}" style="width:48px;height:48px;flex:none;border-radius:50%;border:none;background:#17181A;color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer">
+            <sc-if value="{{ playing }}">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1.2"></rect><rect x="14" y="4" width="4" height="16" rx="1.2"></rect></svg>
+            </sc-if>
+            <sc-if value="{{ notPlaying }}" hint-placeholder-val="{{ true }}">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.6c0-.9 1-1.4 1.7-.9l8 6.4c.6.5.6 1.3 0 1.8l-8 6.4c-.7.5-1.7 0-1.7-.9V5.6z"></path></svg>
+            </sc-if>
+          </button>
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:flex-end;gap:2px;height:36px">
+              <sc-for list="{{ wave }}" as="w" hint-placeholder-count="34">
+                <span style="flex:1;border-radius:2px;background:#E7E3DD;height:{{ w.h }}"></span>
+              </sc-for>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:11px;color:#A2A6AC;font-variant-numeric:tabular-nums">
+              <span>{{ playhead }}</span><span>{{ detail.dur }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:26px;display:flex;align-items:center;gap:8px">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#D9642F" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.2L19 10l-5.1 1.8L12 17l-1.9-5.2L5 10l5.1-1.8L12 3z"></path></svg>
+        <span style="font-size:13px;font-weight:600;letter-spacing:0.02em;color:#75797F">Memories from this session</span>
+      </div>
+      <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px">
+        <sc-for list="{{ detail.memories }}" as="m" hint-placeholder-count="3">
+          <span style="background:#FBEFE7;color:#A34D1E;border-radius:999px;padding:8px 13px;font-size:13px;font-weight:500">{{ m.text }}</span>
+        </sc-for>
+      </div>
+
+      <div style="margin-top:28px;font-size:13px;font-weight:600;letter-spacing:0.02em;color:#75797F">Transcript</div>
+      <div style="margin-top:14px;display:flex;flex-direction:column;gap:20px">
+        <sc-for list="{{ detail.segments }}" as="s" hint-placeholder-count="5">
+          <div style="display:flex;gap:14px">
+            <span style="width:44px;flex:none;font-size:12px;color:#B0B4BA;font-variant-numeric:tabular-nums;padding-top:2px">{{ s.t }}</span>
+            <span style="flex:1;min-width:0">
+              <span style="display:block;font-size:12px;font-weight:600;color:#8B8F95;margin-bottom:3px">{{ s.who }}</span>
+              <span style="display:block;font-size:15px;line-height:1.55;color:#2B2D31;text-wrap:pretty">{{ s.text }}</span>
+            </span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ══ MAIN (tabbed) ══ -->
+  <sc-if value="{{ showMain }}" hint-placeholder-val="{{ true }}">
+  <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+    <div ref="{{ scrollRef }}" style="flex:1;overflow-y:auto">
+
+      <!-- ── HOME ── -->
+      <sc-if value="{{ isHome }}" hint-placeholder-val="{{ true }}">
+      <div style="padding:6px 20px 28px">
+        <div style="display:flex;align-items:center;justify-content:space-between;height:44px">
+          <span style="display:flex;align-items:center;gap:9px">
+            <span style="width:9px;height:9px;border-radius:50%;background:#D9642F"></span>
+            <span style="font-size:15px;font-weight:600;letter-spacing:-0.01em">Sense Relay</span>
+          </span>
+          <button onClick="{{ goSettings }}" style="width:34px;height:34px;border:none;background:none;padding:0;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#75797F">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"></circle><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.9 2.9l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5v.2a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.9-2.9l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H2.6a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.9-2.9l.1.1a1.7 1.7 0 001.9.3h.1a1.7 1.7 0 001-1.5V2.6a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.9 2.9l-.1.1a1.7 1.7 0 00-.3 1.9v.1a1.7 1.7 0 001.5 1h.2a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"></path></svg>
+          </button>
+        </div>
+
+        <div style="position:relative;height:300px;margin:2px -20px 0">
+          <div style="position:absolute;inset:0;background:radial-gradient(58% 46% at 50% 44%, #FFFFFF 0%, rgba(255,255,255,0) 72%)"></div>
+          <x-import component-from-global-scope="sense-device" from="./sense-device.js?v=7" style="position:absolute;top:0;left:0;width:100%;height:100%" state="{{ deviceState }}" hint-size="100%,100%"></x-import>
+        </div>
+
+        <div style="text-align:center;margin-top:-6px">
+          <div style="font-size:27px;font-weight:600;letter-spacing:-0.025em">{{ deviceName }}</div>
+          <div style="display:inline-flex;align-items:center;gap:7px;margin-top:8px;background:#EAF4EE;border-radius:999px;padding:6px 13px">
+            <span style="width:6px;height:6px;border-radius:50%;background:#2F9E68"></span>
+            <span style="font-size:13px;font-weight:600;color:#1F7A50">{{ statusLabel }}</span>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:22px">
+          <div style="background:#fff;border:1px solid #EDEAE5;border-radius:18px;padding:15px 16px;box-shadow:0 1px 2px rgba(23,24,26,.03)">
+            <div style="display:flex;align-items:center;gap:7px;color:#8B8F95">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="16" height="10" rx="2.6"></rect><path d="M21 10.5v3"></path></svg>
+              <span style="font-size:12px;font-weight:600;letter-spacing:0.02em">Battery</span>
+            </div>
+            <div style="font-size:23px;font-weight:600;margin-top:9px;letter-spacing:-0.02em;font-variant-numeric:tabular-nums">{{ battery }}%</div>
+            <div style="height:4px;border-radius:2px;background:#F0EDE8;margin-top:9px;overflow:hidden">
+              <div style="height:100%;border-radius:2px;background:#2F9E68;width:{{ batteryWidth }}"></div>
+            </div>
+          </div>
+          <div style="background:#fff;border:1px solid #EDEAE5;border-radius:18px;padding:15px 16px;box-shadow:0 1px 2px rgba(23,24,26,.03)">
+            <div style="display:flex;align-items:center;gap:7px;color:#8B8F95">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5a9.5 9.5 0 0114 0"></path><path d="M8.2 15.8a5.2 5.2 0 017.6 0"></path><circle cx="12" cy="19" r="1"></circle></svg>
+              <span style="font-size:12px;font-weight:600;letter-spacing:0.02em">BLE link</span>
+            </div>
+            <div style="font-size:23px;font-weight:600;margin-top:9px;letter-spacing:-0.02em">Strong</div>
+            <div style="display:flex;align-items:flex-end;gap:3px;height:4px;margin-top:9px">
+              <span style="flex:1;height:4px;border-radius:2px;background:#17181A"></span>
+              <span style="flex:1;height:4px;border-radius:2px;background:#17181A"></span>
+              <span style="flex:1;height:4px;border-radius:2px;background:#17181A"></span>
+              <span style="flex:1;height:4px;border-radius:2px;background:#E7E3DD"></span>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:10px;background:#fff;border:1px solid #EDEAE5;border-radius:20px;padding:17px 18px;box-shadow:0 1px 2px rgba(23,24,26,.03)">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <span style="display:flex;align-items:center;gap:9px">
+              <span style="display:flex;align-items:flex-end;gap:2px;height:14px">
+                <span style="width:2.5px;height:14px;border-radius:2px;background:#D9642F;transform-origin:bottom;animation:bar 1.1s ease-in-out infinite"></span>
+                <span style="width:2.5px;height:14px;border-radius:2px;background:#D9642F;transform-origin:bottom;animation:bar 1.1s ease-in-out .18s infinite"></span>
+                <span style="width:2.5px;height:14px;border-radius:2px;background:#D9642F;transform-origin:bottom;animation:bar 1.1s ease-in-out .36s infinite"></span>
+                <span style="width:2.5px;height:14px;border-radius:2px;background:#D9642F;transform-origin:bottom;animation:bar 1.1s ease-in-out .54s infinite"></span>
+              </span>
+              <span style="font-size:14px;font-weight:600">Hearing now</span>
+            </span>
+            <span style="font-size:12px;color:#A2A6AC;font-variant-numeric:tabular-nums">{{ sessionClock }}</span>
+          </div>
+          <div style="font-size:15px;line-height:1.55;color:#4A4E54;margin-top:11px;min-height:46px;text-wrap:pretty">{{ liveLine }}</div>
+        </div>
+
+        <div style="margin-top:10px;display:flex;align-items:center;gap:12px;background:#fff;border:1px solid #EDEAE5;border-radius:20px;padding:15px 18px;box-shadow:0 1px 2px rgba(23,24,26,.03)">
+          <span style="width:7px;height:7px;border-radius:50%;background:#2F9E68;flex:none"></span>
+          <span style="flex:1;min-width:0">
+            <span style="display:block;font-size:14px;font-weight:600">Relay server</span>
+            <span style="display:block;font-size:12.5px;color:#8B8F95;margin-top:2px;font-variant-numeric:tabular-nums">863 events today · v0.1.0</span>
+          </span>
+          <span style="font-size:12.5px;color:#A2A6AC;font-variant-numeric:tabular-nums">42 ms</span>
+        </div>
+
+        <div style="display:flex;align-items:baseline;justify-content:space-between;margin-top:28px">
+          <span style="font-size:16px;font-weight:600;letter-spacing:-0.01em">Recent sessions</span>
+          <button onClick="{{ goRecordings }}" style="border:none;background:none;padding:0;font-size:13.5px;font-weight:600;color:#D9642F;font-family:inherit;cursor:pointer">See all</button>
+        </div>
+        <div style="margin-top:12px;display:flex;flex-direction:column;gap:10px">
+          <sc-for list="{{ recent }}" as="r" hint-placeholder-count="2">
+            <button onClick="{{ r.open }}" style="text-align:left;width:100%;background:#fff;border:1px solid #EDEAE5;border-radius:20px;padding:16px 18px;cursor:pointer;font-family:inherit;box-shadow:0 1px 2px rgba(23,24,26,.03)">
+              <span style="display:flex;align-items:baseline;justify-content:space-between;gap:10px">
+                <span style="font-size:14.5px;font-weight:600;letter-spacing:-0.01em">{{ r.title }}</span>
+                <span style="font-size:12px;color:#A2A6AC;flex:none;font-variant-numeric:tabular-nums">{{ r.when }}</span>
+              </span>
+              <span style="display:block;font-size:14px;line-height:1.5;color:#6E7278;margin-top:6px;text-wrap:pretty">{{ r.snippet }}</span>
+              <span style="display:block;font-size:12px;color:#A2A6AC;margin-top:8px;font-variant-numeric:tabular-nums">{{ r.dur }} · {{ r.count }} segments</span>
+            </button>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ── RECORDINGS ── -->
+      <sc-if value="{{ isRec }}">
+      <div style="padding:6px 20px 28px">
+        <div style="height:44px;display:flex;align-items:center;font-size:15px;font-weight:600;letter-spacing:-0.01em">Recordings</div>
+        <div style="font-size:28px;font-weight:600;letter-spacing:-0.03em;margin-top:4px">Everything it heard</div>
+        <div style="display:flex;align-items:center;gap:10px;background:#fff;border:1px solid #EDEAE5;border-radius:14px;padding:12px 14px;margin-top:16px">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#A2A6AC" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"></circle><path d="M20 20l-3.6-3.6"></path></svg>
+          <input value="{{ query }}" onChange="{{ setQuery }}" placeholder="Search transcripts" style="flex:1;min-width:0;border:none;outline:none;background:none;font-size:15px;font-family:inherit;color:#17181A" />
+        </div>
+
+        <sc-for list="{{ groups }}" as="g" hint-placeholder-count="2">
+          <div style="margin-top:26px">
+            <div style="font-size:12.5px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#A2A6AC">{{ g.label }}</div>
+            <div style="margin-top:12px;display:flex;flex-direction:column;gap:10px">
+              <sc-for list="{{ g.items }}" as="r" hint-placeholder-count="3">
+                <button onClick="{{ r.open }}" style="text-align:left;width:100%;background:#fff;border:1px solid #EDEAE5;border-radius:20px;padding:16px 18px;cursor:pointer;font-family:inherit;box-shadow:0 1px 2px rgba(23,24,26,.03)">
+                  <span style="display:flex;align-items:baseline;justify-content:space-between;gap:10px">
+                    <span style="font-size:14.5px;font-weight:600;letter-spacing:-0.01em">{{ r.title }}</span>
+                    <span style="font-size:12px;color:#A2A6AC;flex:none;font-variant-numeric:tabular-nums">{{ r.when }}</span>
+                  </span>
+                  <span style="display:block;font-size:14px;line-height:1.5;color:#6E7278;margin-top:6px;text-wrap:pretty">{{ r.snippet }}</span>
+                  <span style="display:flex;align-items:center;gap:8px;margin-top:10px">
+                    <span style="font-size:12px;color:#A2A6AC;font-variant-numeric:tabular-nums">{{ r.dur }} · {{ r.count }} segments</span>
+                    <span style="background:#FBEFE7;color:#A34D1E;border-radius:999px;padding:3px 9px;font-size:11.5px;font-weight:600">{{ r.mem }}</span>
+                  </span>
+                </button>
+              </sc-for>
+            </div>
+          </div>
+        </sc-for>
+
+        <sc-if value="{{ noResults }}">
+          <div style="text-align:center;padding:56px 20px;color:#A2A6AC;font-size:14px">Nothing matches “{{ query }}”.</div>
+        </sc-if>
+      </div>
+      </sc-if>
+
+      <!-- ── MEMORIES ── -->
+      <sc-if value="{{ isMem }}">
+      <div style="padding:6px 20px 28px">
+        <div style="height:44px;display:flex;align-items:center;font-size:15px;font-weight:600;letter-spacing:-0.01em">Memories</div>
+        <div style="font-size:28px;font-weight:600;letter-spacing:-0.03em;margin-top:4px">What it decided to keep</div>
+        <div style="font-size:14px;color:#8B8F95;margin-top:8px;line-height:1.5">128 memories, 6 added today. Nothing here leaves your relay.</div>
+
+        <div style="display:flex;gap:8px;margin-top:18px;overflow-x:auto;padding-bottom:2px">
+          <sc-for list="{{ filters }}" as="f" hint-placeholder-count="4">
+            <button onClick="{{ f.pick }}" style="flex:none;border-radius:999px;padding:9px 15px;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;border:1px solid {{ f.border }};background:{{ f.bg }};color:{{ f.fg }}">{{ f.label }}</button>
+          </sc-for>
+        </div>
+
+        <div style="margin-top:16px;display:flex;flex-direction:column;gap:10px">
+          <sc-for list="{{ memories }}" as="m" hint-placeholder-count="5">
+            <div style="background:#fff;border:1px solid #EDEAE5;border-radius:20px;padding:16px 18px;box-shadow:0 1px 2px rgba(23,24,26,.03)">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+                <span style="font-size:11.5px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#A34D1E">{{ m.kind }}</span>
+                <span style="font-size:12px;color:#B0B4BA;font-variant-numeric:tabular-nums">{{ m.when }}</span>
+              </div>
+              <div style="font-size:15.5px;line-height:1.5;color:#25272B;margin-top:8px;text-wrap:pretty">{{ m.text }}</div>
+              <button onClick="{{ m.open }}" style="display:flex;align-items:center;gap:6px;margin-top:12px;border:none;background:none;padding:0;font-size:12.5px;color:#8B8F95;font-family:inherit;cursor:pointer">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17H7a5 5 0 010-10h2"></path><path d="M15 7h2a5 5 0 010 10h-2"></path><path d="M8 12h8"></path></svg>
+                {{ m.source }}
+              </button>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ── CHAT ── -->
+      <sc-if value="{{ isChat }}">
+      <div style="padding:6px 20px 20px;display:flex;flex-direction:column;gap:12px">
+        <div style="height:44px;display:flex;align-items:center;font-size:15px;font-weight:600;letter-spacing:-0.01em">Chat</div>
+        <sc-for list="{{ messages }}" as="m" hint-placeholder-count="4">
+          <div style="max-width:{{ m.max }};align-self:{{ m.align }};background:{{ m.bg }};color:{{ m.fg }};border:1px solid {{ m.border }};border-radius:{{ m.radius }};padding:14px 16px">
+            <sc-if value="{{ m.isProactive }}">
+              <div style="display:flex;align-items:center;gap:7px;margin-bottom:7px;color:#A34D1E">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.2L19 10l-5.1 1.8L12 17l-1.9-5.2L5 10l5.1-1.8L12 3z"></path></svg>
+                <span style="font-size:11.5px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase">Noticed for you</span>
+              </div>
+            </sc-if>
+            <div style="font-size:15px;line-height:1.55;text-wrap:pretty">{{ m.text }}</div>
+          </div>
+        </sc-for>
+      </div>
+      </sc-if>
+
+      <!-- ── SETTINGS ── -->
+      <sc-if value="{{ isSet }}">
+      <div style="padding:6px 20px 28px">
+        <div style="height:44px;display:flex;align-items:center;font-size:15px;font-weight:600;letter-spacing:-0.01em">Settings</div>
+
+        <div style="font-size:12.5px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#A2A6AC;margin-top:14px">Device</div>
+        <div style="margin-top:12px;background:#fff;border:1px solid #EDEAE5;border-radius:20px;overflow:hidden;box-shadow:0 1px 2px rgba(23,24,26,.03)">
+          <sc-for list="{{ deviceRows }}" as="row" hint-placeholder-count="4">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px 18px;border-bottom:1px solid #F4F1EC">
+              <span style="font-size:14.5px;color:#4A4E54">{{ row.k }}</span>
+              <span style="font-size:14.5px;font-weight:600;font-variant-numeric:tabular-nums;text-align:right">{{ row.v }}</span>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="font-size:12.5px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#A2A6AC;margin-top:26px">Relay</div>
+        <div style="margin-top:12px;background:#fff;border:1px solid #EDEAE5;border-radius:20px;overflow:hidden;box-shadow:0 1px 2px rgba(23,24,26,.03)">
+          <sc-for list="{{ serverRows }}" as="row" hint-placeholder-count="3">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px 18px;border-bottom:1px solid #F4F1EC">
+              <span style="font-size:14.5px;color:#4A4E54">{{ row.k }}</span>
+              <span style="font-size:14.5px;font-weight:600;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right">{{ row.v }}</span>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="font-size:12.5px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#A2A6AC;margin-top:26px">Capture</div>
+        <div style="margin-top:12px;background:#fff;border:1px solid #EDEAE5;border-radius:20px;overflow:hidden;box-shadow:0 1px 2px rgba(23,24,26,.03)">
+          <sc-for list="{{ toggles }}" as="t" hint-placeholder-count="3">
+            <button onClick="{{ t.toggle }}" style="display:flex;align-items:center;gap:14px;width:100%;text-align:left;background:none;border:none;border-bottom:1px solid #F4F1EC;padding:15px 18px;font-family:inherit;cursor:pointer">
+              <span style="flex:1;min-width:0">
+                <span style="display:block;font-size:14.5px;font-weight:600;color:#17181A">{{ t.label }}</span>
+                <span style="display:block;font-size:12.5px;color:#8B8F95;margin-top:3px;line-height:1.45">{{ t.hint }}</span>
+              </span>
+              <span style="flex:none;width:44px;height:26px;border-radius:999px;padding:3px;box-sizing:border-box;display:flex;justify-content:{{ t.justify }};background:{{ t.track }};transition:background .2s">
+                <span style="width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(23,24,26,.25)"></span>
+              </span>
+            </button>
+          </sc-for>
+        </div>
+
+        <button onClick="{{ startPair }}" style="margin-top:22px;width:100%;background:#fff;border:1px solid #EDEAE5;border-radius:16px;padding:16px;font-size:14.5px;font-weight:600;font-family:inherit;color:#17181A;cursor:pointer;box-shadow:0 1px 2px rgba(23,24,26,.03)">Reconfigure device</button>
+        <button style="margin-top:10px;width:100%;background:none;border:none;padding:14px;font-size:14.5px;font-weight:600;font-family:inherit;color:#C4462F;cursor:pointer">Forget this Sense</button>
+        <div style="text-align:center;font-size:12px;color:#B0B4BA;margin-top:16px">Sense Relay 0.1.0 · firmware 1.4.2</div>
+      </div>
+      </sc-if>
+
+    </div>
+
+    <!-- ── CHAT COMPOSER ── -->
+    <sc-if value="{{ isChat }}">
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 16px 12px;border-top:1px solid #F0EDE8;background:#FBFAF8">
+      <input value="{{ draft }}" onChange="{{ setDraft }}" onKeyDown="{{ onKey }}" placeholder="Ask about anything it heard" style="flex:1;min-width:0;background:#fff;border:1px solid #EDEAE5;border-radius:999px;padding:14px 18px;font-size:15px;font-family:inherit;color:#17181A;outline:none" />
+      <button onClick="{{ send }}" style="width:46px;height:46px;flex:none;border-radius:50%;border:none;background:#17181A;color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13"></path><path d="M12.5 6l6 6-6 6"></path></svg>
+      </button>
+    </div>
+    </sc-if>
+
+    <!-- ── TAB BAR ── -->
+    <div style="display:flex;align-items:center;justify-content:space-around;gap:2px;padding:8px 8px 10px;border-top:1px solid #F0EDE8;background:#FBFAF8">
+      <button onClick="{{ goHome }}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;background:none;border:none;padding:4px 0;cursor:pointer;font-family:inherit;color:{{ tabs.home.fg }}">
+        <span style="display:flex;align-items:center;justify-content:center;width:56px;height:30px;border-radius:999px;background:{{ tabs.home.bg }}">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.5L12 4l8 6.5V19a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 19v-8.5z"></path><path d="M9.5 20.5v-6h5v6"></path></svg>
+        </span>
+        <span style="font-size:11px;font-weight:600;letter-spacing:0.01em">Home</span>
+      </button>
+      <button onClick="{{ goRecordings }}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;background:none;border:none;padding:4px 0;cursor:pointer;font-family:inherit;color:{{ tabs.rec.fg }}">
+        <span style="display:flex;align-items:center;justify-content:center;width:56px;height:30px;border-radius:999px;background:{{ tabs.rec.bg }}">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10v4"></path><path d="M10 6.5v11"></path><path d="M14 4v16"></path><path d="M18 9v6"></path></svg>
+        </span>
+        <span style="font-size:11px;font-weight:600;letter-spacing:0.01em">Recordings</span>
+      </button>
+      <button onClick="{{ goMemories }}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;background:none;border:none;padding:4px 0;cursor:pointer;font-family:inherit;color:{{ tabs.mem.fg }}">
+        <span style="display:flex;align-items:center;justify-content:center;width:56px;height:30px;border-radius:999px;background:{{ tabs.mem.bg }}">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l2.1 5.7 5.7 2.1-5.7 2.1L12 19.1l-2.1-5.7L4.2 11.3l5.7-2.1L12 3.5z"></path></svg>
+        </span>
+        <span style="font-size:11px;font-weight:600;letter-spacing:0.01em">Memories</span>
+      </button>
+      <button onClick="{{ goChat }}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;background:none;border:none;padding:4px 0;cursor:pointer;font-family:inherit;color:{{ tabs.chat.fg }}">
+        <span style="display:flex;align-items:center;justify-content:center;width:56px;height:30px;border-radius:999px;background:{{ tabs.chat.bg }}">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a7.5 7.5 0 01-10.9 6.7L4 20l1.4-4.3A7.5 7.5 0 1120 12z"></path></svg>
+        </span>
+        <span style="font-size:11px;font-weight:600;letter-spacing:0.01em">Chat</span>
+      </button>
+      <button onClick="{{ goSettings }}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;background:none;border:none;padding:4px 0;cursor:pointer;font-family:inherit;color:{{ tabs.set.fg }}">
+        <span style="display:flex;align-items:center;justify-content:center;width:56px;height:30px;border-radius:999px;background:{{ tabs.set.bg }}">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"></circle><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.9 2.9l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5v.2a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.9-2.9l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H2.6a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.9-2.9l.1.1a1.7 1.7 0 001.9.3h.1a1.7 1.7 0 001-1.5V2.6a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.9 2.9l-.1.1a1.7 1.7 0 00-.3 1.9v.1a1.7 1.7 0 001.5 1h.2a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"></path></svg>
+        </span>
+        <span style="font-size:11px;font-weight:600;letter-spacing:0.01em">Settings</span>
+      </button>
+    </div>
+  </div>
+  </sc-if>
+
+</div>
+</x-import>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:560,&quot;height&quot;:1000},&quot;deviceState&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;connected&quot;,&quot;scanning&quot;,&quot;off&quot;],&quot;default&quot;:&quot;connected&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;deviceName&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Sense&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;liveTicker&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;}}">
+const LINES = [
+  "…so let's ship the light build first, then look at the onboarding again next week.",
+  "Remind me to send Priya the revised latency numbers before Thursday.",
+  "I think the mic gain is fine indoors, it's the wind that kills it.",
+  "Gracias — I'll grab the coffee order on the way in.",
+];
+
+const RECORDINGS = [
+  { id: 'a1c645db', day: 'Today', title: 'Studio standup', when: '34 min ago', dur: '20:23', count: 697, mem: '4 memories',
+    snippet: "That's a great idea. And we'll move on to the next thing — let's keep the scope tight for this build." },
+  { id: '6188e22e', day: 'Today', title: 'Coffee run', when: '1 h ago', dur: '01:12', count: 23, mem: '1 memory',
+    snippet: 'Gracias. Same as yesterday, oat flat white, no sugar.' },
+  { id: '52bc40c0', day: 'Today', title: 'Walk to the office', when: '2 h ago', dur: '00:58', count: 16, mem: '—',
+    snippet: 'Gracias. It rained the whole way, I should keep the case in the bag.' },
+  { id: '3b48538c', day: 'Yesterday', title: 'Firmware bring-up', when: '18:40', dur: '04:31', count: 51, mem: '2 memories',
+    snippet: 'Do, do, do — okay, the second mic is live now, both channels are landing on the relay.' },
+  { id: 'caa6d703', day: 'Yesterday', title: 'Call with Priya', when: '14:02', dur: '38:19', count: 125, mem: '5 memories',
+    snippet: "You. You were right about the buffer size — we're dropping packets above 200 ms." },
+  { id: 'd4708e10', day: 'Earlier', title: 'Design review', when: 'Aug 1', dur: '52:07', count: 276, mem: '7 memories',
+    snippet: 'Right, so as long as the LED reads at a glance, people will forgive the extra tap.' },
+  { id: 'a094f803', day: 'Earlier', title: 'Kitchen, evening', when: 'Jul 30', dur: '11:44', count: 88, mem: '2 memories',
+    snippet: "Mum's birthday is the 14th, and she wants nothing, which means she wants something." },
+];
+
+const SEGMENTS = [
+  { t: '00:03', who: 'You', text: "Okay, before we go wide — is the light build actually ready, or are we calling it ready?" },
+  { t: '00:11', who: 'Speaker 2', text: "It's ready. The only thing outstanding is the reconnect path when BLE drops mid-session." },
+  { t: '00:26', who: 'You', text: "That's a great idea. And we'll move on to the next thing — let's keep the scope tight for this build." },
+  { t: '00:41', who: 'Speaker 2', text: 'I can have the retry logic in by Thursday if nobody moves the server work.' },
+  { t: '01:04', who: 'You', text: "Remind me to send Priya the revised latency numbers before Thursday, she's presenting it." },
+  { t: '01:19', who: 'Speaker 2', text: 'Noted. And we should decide on the LED language before the enclosure order goes out.' },
+];
+
+const MEMORIES = [
+  { id: 1, kind: 'Task', when: '34 min ago', text: 'Send Priya the revised latency numbers before Thursday.', source: 'Studio standup · 01:04' },
+  { id: 2, kind: 'Decision', when: '34 min ago', text: 'Ship the light build first; onboarding gets revisited next week.', source: 'Studio standup · 00:26' },
+  { id: 3, kind: 'Preference', when: '1 h ago', text: 'Coffee order is an oat flat white, no sugar.', source: 'Coffee run · 00:19' },
+  { id: 4, kind: 'Person', when: 'Yesterday', text: "Priya is presenting the latency work — she owns the server timeline.", source: 'Call with Priya · 12:38' },
+  { id: 5, kind: 'Task', when: 'Jul 30', text: "Mum's birthday is the 14th. She says she wants nothing.", source: 'Kitchen, evening · 03:22' },
+  { id: 6, kind: 'Place', when: 'Jul 30', text: 'Keep the case in the bag — the walk to the office floods when it rains.', source: 'Walk to the office · 00:31' },
+];
+
+const FILTERS = ['All', 'Tasks', 'People', 'Decisions', 'Places', 'Preferences'];
+const FILTER_KIND = { Tasks: 'Task', People: 'Person', Decisions: 'Decision', Places: 'Place', Preferences: 'Preference' };
+
+class Component extends DCLogic {
+  state = {
+    tab: 'home', detailId: null, pairStep: null,
+    query: '', filter: 'All', playing: false, playhead: '00:00',
+    lineIdx: 0, secs: 1223, draft: '',
+    autoCapture: true, wake: false, redact: true,
+    messages: [
+      { id: 1, role: 'proactive', text: 'You said you would send Priya the latency numbers before Thursday. Want me to draft it?' },
+      { id: 2, role: 'you', text: 'Not yet. What did we decide about the onboarding?' },
+      { id: 3, role: 'agent', text: "You parked it. The call was to ship the light build first and revisit onboarding next week — that was 34 minutes ago in the studio standup." },
+      { id: 4, role: 'proactive', text: 'Three sessions today mention the enclosure order. The LED language is still undecided.' },
+    ],
+  };
+
+  componentDidMount() {
+    this._t = setInterval(() => {
+      this.setState((s) => ({ lineIdx: (s.lineIdx + 1) % LINES.length }));
+    }, 4200);
+    this._c = setInterval(() => this.setState((s) => ({ secs: s.secs + 1 })), 1000);
+  }
+  componentWillUnmount() { clearInterval(this._t); clearInterval(this._c); }
+
+  go = (tab) => () => {
+    this.setState({ tab, detailId: null, pairStep: null });
+    setTimeout(() => { const el = this.scrollRef.current; if (el) el.scrollTop = tab === 'chat' ? el.scrollHeight : 0; }, 30);
+  };
+  open = (id) => () => this.setState({ detailId: id, playing: false, playhead: '00:00' });
+
+  clock(total) {
+    const h = String(Math.floor(total / 3600)).padStart(2, '0');
+    const m = String(Math.floor(total / 60) % 60).padStart(2, '0');
+    const s = String(total % 60).padStart(2, '0');
+    return h + ':' + m + ':' + s;
+  }
+
+  scrollRef = React.createRef();
+
+  componentDidUpdate(prevProps, prevState) {
+    if (prevState.messages.length !== this.state.messages.length) {
+      requestAnimationFrame(() => requestAnimationFrame(this.toBottom));
+    }
+  }
+
+  toBottom = () => {
+    const el = this.scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  };
+
+  send = () => {
+    const text = this.state.draft.trim();
+    if (!text) return;
+    this.setState((s) => ({
+      draft: '',
+      messages: s.messages.concat([{ id: Date.now(), role: 'you', text }]),
+    }));
+    setTimeout(() => this.setState((s) => ({
+      messages: s.messages.concat([{
+        id: Date.now() + 1, role: 'agent',
+        text: 'Searching 128 memories and today’s 863 events — I found two sessions that touch on that. Want the transcript or the short version?',
+      }]),
+    })), 700);
+  };
+
+  renderVals() {
+    const s = this.state;
+    const p = this.props;
+    const deviceState = p.deviceState || 'connected';
+    const detail = RECORDINGS.find((r) => r.id === s.detailId);
+    const showPair = !!s.pairStep;
+    const showDetail = !showPair && !!detail;
+
+    const q = s.query.trim().toLowerCase();
+    const matches = RECORDINGS.filter((r) => !q || (r.title + ' ' + r.snippet).toLowerCase().includes(q));
+    const groups = ['Today', 'Yesterday', 'Earlier']
+      .map((label) => ({ label, items: matches.filter((r) => r.day === label).map((r) => ({ ...r, open: this.open(r.id) })) }))
+      .filter((g) => g.items.length);
+
+    const tab = (name) => ({
+      fg: s.tab === name ? '#17181A' : '#9A9EA5',
+      bg: s.tab === name ? '#F5E7DC' : 'transparent',
+    });
+
+    const kind = FILTER_KIND[s.filter];
+    const memories = MEMORIES.filter((m) => !kind || m.kind === kind)
+      .map((m) => ({ ...m, open: this.open('a1c645db') }));
+
+    const battery = deviceState === 'off' ? 0 : 82;
+
+    return {
+      scrollRef: this.scrollRef,
+      showPair, showDetail, showMain: !showPair && !showDetail,
+      pairScanning: s.pairStep === 'scan', pairServer: s.pairStep === 'server',
+      startPair: () => this.setState({ pairStep: 'scan' }),
+      pickDevice: () => this.setState({ pairStep: 'server' }),
+      finishPair: () => this.setState({ pairStep: null, tab: 'home' }),
+      exitPair: () => this.setState({ pairStep: null }),
+
+      isHome: s.tab === 'home', isRec: s.tab === 'recordings', isMem: s.tab === 'memories',
+      isChat: s.tab === 'chat', isSet: s.tab === 'settings',
+      goHome: this.go('home'), goRecordings: this.go('recordings'), goMemories: this.go('memories'),
+      goChat: this.go('chat'), goSettings: this.go('settings'),
+      tabs: { home: tab('home'), rec: tab('recordings'), mem: tab('memories'), chat: tab('chat'), set: tab('settings') },
+
+      deviceState,
+      deviceName: p.deviceName || 'Sense',
+      statusLabel: deviceState === 'connected' ? 'Connected · listening'
+        : deviceState === 'scanning' ? 'Searching…' : 'Not connected',
+      battery, batteryWidth: battery + '%',
+      sessionClock: this.clock(s.secs),
+      liveLine: p.liveTicker === false ? LINES[0] : LINES[s.lineIdx],
+      recent: RECORDINGS.slice(0, 2).map((r) => ({ ...r, open: this.open(r.id) })),
+
+      query: s.query,
+      setQuery: (e) => this.setState({ query: e.target.value }),
+      groups, noResults: !groups.length,
+
+      filters: FILTERS.map((label) => ({
+        label,
+        pick: () => this.setState({ filter: label }),
+        bg: s.filter === label ? '#17181A' : '#FFFFFF',
+        fg: s.filter === label ? '#FFFFFF' : '#5B6067',
+        border: s.filter === label ? '#17181A' : '#EDEAE5',
+      })),
+      memories,
+
+      detail: detail ? {
+        ...detail,
+        when: detail.day === 'Today' ? 'Today · ' + detail.when : detail.day + ' · ' + detail.when,
+        segments: SEGMENTS,
+        memories: [{ text: 'Send Priya latency numbers' }, { text: 'Ship light build first' }, { text: 'Decide LED language' }],
+      } : null,
+      closeDetail: () => this.setState({ detailId: null }),
+      playing: s.playing, notPlaying: !s.playing,
+      playhead: s.playhead,
+      togglePlay: () => this.setState((st) => ({ playing: !st.playing })),
+      wave: Array.from({ length: 34 }, (_, i) => ({
+        h: Math.round(8 + Math.abs(Math.sin(i * 1.7) * Math.cos(i * 0.6)) * 28) + 'px',
+      })),
+
+      messages: s.messages.map((m) => ({
+        ...m,
+        isProactive: m.role === 'proactive',
+        align: m.role === 'you' ? 'flex-end' : 'flex-start',
+        max: m.role === 'you' ? '78%' : '92%',
+        bg: m.role === 'you' ? '#17181A' : m.role === 'proactive' ? '#FDF4EE' : '#FFFFFF',
+        fg: m.role === 'you' ? '#FFFFFF' : '#2B2D31',
+        border: m.role === 'you' ? '#17181A' : m.role === 'proactive' ? '#F3E2D5' : '#EDEAE5',
+        radius: m.role === 'you' ? '20px 20px 6px 20px' : '20px 20px 20px 6px',
+      })),
+      draft: s.draft,
+      setDraft: (e) => this.setState({ draft: e.target.value }),
+      onKey: (e) => { if (e.key === 'Enter') this.send(); },
+      send: this.send,
+
+      deviceRows: [
+        { k: 'Name', v: p.deviceName || 'Sense' },
+        { k: 'Address', v: '10:B4:1D:EC:3D:7E' },
+        { k: 'Firmware', v: '1.4.2' },
+        { k: 'Battery', v: battery + '%' },
+      ],
+      serverRows: [
+        { k: 'URL', v: '192.168.126.68:8766' },
+        { k: 'Token', v: '195••••••••••64d' },
+        { k: 'Events (24 h)', v: '863' },
+        { k: 'Round trip', v: '42 ms' },
+      ],
+      toggles: [
+        { key: 'autoCapture', label: 'Capture automatically', hint: 'Start a session whenever the device hears speech.' },
+        { key: 'wake', label: 'Wake word', hint: 'Only listen after “Hey Sense”.' },
+        { key: 'redact', label: 'Redact names on device', hint: 'Strip identifiers before audio leaves the phone.' },
+      ].map((t) => ({
+        ...t,
+        toggle: () => this.setState((st) => ({ [t.key]: !st[t.key] })),
+        track: s[t.key] ? '#2F9E68' : '#E2DED8',
+        justify: s[t.key] ? 'flex-end' : 'flex-start',
+      })),
+    };
+  }
+}
+</script>
+</body>
+</html>
