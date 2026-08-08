@@ -58,6 +58,15 @@ class MemoryIndex(Protocol):
         """
         ...
 
+    def delete_atoms(self, atom_ids: list[str]) -> int:
+        """Drop vectors for the given atoms. Returns the number removed.
+
+        Cascades from a segment delete (spec §5.2). Without it a deleted
+        memory keeps surfacing in semantic search — the worst possible
+        outcome for a delete, since the user is told the thing is gone.
+        """
+        ...
+
 
 def _rank(rows: list[tuple[MemoryAtom, Vector]], query: Vector, k: int) -> list[SearchResult]:
     scored = [SearchResult(atom=a, score=cosine(query, v), vector=list(v)) for a, v in rows]
@@ -90,6 +99,12 @@ class InMemoryMemoryIndex:
     def has(self, atom_id: str) -> bool:
         with self._lock:
             return atom_id in self._entries
+
+    def delete_atoms(self, atom_ids: list[str]) -> int:
+        with self._lock:
+            return sum(
+                1 for aid in atom_ids if self._entries.pop(aid, None) is not None
+            )
 
     def search(self, session_id: str | None, query: Vector, k: int) -> list[SearchResult]:
         with self._lock:
@@ -166,6 +181,18 @@ class SqliteMemoryIndex:
                 "SELECT 1 FROM memory_index WHERE atom_id = ?", (atom_id,)
             ).fetchone()
         return row is not None
+
+    def delete_atoms(self, atom_ids: list[str]) -> int:
+        if not atom_ids:
+            return 0
+        placeholders = ",".join("?" * len(atom_ids))
+        with self._lock:
+            cur = self._conn.execute(
+                f"DELETE FROM memory_index WHERE atom_id IN ({placeholders})",
+                tuple(atom_ids),
+            )
+            self._conn.commit()
+            return cur.rowcount
 
     def search(self, session_id: str | None, query: Vector, k: int) -> list[SearchResult]:
         with self._lock:

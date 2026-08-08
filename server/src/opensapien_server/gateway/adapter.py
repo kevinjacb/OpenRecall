@@ -32,7 +32,10 @@ if TYPE_CHECKING:
     from ..agent.speaker_nudge import SpeakerNudgeListener
     from ..memory.speaker_registry import SpeakerRegistry
     from ..memory.store import AtomStore
+    from ..sessions.segments import SegmentIndex
+    from ..settings.reconciler import DeviceReconciler
     from .core import ProactiveOutbox
+    from .liveness import DeviceLiveness
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +109,9 @@ def build_pipeline_factory(
     gap_timeout_ms: int | None = 3000,
     speaker_identifier=None,
     speaker_window_ms: int = 2000,
+    audio_store=None,
+    persist_audio: bool = True,
+    audio_enabled=None,
 ) -> PipelineFactory:
     """Factory wiring the real Opus decoder + MLX-whisper transcriber per session.
 
@@ -186,6 +192,11 @@ def build_pipeline_factory(
             sample_rate=16000,
             speaker_identifier=speaker_identifier,
             speaker_window_ms=speaker_window_ms,
+            # Spec §3.1. The session id is bound later, on `hello`, via
+            # GatewayCore -> AudioIngestPipeline.set_audio_target.
+            audio_store=audio_store,
+            persist_audio=persist_audio,
+            audio_enabled=audio_enabled,
         )
 
     return factory
@@ -206,6 +217,9 @@ async def serve(
     speaker_registry: "SpeakerRegistry | None" = None,
     atom_store: "AtomStore | None" = None,
     speaker_nudge: "SpeakerNudgeListener | None" = None,
+    segment_index: "SegmentIndex | None" = None,
+    reconciler: "DeviceReconciler | None" = None,
+    liveness: "DeviceLiveness | None" = None,
 ) -> None:
     """Run the gateway WebSocket server until cancelled.
 
@@ -247,6 +261,10 @@ async def serve(
                 await ws.close(code=1008, reason="unauthorized")
                 return
         logger.info("connection opened from %s", peer)
+        # Counted after the auth check, so a rejected connection never makes
+        # /device/status claim the relay is connected (spec §5.1).
+        if liveness is not None:
+            liveness.connection_opened()
         core = GatewayCore(
             pipeline_factory=pipeline_factory,
             event_store=event_store,
@@ -257,6 +275,9 @@ async def serve(
             proactive_outbox=proactive_outbox,
             speaker_registry=speaker_registry,
             atom_store=atom_store,
+            segment_index=segment_index,
+            reconciler=reconciler,
+            liveness=liveness,
         )
         # P3: rebind the engine's ws_sender to this per-connection core.
         # The engine is process-wide (one Planner, one set of listeners),
@@ -347,7 +368,13 @@ async def serve(
             # of speech forms memories without waiting for a server restart.
             # No-op if the client already said bye (bye enqueued its own
             # finalize and cleared the session id) or never said hello.
-            core.finalize_pending_session()
+            # on_disconnect also deregisters the session and stamps its
+            # ended_at (spec §0.1/§0.2) — bye is unreliable on a socket
+            # drop, so this block is the only close signal that always
+            # fires.
+            core.on_disconnect()
+            if liveness is not None:
+                liveness.connection_closed()
             if proactive_task is not None:
                 # Cancel the drain task. We do NOT signal() the outbox here —
                 # the event is shared process-wide, so a bare signal() on every

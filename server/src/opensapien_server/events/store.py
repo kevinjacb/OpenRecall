@@ -61,6 +61,47 @@ class EventStore(Protocol):
         Returns the number of rows changed."""
         ...
 
+    def search(self, query: str, *, limit: int = 200) -> list[CaptureEvent]:
+        """Transcript events whose text contains ``query``, newest first.
+
+        Substring matching, case-insensitive. Backs the "Search transcripts"
+        field (spec §2.4), which searches *what was said* — distinct from
+        ``/memory?q=``, which does semantic search over extracted atoms and
+        returns the wrong object type for a list of recordings.
+        """
+        ...
+
+    def delete_range(self, session_id: str, first_seq: int, last_seq: int) -> int:
+        """Delete events in the inclusive seq range. Returns rows deleted.
+
+        Used by the cascading segment delete (spec §5.2), which is the only
+        thing allowed to remove from this otherwise append-only log.
+        """
+        ...
+
+
+# The column list every event SELECT shares, paired with `_row_to_event`.
+_EVENT_COLUMNS = (
+    "event_id, session_id, seq, kind, created_at, text, duration_ms, start_ms, "
+    "speaker, speaker_confidence, speaker_assignment"
+)
+
+
+def _row_to_event(r) -> CaptureEvent:
+    return CaptureEvent(
+        event_id=r[0],
+        session_id=r[1],
+        seq=r[2],
+        kind=r[3],
+        created_at=r[4],
+        text=r[5],
+        duration_ms=r[6],
+        start_ms=r[7],
+        speaker=r[8],
+        speaker_confidence=r[9],
+        speaker_assignment=r[10],
+    )
+
 
 class InMemoryEventStore:
     def __init__(self) -> None:
@@ -97,6 +138,31 @@ class InMemoryEventStore:
                     "speaker_assignment": "confirmed"})
                 n += 1
         return n
+
+    def search(self, query: str, *, limit: int = 200) -> list[CaptureEvent]:
+        needle = query.strip().lower()
+        if not needle:
+            return []
+        hits = [
+            e
+            for rows in self._by_session.values()
+            for e in rows
+            if e.kind == "transcript" and needle in (e.text or "").lower()
+        ]
+        hits.sort(key=lambda e: (e.created_at, e.session_id, e.seq), reverse=True)
+        return hits[:limit]
+
+    def delete_range(self, session_id: str, first_seq: int, last_seq: int) -> int:
+        rows = self._by_session.get(session_id)
+        if not rows:
+            return 0
+        keep = [e for e in rows if not (first_seq <= e.seq <= last_seq)]
+        removed = len(rows) - len(keep)
+        for e in rows:
+            if first_seq <= e.seq <= last_seq:
+                self._seen.discard(e.event_id)
+        self._by_session[session_id] = keep
+        return removed
 
 
 class SqliteEventStore:
@@ -218,6 +284,39 @@ class SqliteEventStore:
                 "UPDATE capture_events SET speaker=?, speaker_confidence=0.9, "
                 "speaker_assignment='confirmed' WHERE session_id=? AND speaker=?",
                 (to_id, session_id, from_id),
+            )
+            self._conn.commit()
+            return cur.rowcount
+
+    def search(self, query: str, *, limit: int = 200) -> list[CaptureEvent]:
+        needle = query.strip().lower()
+        if not needle:
+            return []
+        # `%` and `_` are LIKE wildcards, so a user typing "50%" would
+        # otherwise match everything. Escape them (and the escape character
+        # itself) and declare the ESCAPE clause.
+        escaped = (
+            needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        # No FTS5 in v1: the table is small, LIKE keeps the in-memory twin
+        # trivially equivalent, and a full-text index is a schema commitment.
+        # Upgrade path if this gets slow: an FTS5 virtual table on `text`,
+        # kept in sync by triggers.
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {_EVENT_COLUMNS} FROM capture_events "
+                "WHERE kind = 'transcript' AND LOWER(text) LIKE ? ESCAPE '\\' "
+                "ORDER BY created_at DESC, session_id DESC, seq DESC LIMIT ?",
+                (f"%{escaped}%", limit),
+            ).fetchall()
+        return [_row_to_event(r) for r in rows]
+
+    def delete_range(self, session_id: str, first_seq: int, last_seq: int) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM capture_events "
+                "WHERE session_id = ? AND seq >= ? AND seq <= ?",
+                (session_id, first_seq, last_seq),
             )
             self._conn.commit()
             return cur.rowcount

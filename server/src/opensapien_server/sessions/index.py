@@ -25,9 +25,7 @@ Design notes:
 """
 from __future__ import annotations
 
-import base64
 import collections
-import json
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -35,6 +33,7 @@ from typing import Callable
 
 from ..events.model import CaptureEvent
 from ..events.store import EventStore  # only used for the type annotation in rebuild_from_store
+from ..paging import decode_cursor, encode_cursor
 
 Clock = Callable[[], datetime]
 PREVIEW_MAX_CHARS = 80
@@ -77,6 +76,13 @@ class SessionSummary:
         self._closed = True
         self.ended_at = at
 
+    def reopen(self) -> None:
+        """Undo a close because a new event arrived for this session."""
+        if not self._closed:
+            return
+        self._closed = False
+        self.ended_at = None
+
     def duration_ms(self, *, now: datetime | None = None) -> int:
         """Server-side view of session length: started_at..ended_at (or now)."""
         end = self.ended_at if self._closed else (now or _default_clock())
@@ -99,27 +105,11 @@ def _preview_of(text: str) -> str | None:
     return _truncate(stripped)
 
 
-def _encode_cursor(*, before: datetime, last_id: str) -> str:
-    payload = json.dumps({"before": before.isoformat(), "last_id": last_id})
-    # Strip trailing `=` padding: `=` is URL-special per RFC 3986 and the
-    # brief treats the cursor as opaque. A future client URL-encoding the
-    # cursor into a query string would otherwise risk a 1-char DoS on `=`.
-    return base64.urlsafe_b64encode(payload.encode("utf-8")).rstrip(b"=").decode("ascii")
-
-
-def _decode_cursor(cursor: str) -> tuple[datetime, str]:
-    """Decode a base64 JSON cursor. Raises :class:`ValueError` on malformed input."""
-    try:
-        # Re-pad to a multiple of 4 — Python's b64 decoder is strict about
-        # padding and the encoder strips it.
-        padded = cursor + "=" * (-len(cursor) % 4)
-        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
-        payload = json.loads(raw.decode("utf-8"))
-        before = datetime.fromisoformat(payload["before"])
-        last_id = str(payload["last_id"])
-    except (ValueError, KeyError, TypeError, json.JSONDecodeError, UnicodeDecodeError) as e:
-        raise ValueError(f"bad cursor: {e!s}") from e
-    return before, last_id
+# The cursor codec now lives in `opensapien_server.paging` so /segments and
+# /memory page identically. Re-exported under the original private names
+# because this module's tests and readers already know them by those.
+_encode_cursor = encode_cursor
+_decode_cursor = decode_cursor
 
 
 class SessionIndex:
@@ -166,12 +156,31 @@ class SessionIndex:
                 )
                 return
             existing.event_count += 1
+            # A closed session that receives a new event is not closed. The
+            # relay reuses one session id across every BLE/WS reconnect
+            # (spec D1), so a `bye`-then-reconnect must not leave `endedAt`
+            # pinned to the first disconnect while fresh transcripts arrive.
+            existing.reopen()
             if event.kind == "transcript":
                 existing.transcript_count += 1
                 if existing.preview is None:
                     new_preview = _preview_of(event.text)
                     if new_preview is not None:
                         existing.preview = new_preview
+
+    def mark_closed(self, session_id: str, at: datetime | None = None) -> None:
+        """Mark a session's summary closed at ``at`` (default: now).
+
+        Called when the gateway sees a ``bye`` and when a connection drops
+        (spec §0.2). Idempotent — :meth:`SessionSummary.mark_closed` keeps the
+        first close. A no-op for a session with no summary yet (a connection
+        that produced no events).
+        """
+        with self._lock:
+            summary = self._summaries.get(session_id)
+            if summary is None:
+                return
+            summary.mark_closed(at or self._clock())
 
     def rebuild_from_store(self, event_store: "EventStore") -> None:
         """Cold-start rebuild from a durable :class:`EventStore`.

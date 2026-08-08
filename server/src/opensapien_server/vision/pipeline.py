@@ -59,6 +59,9 @@ class VisionPipeline:
             kind="scene",
             text=caption,
             created_at=self._clock(),
+            # A scene is captioned as it is captured, so capture time and
+            # extraction time coincide — unlike the batched transcript path.
+            occurred_at=self._clock(),
             start_ms=captured_at_ms,
         )
         self._atoms.append(atom)
