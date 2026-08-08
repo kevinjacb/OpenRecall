@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -22,6 +23,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -41,9 +46,9 @@ import com.openrecall.relay.ui.design.RecallSearchField
  * editorial header, a search field, a horizontally scrolling row of kind
  * filters, then one card per memory atom.
  *
- * Search is debounced in the ViewModel (150ms). Filters narrow the results
- * already returned; they are not sent to the server (see
- * [MemoryViewModel.onFilterSelected]).
+ * Search is debounced in the ViewModel. In browse mode the kind filter is a
+ * server query, so it reaches memories that were never paged in; in search
+ * mode the endpoint takes no kind, so it narrows the hits locally.
  *
  * INV-11: this file lives under `ui/memory/` and must not import anything
  * from `com.openrecall.relay.http.*` — enforced by `ArchitecturalInvariantsTest`.
@@ -58,6 +63,7 @@ fun MemoryScreen(
     onAtomTap: (String) -> Unit,
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
+    onLoadMore: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = RecallTheme.colors
@@ -81,6 +87,7 @@ fun MemoryScreen(
                 modifier = Modifier.padding(top = 16.dp).testTag("memory_query"),
             )
             FilterRow(
+                filters = state.filters,
                 selected = state.filter,
                 onSelect = onFilterSelected,
                 modifier = Modifier.padding(top = 16.dp),
@@ -114,41 +121,68 @@ fun MemoryScreen(
                     EmptyMemories(state)
                 }
 
-                else -> AtomList(atoms = state.visibleAtoms, onAtomTap = onAtomTap)
+                else -> AtomList(
+                    atoms = state.visibleAtoms,
+                    canLoadMore = state.nextCursor != null,
+                    onAtomTap = onAtomTap,
+                    onLoadMore = onLoadMore,
+                )
             }
         }
     }
 }
 
 /**
- * The line under the hero. The comp reads "128 memories, 6 added today" —
- * the server exposes no memory totals or per-day counts (only search and
- * per-session lookups), so this reports what is actually on screen.
+ * The line under the hero — the comp's "128 memories, 6 added today".
+ *
+ * The totals come from `/memory/stats` and count the whole collection, not
+ * the page on screen. "Today" is counted on *conversation* time, not on when
+ * the server extracted it: extraction runs in batch, so counting by
+ * extraction time would report last night's conversation as added today.
+ *
+ * While a search is active the totals are the wrong answer to the question
+ * the user is asking, so the line reports the hit count instead.
  */
-private fun supportingLine(state: MemoryState): String = when {
-    state.lastQuery.isEmpty() && state.atoms.isEmpty() ->
-        "Search what your OpenRecall chose to remember. Nothing here leaves your relay."
-    state.filter != MemoryState.ALL_FILTER ->
-        "${state.visibleAtoms.size} of ${state.atoms.size} memories. Nothing here leaves your relay."
-    else ->
-        "${state.atoms.size} memories. Nothing here leaves your relay."
+private fun supportingLine(state: MemoryState): String {
+    val tail = "Nothing here leaves your relay."
+    if (state.lastQuery.isNotEmpty()) {
+        val n = state.visibleAtoms.size
+        return "${if (n == 1) "1 match" else "$n matches"} for \u201c${state.lastQuery}\u201d. $tail"
+    }
+    val total = state.stats.total
+    if (total == 0 && state.atoms.isEmpty()) {
+        return "What your OpenRecall chose to keep. $tail"
+    }
+    return buildString {
+        append(if (total == 1) "1 memory" else "$total memories")
+        if (state.stats.added24h > 0) append(", ${state.stats.added24h} added today")
+        append(". ")
+        append(tail)
+    }
 }
 
+/**
+ * The kind chips. [filters] comes from the server's per-kind counts, so the
+ * row shows exactly the kinds that exist — a hardcoded row would offer
+ * filters that match nothing while hiding kinds that do.
+ */
 @Composable
 private fun FilterRow(
+    filters: List<String>,
     selected: String,
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    if (filters.size <= 1) return
     Row(
         modifier = modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        MemoryState.FILTERS.forEach { filter ->
+        filters.forEach { filter ->
             FilterPill(
-                label = filter,
+                label = filter.replaceFirstChar { it.uppercase() },
                 selected = filter == selected,
                 onClick = { onSelect(filter) },
             )
@@ -179,8 +213,26 @@ private fun EmptyMemories(state: MemoryState) {
 }
 
 @Composable
-private fun AtomList(atoms: List<MemoryAtom>, onAtomTap: (String) -> Unit) {
+private fun AtomList(
+    atoms: List<MemoryAtom>,
+    canLoadMore: Boolean,
+    onAtomTap: (String) -> Unit,
+    onLoadMore: () -> Unit,
+) {
+    val listState = rememberLazyListState()
+    // Fetch the next page as the last card comes into view. Browse mode is
+    // cursor-paged; search mode reports canLoadMore = false and never fires.
+    val shouldLoadMore by remember(atoms.size, canLoadMore) {
+        derivedStateOf {
+            canLoadMore &&
+                (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >=
+                listState.layoutInfo.totalItemsCount - 2
+        }
+    }
+    LaunchedEffect(shouldLoadMore) { if (shouldLoadMore) onLoadMore() }
+
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize().testTag("memory_list"),
         verticalArrangement = Arrangement.spacedBy(10.dp),
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 28.dp),
@@ -209,7 +261,7 @@ private fun MemoryCard(atom: MemoryAtom, onTap: () -> Unit) {
                 color = colors.accentInk,
             )
             Text(
-                text = atom.createdAt,
+                text = atom.displayedAt,
                 style = MaterialTheme.typography.labelMedium,
                 color = colors.greyFaint,
                 maxLines = 1,

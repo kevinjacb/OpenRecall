@@ -24,6 +24,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -50,6 +51,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.openrecall.relay.core.ui.RecallTheme
 import com.openrecall.relay.core.util.formatHmMs
 import com.openrecall.relay.core.util.formatRelative
+import com.openrecall.relay.data.AudioSource
 import com.openrecall.relay.data.MemoryAtom
 import com.openrecall.relay.data.RepositoryModule
 import com.openrecall.relay.data.SpeakerCache
@@ -57,33 +59,39 @@ import com.openrecall.relay.data.SpeakerEntry
 import com.openrecall.relay.data.personLabels
 import com.openrecall.relay.domain.model.AudioSegment
 import com.openrecall.relay.domain.model.CaptureEvent
-import com.openrecall.relay.domain.model.SessionId
-import com.openrecall.relay.domain.model.SessionSummary
+import com.openrecall.relay.domain.model.Segment
+import com.openrecall.relay.domain.model.SegmentId
 import com.openrecall.relay.domain.model.TranscriptChunk
+import com.openrecall.relay.domain.model.Waveform
 import com.openrecall.relay.ui.design.AccentChip
 import com.openrecall.relay.ui.design.EmptyState
 import com.openrecall.relay.ui.design.LoadingCard
-import com.openrecall.relay.ui.design.PlaceholderTag
 import com.openrecall.relay.ui.design.RecallCard
 import com.openrecall.relay.ui.design.RecallDetailHeader
 import com.openrecall.relay.ui.design.RecallIcons
+import com.openrecall.relay.ui.design.RecallTextField
+import com.openrecall.relay.ui.design.WaveformScrubber
 import com.openrecall.relay.ui.design.WaveformStrip
 
+/** Bars in the scrubber. The server publishes fixed 500 ms buckets and the
+ *  client downsamples, so this is a display constant and nothing else. */
+private const val WAVEFORM_BARS = 34
+
 /**
- * SessionDetail route. Builds the [SessionDetailViewModel] for [id] from the
- * process singleton; [onBack] pops the back stack.
+ * Recording-detail route. [onBack] pops the back stack — and is also what
+ * runs after a successful delete, since the screen's subject no longer
+ * exists.
  */
 @Composable
-fun SessionDetailRoute(id: SessionId, onBack: () -> Unit, modifier: Modifier = Modifier) {
-    val vm: SessionDetailViewModel = viewModel(
+fun SegmentDetailRoute(id: SegmentId, onBack: () -> Unit, modifier: Modifier = Modifier) {
+    val vm: SegmentDetailViewModel = viewModel(
         factory = viewModelFactory {
             initializer {
-                SessionDetailViewModel(
+                SegmentDetailViewModel(
                     id,
-                    RepositoryModule.repos.session,
+                    RepositoryModule.repos.segment,
                     speakerCache = RepositoryModule.repos.speakerCache,
                     speakerActions = RepositoryModule.repos.speakerActions,
-                    memoryRepo = RepositoryModule.repos.memoryRepository,
                 )
             }
         },
@@ -96,59 +104,77 @@ fun SessionDetailRoute(id: SessionId, onBack: () -> Unit, modifier: Modifier = M
     val state by vm.state.collectAsState()
     val isRefreshing by vm.isRefreshing.collectAsState()
     val youConfirmation by vm.youConfirmation.collectAsState()
-    val speakerError by vm.speakerError.collectAsState()
+    val actionError by vm.actionError.collectAsState()
     val memories by vm.memories.collectAsState()
-    SessionDetailScreen(
+    val waveform by vm.waveform.collectAsState()
+    val audio by vm.audio.collectAsState()
+    val deleted by vm.deleted.collectAsState()
+
+    LaunchedEffect(deleted) { if (deleted) onBack() }
+
+    SegmentDetailScreen(
         state = state,
         memories = memories,
+        waveform = waveform,
+        audio = audio,
         isRefreshing = isRefreshing,
         onRefresh = vm::onRefresh,
         onBack = onBack,
+        onRename = vm::rename,
+        onDelete = vm::delete,
         speakerCache = vm.speakerCache,
         onRenameSpeaker = vm::renameSpeaker,
         onReassignSpeaker = vm::reassignSpeaker,
         youConfirmation = youConfirmation,
         onConfirmYou = vm::confirmYou,
         onDismissYouConfirmation = vm::dismissYouConfirmation,
-        speakerError = speakerError,
-        onDismissSpeakerError = vm::dismissSpeakerError,
+        actionError = actionError,
+        onDismissActionError = vm::dismissActionError,
         modifier = modifier,
     )
 }
 
 /**
- * Stateless session detail — the comp's recording screen: a back header, a
- * metadata line, the audio player, the memories this session produced, then
+ * Stateless recording detail — a back header with the overflow menu, a
+ * metadata line, the audio player, the memories this recording produced, then
  * the transcript.
  *
  * Speaker labels are tappable, opening rename / reassign, which is how a
- * transcript gets from "Speaker 2" to a name.
+ * transcript gets from "Person 2" to a name.
  */
 @Composable
-fun SessionDetailScreen(
-    state: SessionDetailUiState,
+fun SegmentDetailScreen(
+    state: SegmentDetailUiState,
     memories: List<MemoryAtom> = emptyList(),
+    waveform: Waveform? = null,
+    audio: AudioSource? = null,
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
     onBack: () -> Unit,
+    onRename: (String) -> Unit = {},
+    onDelete: () -> Unit = {},
     speakerCache: SpeakerCache = SpeakerCache(),
     onRenameSpeaker: (speakerId: String, name: String) -> Unit = { _, _ -> },
     onReassignSpeaker: (fromId: String, toId: String) -> Unit = { _, _ -> },
     youConfirmation: YouConfirmationState = YouConfirmationState.Idle,
     onConfirmYou: (name: String) -> Unit = {},
     onDismissYouConfirmation: () -> Unit = {},
-    speakerError: String? = null,
-    onDismissSpeakerError: () -> Unit = {},
+    actionError: String? = null,
+    onDismissActionError: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = RecallTheme.colors
     val snackbarHostState: SnackbarHostState = remember { SnackbarHostState() }
-    LaunchedEffect(speakerError) {
-        if (speakerError != null) {
-            snackbarHostState.showSnackbar(message = speakerError)
-            onDismissSpeakerError()
+    LaunchedEffect(actionError) {
+        if (actionError != null) {
+            snackbarHostState.showSnackbar(message = actionError)
+            onDismissActionError()
         }
     }
+    val summary = (state as? SegmentDetailUiState.Loaded)?.summary
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
+
     Scaffold(
         modifier = modifier,
         containerColor = colors.canvas,
@@ -161,12 +187,25 @@ fun SessionDetailScreen(
                 .background(colors.canvas)
                 .statusBarsPadding(),
         ) {
-            RecallDetailHeader(title = headerTitle(state), onBack = onBack)
+            RecallDetailHeader(
+                title = summary?.displayTitle ?: "Recording",
+                onBack = onBack,
+                trailing = if (summary != null) {
+                    {
+                        OverflowMenu(
+                            onRename = { showRenameDialog = true },
+                            onDelete = { confirmDelete = true },
+                        )
+                    }
+                } else {
+                    null
+                },
+            )
             when (state) {
-                is SessionDetailUiState.Loading ->
+                is SegmentDetailUiState.Loading, is SegmentDetailUiState.Deleted ->
                     Column(Modifier.padding(20.dp)) { LoadingCard() }
 
-                is SessionDetailUiState.Failed -> Box(
+                is SegmentDetailUiState.Failed -> Box(
                     Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -178,20 +217,14 @@ fun SessionDetailScreen(
                     )
                 }
 
-                is SessionDetailUiState.LoadedSummary -> Body(
-                    summary = state.summary, events = null, memories = memories,
-                    isRefreshing = isRefreshing, onRefresh = onRefresh,
-                    speakerCache = speakerCache,
-                    onRenameSpeaker = onRenameSpeaker,
-                    onReassignSpeaker = onReassignSpeaker,
-                    youConfirmation = youConfirmation,
-                    onConfirmYou = onConfirmYou,
-                    onDismissYouConfirmation = onDismissYouConfirmation,
-                )
-
-                is SessionDetailUiState.Loaded -> Body(
-                    summary = state.summary, events = state.events, memories = memories,
-                    isRefreshing = isRefreshing, onRefresh = onRefresh,
+                is SegmentDetailUiState.Loaded -> Body(
+                    summary = state.summary,
+                    events = state.events,
+                    memories = memories,
+                    waveform = waveform,
+                    audio = audio,
+                    isRefreshing = isRefreshing,
+                    onRefresh = onRefresh,
                     speakerCache = speakerCache,
                     onRenameSpeaker = onRenameSpeaker,
                     onReassignSpeaker = onReassignSpeaker,
@@ -202,14 +235,69 @@ fun SessionDetailScreen(
             }
         }
     }
+
+    if (showRenameDialog && summary != null) {
+        RenameRecordingDialog(
+            initial = summary.title.orEmpty(),
+            onConfirm = { name ->
+                showRenameDialog = false
+                onRename(name)
+            },
+            onDismiss = { showRenameDialog = false },
+        )
+    }
+
+    if (confirmDelete) {
+        DeleteRecordingDialog(
+            onConfirm = {
+                confirmDelete = false
+                onDelete()
+            },
+            onDismiss = { confirmDelete = false },
+        )
+    }
+}
+
+@Composable
+private fun OverflowMenu(onRename: () -> Unit, onDelete: () -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    val colors = RecallTheme.colors
+    Box {
+        IconButton(onClick = { expanded = true }) {
+            Icon(
+                RecallIcons.More,
+                contentDescription = "More",
+                tint = colors.inkMuted,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text("Rename") },
+                onClick = {
+                    expanded = false
+                    onRename()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("Delete", color = colors.danger) },
+                onClick = {
+                    expanded = false
+                    onDelete()
+                },
+            )
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun Body(
-    summary: SessionSummary,
-    events: List<CaptureEvent>?,
+    summary: Segment,
+    events: List<CaptureEvent>,
     memories: List<MemoryAtom>,
+    waveform: Waveform?,
+    audio: AudioSource?,
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
     speakerCache: SpeakerCache,
@@ -222,13 +310,12 @@ private fun Body(
     val colors = RecallTheme.colors
 
     // "Person N" placeholder labels for unnamed non-wearer speakers, built
-    // from the first-appearance order of this session's transcript speakers.
-    // Computed here (a @Composable context) rather than inside the LazyColumn
-    // content lambda (a LazyListScope, not @Composable — `remember` is not
-    // callable there). Memoized per `events` change; cheap to recompute.
+    // from the first-appearance order of this recording's speakers. Computed
+    // here (a @Composable context) rather than inside the LazyColumn content
+    // lambda, which is a LazyListScope where `remember` is not callable.
     val orderedSpeakers = remember(events) {
-        events?.filterIsInstance<TranscriptChunk>()
-            ?.mapNotNull { chunk ->
+        events.filterIsInstance<TranscriptChunk>()
+            .mapNotNull { chunk ->
                 val sid = chunk.speaker ?: return@mapNotNull null
                 SpeakerEntry(
                     speakerId = sid,
@@ -236,36 +323,35 @@ private fun Body(
                     isWearer = chunk.isWearer,
                 )
             }
-            ?.distinctBy { it.speakerId }
-            ?: emptyList()
+            .distinctBy { it.speakerId }
     }
     val labels = remember(orderedSpeakers) { personLabels(orderedSpeakers) }
 
     val listState = rememberLazyListState()
     // A transcript reads newest-last, and the newest hop is what you came for,
-    // so open at the bottom. Only once per session — after that the position is
-    // the reader's, and later events must not yank them back down.
+    // so open at the bottom. Only once per recording — after that the position
+    // is the reader's, and later events must not yank them back down.
     var landedAtLatest by remember { mutableStateOf(false) }
     // Fixed items ahead of the transcript in the LazyColumn: meta, player,
     // you-confirm, transcript-label, plus memories when present.
     val fixedItemCount = 4 + if (memories.isNotEmpty()) 1 else 0
-    LaunchedEffect(events?.size) {
-        val count = events?.size ?: 0
-        if (!landedAtLatest && count > 0) {
+    LaunchedEffect(events.size) {
+        if (!landedAtLatest && events.isNotEmpty()) {
             // The list clamps to its max scroll, so targeting the last index
             // lands on the true bottom rather than parking it at the top.
-            listState.scrollToItem(fixedItemCount + count - 1)
+            listState.scrollToItem(fixedItemCount + events.size - 1)
             landedAtLatest = true
         }
     }
+
 
     PullToRefreshBox(
         isRefreshing = isRefreshing,
         onRefresh = onRefresh,
         modifier = Modifier.fillMaxSize(),
     ) {
-        // Keyed by the stable event id — NOT by title, which would collide on
-        // two transcripts with identical text and crash the LazyColumn.
+        // Keyed by the stable event id — NOT by text, which would collide on
+        // two transcripts with identical content and crash the LazyColumn.
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
@@ -281,7 +367,12 @@ private fun Body(
             }
 
             item(key = "player") {
-                PlayerCard(summary, Modifier.padding(top = 16.dp))
+                PlayerCard(
+                    summary = summary,
+                    waveform = waveform,
+                    audio = audio,
+                    modifier = Modifier.padding(top = 16.dp),
+                )
             }
 
             // One-time "is this you?" prompt. Composes nothing unless the
@@ -309,24 +400,22 @@ private fun Body(
                 )
             }
 
-            when {
-                events == null -> item(key = "events-loading") { LoadingCard() }
-                events.isEmpty() -> item(key = "events-empty") {
+            if (events.isEmpty()) {
+                item(key = "events-empty") {
                     EmptyState(
                         title = "No transcript yet",
-                        body = "This session hasn't produced any transcript events.",
+                        body = "This recording hasn't produced any transcript lines.",
                     )
                 }
-                else -> {
-                    items(events, key = { it.id }) { event ->
-                        EventRow(
-                            event = event,
-                            speakerCache = speakerCache,
-                            personLabels = labels,
-                            onRename = onRenameSpeaker,
-                            onReassign = onReassignSpeaker,
-                        )
-                    }
+            } else {
+                items(events, key = { it.id }) { event ->
+                    EventRow(
+                        event = event,
+                        speakerCache = speakerCache,
+                        personLabels = labels,
+                        onRename = onRenameSpeaker,
+                        onReassign = onReassignSpeaker,
+                    )
                 }
             }
         }
@@ -336,15 +425,39 @@ private fun Body(
 /**
  * The audio player.
  *
- * **Placeholder.** The server exposes no audio download or streaming
- * endpoint for a session — only its transcript events — so there is nothing
- * to play. The card renders the comp's layout with a disabled transport and
- * a [WaveformStrip] shaped from the session id, marked so it doesn't read as
- * a broken control.
+ * Three genuinely different states, and conflating them would mislead:
+ *
+ * * **Playable** — the server has a frame log for this recording, so there is
+ *   a real waveform and a working transport.
+ * * **No audio** — normal, not an error. Either `save_audio` was off when
+ *   this was captured, or retention has since swept the audio while keeping
+ *   the transcript. The copy says which, because "the recording expired but
+ *   the transcript did not" is not what a user assumes by default.
+ * * **Still recording** — the segment is open, so the server serves what
+ *   exists so far and its length keeps moving.
  */
 @Composable
-private fun PlayerCard(summary: SessionSummary, modifier: Modifier = Modifier) {
+private fun PlayerCard(
+    summary: Segment,
+    waveform: Waveform?,
+    audio: AudioSource?,
+    modifier: Modifier = Modifier,
+) {
     val colors = RecallTheme.colors
+    val player = rememberSegmentPlayer(if (summary.hasAudio) audio else null)
+    val playback = player.state
+
+    // Prefer the player's own duration once the stream is prepared: it is the
+    // real decoded length, whereas the segment's duration is derived from
+    // event timestamps and can differ by a frame or two.
+    val durationMs = playback.durationMs.takeIf { it > 0 } ?: summary.durationMs
+    val progress = if (durationMs > 0) {
+        (playback.positionMs.toFloat() / durationMs).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    val bars = remember(waveform) { waveform?.resampled(WAVEFORM_BARS).orEmpty() }
+
     RecallCard(modifier = modifier, contentPadding = PaddingValues(16.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -355,48 +468,75 @@ private fun PlayerCard(summary: SessionSummary, modifier: Modifier = Modifier) {
                 Modifier
                     .size(48.dp)
                     .clip(CircleShape)
-                    .background(colors.track),
+                    .background(if (summary.hasAudio) colors.accentSoft else colors.track)
+                    .then(
+                        if (summary.hasAudio) {
+                            Modifier.clickable { player.togglePlayPause() }
+                        } else {
+                            Modifier
+                        },
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    RecallIcons.Play,
-                    contentDescription = "Playback unavailable",
-                    tint = colors.greyLight,
+                    if (playback.playing) RecallIcons.Pause else RecallIcons.Play,
+                    contentDescription = when {
+                        !summary.hasAudio -> "No audio for this recording"
+                        playback.playing -> "Pause"
+                        else -> "Play"
+                    },
+                    tint = if (summary.hasAudio) colors.accentInk else colors.greyLight,
                     modifier = Modifier.size(16.dp),
                 )
             }
             Column(Modifier.weight(1f)) {
-                WaveformStrip(seed = summary.id.value)
+                if (bars.isNotEmpty()) {
+                    WaveformScrubber(
+                        peaks = bars,
+                        progress = progress,
+                        onSeek = player::seekToFraction,
+                    )
+                } else {
+                    WaveformStrip(seed = summary.id.value)
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Text(
-                        "00:00",
+                        formatHmMs(playback.positionMs),
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.greyFaint,
                     )
                     Text(
-                        formatHmMs(summary.durationMs),
+                        formatHmMs(durationMs),
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.greyFaint,
                     )
                 }
             }
         }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            PlaceholderTag()
+
+        val note = playerNote(summary, playback)
+        if (note != null) {
             Text(
-                text = "Audio playback needs a session audio endpoint on the relay.",
+                text = note,
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.grey,
+                modifier = Modifier.padding(top = 12.dp),
             )
         }
     }
+}
+
+private fun playerNote(summary: Segment, playback: PlaybackState): String? = when {
+    !summary.hasAudio ->
+        "No audio kept for this recording. The transcript is retained even after " +
+            "audio expires, so an older recording can be readable but not playable."
+    playback.error != null -> playback.error
+    playback.preparing -> "Loading audio…"
+    !summary.closed -> "Still recording — playback covers what's arrived so far."
+    else -> null
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -415,7 +555,7 @@ private fun MemoriesSection(memories: List<MemoryAtom>, modifier: Modifier = Mod
                 modifier = Modifier.size(15.dp),
             )
             Text(
-                "MEMORIES FROM THIS SESSION",
+                "MEMORIES FROM THIS RECORDING",
                 style = MaterialTheme.typography.labelSmall,
                 color = colors.slate,
             )
@@ -446,9 +586,9 @@ private fun EventRow(
     // Speaker label resolution. TranscriptChunks carry the server-resolved
     // speakerName (real null when the hop had no speaker / speaker unknown).
     // We fall back to the cache (a prior hop may have named this speaker, or
-    // the local optimistic rename applied). If neither has a name we synthesize
-    // a stable "Person N" placeholder (client-only) from first-appearance
-    // order, so the user never sees a bare "null" or "?".
+    // the local optimistic rename applied). If neither has a name we
+    // synthesize a stable "Person N" placeholder from first-appearance order,
+    // so the user never sees a bare "null" or "?".
     val chunk = event as? TranscriptChunk
     val speakerId = chunk?.speaker
     val realName: String? = when {
@@ -562,7 +702,7 @@ private fun RenameSpeakerDialog(
         titleContentColor = colors.ink,
         title = { Text("Name this speaker") },
         text = {
-            com.openrecall.relay.ui.design.RecallTextField(
+            RecallTextField(
                 value = value,
                 onValueChange = onValueChange,
                 placeholder = "Display name",
@@ -573,19 +713,73 @@ private fun RenameSpeakerDialog(
     )
 }
 
-private fun headerTitle(state: SessionDetailUiState): String = when (state) {
-    is SessionDetailUiState.Loaded -> sessionTitle(state.summary)
-    is SessionDetailUiState.LoadedSummary -> sessionTitle(state.summary)
-    else -> "Recording"
+@Composable
+private fun RenameRecordingDialog(
+    initial: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = RecallTheme.colors
+    var text by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colors.card,
+        titleContentColor = colors.ink,
+        title = { Text("Rename recording") },
+        text = {
+            RecallTextField(
+                value = text,
+                onValueChange = {
+                    // Clamp at the server's limit rather than letting the user
+                    // type past it and take a 400 on save.
+                    if (it.length <= SegmentDetailViewModel.TITLE_MAX_CHARS) text = it
+                },
+                placeholder = "Title",
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(text) },
+                enabled = text.isNotBlank(),
+            ) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
-/** "34 min ago · 20:23 · 697 segments" — the comp's metadata line. */
-private fun metaLine(summary: SessionSummary): String = buildString {
+@Composable
+private fun DeleteRecordingDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    val colors = RecallTheme.colors
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colors.card,
+        titleContentColor = colors.ink,
+        textContentColor = colors.inkMuted,
+        title = { Text("Delete this recording?") },
+        text = {
+            Text(
+                "The transcript, its audio, and the memories extracted from it are " +
+                    "removed from the relay. This can't be undone.",
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("Delete", color = colors.danger) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = colors.slate) } },
+    )
+}
+
+/** "34 min ago · 01:04 · 37 lines · 4 memories" — the comp's metadata line. */
+private fun metaLine(summary: Segment): String = buildString {
     append(formatRelative(System.currentTimeMillis(), summary.startedAt.toEpochMilli()))
     append(" · ")
     append(formatHmMs(summary.durationMs))
     append(" · ")
-    append("${summary.transcriptCount} segments")
+    append("${summary.transcriptCount} lines")
+    if (summary.memoryCount > 0) {
+        append(" · ")
+        append(if (summary.memoryCount == 1) "1 memory" else "${summary.memoryCount} memories")
+    }
 }
 
 private fun eventText(event: CaptureEvent): String = when (event) {

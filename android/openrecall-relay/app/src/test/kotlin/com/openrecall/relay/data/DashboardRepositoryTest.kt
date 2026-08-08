@@ -2,8 +2,6 @@ package com.openrecall.relay.data
 
 import com.openrecall.relay.core.result.Outcome
 import com.openrecall.relay.domain.model.ServerStatus
-import com.openrecall.relay.domain.model.SessionId
-import com.openrecall.relay.domain.model.SessionSummary
 import com.openrecall.relay.relay.DeviceState
 import com.openrecall.relay.relay.RelayController
 import kotlinx.coroutines.CoroutineScope
@@ -25,7 +23,7 @@ import kotlin.test.assertTrue
 
 /**
  * Pins [DashboardRepositoryImpl]: it fans the relay controller, the status
- * poller, and the session list into one [DashboardState]. Reactivity is
+ * poller, and the recordings list into one [DashboardState]. Reactivity is
  * asserted on real dispatchers with a short real-time timeout — the same
  * pattern as [DeviceRepositoryTest] — because `combine`/`stateIn` over
  * `StateFlow` sources don't cooperate with `TestDispatcher` in coroutines
@@ -52,21 +50,14 @@ class DashboardRepositoryTest {
         uptimeSeconds = 1, activeSessions = active, totalSessions = 2, recentEvents24h = 3,
     )
 
-    private fun summary(id: String) = SessionSummary(
-        id = SessionId(id),
-        startedAt = Instant.EPOCH,
-        endedAt = null,
-        durationMs = 1000,
-        transcriptCount = 1,
-        preview = "preview-$id",
-    )
+    private fun summary(id: String) = testSegment(id, startedAt = Instant.EPOCH)
 
     @Test fun initialValueIsLoadingBeforeSubscription() {
         RelayController.reset()
         val repo = DashboardRepositoryImpl(
             RelayController,
             FakeStatusRepository(Outcome.Success(status(1))),
-            FakeSessionRepository(),
+            FakeSegmentRepository(),
             scope,
         )
         // No collector yet → WhileSubscribed hasn't started the upstream.
@@ -78,7 +69,7 @@ class DashboardRepositoryTest {
         val repo = DashboardRepositoryImpl(
             RelayController,
             FakeStatusRepository(Outcome.Success(status(4))),
-            FakeSessionRepository(),
+            FakeSegmentRepository(),
             scope,
         )
         val loaded = withTimeout(2000) {
@@ -88,30 +79,30 @@ class DashboardRepositoryTest {
         assertEquals(Outcome.Success(status(4)), l.server)
     }
 
-    @Test fun recentSessionsAreCappedAtThree() = runBlocking {
+    @Test fun recentRecordingsAreCappedAtThree() = runBlocking {
         RelayController.reset()
-        val session = FakeSessionRepository()
-        session.queue(
+        val segments = FakeSegmentRepository()
+        segments.queue(
             items = (1..10).map { summary("s$it") },
             nextCursor = null,
         )
         val repo = DashboardRepositoryImpl(
             RelayController,
             FakeStatusRepository(Outcome.Success(status(1))),
-            session,
+            segments,
             scope,
         )
-        // The session flow retains its latest Page value, so the dashboard
+        // The segment flow retains its latest Page value, so the dashboard
         // picks it up as soon as it subscribes.
-        session.loadMoreSessions()
+        segments.loadMore()
         val loaded = withTimeout(2000) {
             repo.observe().filter {
-                it is DashboardState.Loaded && it.recentSessions.isNotEmpty()
+                it is DashboardState.Loaded && it.recentSegments.isNotEmpty()
             }.first()
         }
         val l = assertIs<DashboardState.Loaded>(loaded)
-        assertEquals(3, l.recentSessions.size)
-        assertEquals(listOf("s1", "s2", "s3"), l.recentSessions.map { it.id.value })
+        assertEquals(3, l.recentSegments.size)
+        assertEquals(listOf("s1", "s2", "s3"), l.recentSegments.map { it.id.value })
     }
 
     @Test fun relayDeviceChangeReEmits() = runBlocking {
@@ -119,7 +110,7 @@ class DashboardRepositoryTest {
         val repo = DashboardRepositoryImpl(
             RelayController,
             FakeStatusRepository(Outcome.Success(status(1))),
-            FakeSessionRepository(),
+            FakeSegmentRepository(),
             scope,
         )
         // Wait for the first Loaded, then flip the device.
@@ -141,7 +132,7 @@ class DashboardRepositoryTest {
         val repo = DashboardRepositoryImpl(
             RelayController,
             fakeStatus,
-            FakeSessionRepository(),
+            FakeSegmentRepository(),
             scope,
         )
         withTimeout(2000) {
@@ -163,18 +154,18 @@ class DashboardRepositoryTest {
 
     @Test fun refreshDelegatesToBothChildren() = runBlocking {
         // A pull-to-refresh on Home fans out: one immediate status poll AND a
-        // reset-to-page-1 of the session list. Both children's refresh must
+        // reset-to-page-1 of the recordings list. Both children's refresh must
         // be invoked exactly once.
         RelayController.reset()
         val fakeStatus = FakeStatusRepository(Outcome.Success(status(1)))
-        val fakeSession = FakeSessionRepository()
-        val repo = DashboardRepositoryImpl(RelayController, fakeStatus, fakeSession, scope)
+        val fakeSegments = FakeSegmentRepository()
+        val repo = DashboardRepositoryImpl(RelayController, fakeStatus, fakeSegments, scope)
         // Let the combined flow go Loaded first so we're past the seed.
         withTimeout(2000) { repo.observe().filter { it is DashboardState.Loaded }.first() }
 
         repo.refresh()
 
         assertEquals(1, fakeStatus.refreshCount, "status refreshed once")
-        assertEquals(1, fakeSession.refreshCount, "sessions refreshed once")
+        assertEquals(1, fakeSegments.refreshCount, "recordings refreshed once")
     }
 }

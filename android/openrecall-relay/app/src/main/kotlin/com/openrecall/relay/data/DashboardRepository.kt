@@ -3,7 +3,7 @@ package com.openrecall.relay.data
 import com.openrecall.relay.core.model.PagedResult
 import com.openrecall.relay.core.ui.toDisplayMessage
 import com.openrecall.relay.data.httpApiError
-import com.openrecall.relay.domain.model.SessionSummary
+import com.openrecall.relay.domain.model.Segment
 import com.openrecall.relay.relay.RelayController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.SharingStarted
@@ -12,12 +12,12 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 
-/** Number of recent sessions surfaced on the Home dashboard. */
-private const val RECENT_SESSION_COUNT = 3
+/** Number of recent recordings surfaced on the Home dashboard. */
+private const val RECENT_SEGMENT_COUNT = 3
 
 /**
  * The Home screen's single source of truth. Fans the relay controller, the
- * server-status poller, and the session list into one [DashboardState].
+ * server-status poller, and the recordings list into one [DashboardState].
  */
 interface DashboardRepository {
     /** Hot, conflated stream of the aggregated dashboard state. Starts
@@ -26,8 +26,8 @@ interface DashboardRepository {
      *  have a value immediately). */
     fun observe(): StateFlow<DashboardState>
 
-    /** Pull-to-refresh: force an immediate status poll AND reset the session
-     *  list to page 1. The [observe] stream re-emits as each child refresh
+    /** Pull-to-refresh: force an immediate status poll AND reset the
+     *  recordings list to page 1. The [observe] stream re-emits as each child refresh
      *  publishes its new value. Default is a no-op so fakes stay compatible;
      *  [DashboardRepositoryImpl] overrides it. */
     suspend fun refresh() {}
@@ -46,7 +46,7 @@ interface DashboardRepository {
 class DashboardRepositoryImpl(
     private val relayController: RelayController,
     private val statusRepo: StatusRepository,
-    private val sessionRepo: SessionRepository,
+    private val segmentRepo: SegmentRepository,
     private val scope: CoroutineScope,
 ) : DashboardRepository {
 
@@ -54,12 +54,12 @@ class DashboardRepositoryImpl(
         combine(
             relayController.state,
             statusRepo.observeStatus(),
-            sessionRepo.observeSessions(),
+            segmentRepo.observeSegments(),
         ) { relay, status, paged ->
             val loaded: DashboardState = DashboardState.Loaded(
                 relay = relay,
                 server = status,
-                recentSessions = paged.recentItems(),
+                recentSegments = paged.recentItems(),
             )
             loaded
         }
@@ -70,16 +70,16 @@ class DashboardRepositoryImpl(
 
     override suspend fun refresh() {
         // Order: refresh the status first (cheap, immediate), then reset the
-        // session list to page 1. Both publish into the combined [flow], so
+        // recordings list to page 1. Both publish into the combined [flow], so
         // the Home screen re-emits as each child refresh lands. Relays run
         // concurrently to the relay controller; we don't touch it here (the
         // manual "Retry connection" action handles relay re-provisioning).
         statusRepo.refresh()
-        sessionRepo.refreshSessions()
+        segmentRepo.refresh()
     }
 }
 
-/** The first [RECENT_SESSION_COUNT] items of a paged list, or empty for any
+/** The first [RECENT_SEGMENT_COUNT] items of a paged list, or empty for any
  *  non-[PagedResult.Page] state (Loading / Exhausted / Error). */
-private fun PagedResult<SessionSummary>.recentItems(): List<SessionSummary> =
-    (this as? PagedResult.Page)?.items?.take(RECENT_SESSION_COUNT) ?: emptyList()
+private fun PagedResult<Segment>.recentItems(): List<Segment> =
+    (this as? PagedResult.Page)?.items?.take(RECENT_SEGMENT_COUNT) ?: emptyList()

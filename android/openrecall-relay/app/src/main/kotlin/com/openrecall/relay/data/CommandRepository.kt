@@ -49,6 +49,17 @@ open class CommandRepository(private val apiProvider: suspend () -> CommandApi) 
 
     open suspend fun ack(commandId: String): Command =
         apiProvider().ack(commandId).toDomain()
+
+    /**
+     * Issue a command to the wearable. [idempotencyKey] must be stable across
+     * retries of the same intent — the server dedupes on it, so a fresh key
+     * on a retry issues the command twice.
+     */
+    open suspend fun create(
+        type: String,
+        idempotencyKey: String,
+        params: Map<String, String> = emptyMap(),
+    ): Command = apiProvider().create(type, idempotencyKey, params).toDomain()
 }
 
 /**
@@ -115,6 +126,39 @@ class CommandsViewModel(
                 _isRefreshing.value = false
             }
         }
+    }
+
+    private val _issueError = MutableStateFlow<String?>(null)
+    /** Non-null when the last [issue] was rejected. A guardrail refusal is a
+     *  legitimate answer ("the device can't do that right now"), so it has to
+     *  be shown rather than swallowed. */
+    val issueError: StateFlow<String?> = _issueError.asStateFlow()
+
+    /**
+     * Issue a command to the wearable.
+     *
+     * The idempotency key is minted per tap: one tap is one intent, and the
+     * server dedupes only within an unacked window, so reusing a key across
+     * taps would silently drop the second one.
+     *
+     * `session_id` is deliberately not supplied — the gateway stamps the live
+     * session at delivery, and an unbound command is simply queued until the
+     * device next connects.
+     */
+    fun issue(type: String) {
+        pollScope.launch {
+            try {
+                repo.create(type = type, idempotencyKey = java.util.UUID.randomUUID().toString())
+                _issueError.value = null
+                refresh()
+            } catch (e: Exception) {
+                _issueError.value = e.message ?: "Couldn't send that command"
+            }
+        }
+    }
+
+    fun dismissIssueError() {
+        _issueError.value = null
     }
 
     suspend fun ack(commandId: String) {

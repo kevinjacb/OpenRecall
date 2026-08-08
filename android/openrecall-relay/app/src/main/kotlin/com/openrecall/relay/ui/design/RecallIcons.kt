@@ -142,6 +142,17 @@ object RecallIcons {
         "ChevronRight",
         "M9 18 l6 -6 -6 -6",
     )
+
+    /**
+     * The overflow affordance — three stacked dots. Filled rather than
+     * stroked: at 18dp a hairline ring around a 1.5dp dot renders as mush.
+     */
+    val More: ImageVector = filled(
+        "More",
+        "M12 4.4 a1.7 1.7 0 1 1 0 3.4 a1.7 1.7 0 0 1 0 -3.4 Z",
+        "M12 10.3 a1.7 1.7 0 1 1 0 3.4 a1.7 1.7 0 0 1 0 -3.4 Z",
+        "M12 16.2 a1.7 1.7 0 1 1 0 3.4 a1.7 1.7 0 0 1 0 -3.4 Z",
+    )
 }
 
 private fun stroked(

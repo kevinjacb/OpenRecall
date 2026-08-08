@@ -29,10 +29,11 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.openrecall.relay.core.ui.RecallTheme
 import com.openrecall.relay.data.RepositoryModule
+import com.openrecall.relay.domain.model.CaptureSettings
+import com.openrecall.relay.domain.model.DeviceStatus
 import com.openrecall.relay.store.Config
 import com.openrecall.relay.ui.copyToClipboard
 import com.openrecall.relay.ui.design.DangerButton
-import com.openrecall.relay.ui.design.PlaceholderTag
 import com.openrecall.relay.ui.design.SecondaryButton
 import com.openrecall.relay.ui.design.RecallGroupLabel
 import com.openrecall.relay.ui.design.RecallIcons
@@ -59,15 +60,23 @@ fun SettingsRoute(
 ) {
     val vm: SettingsViewModel = viewModel(
         factory = viewModelFactory {
-            initializer { SettingsViewModel(RepositoryModule.repos.configuration) }
+            initializer {
+                SettingsViewModel(
+                    RepositoryModule.repos.configuration,
+                    RepositoryModule.repos.relaySettings,
+                )
+            }
         },
     )
     val config by vm.state.collectAsState()
     val capture by vm.capture.collectAsState()
+    val device by vm.device.collectAsState()
     SettingsScreen(
         config = config,
         capture = capture,
+        device = device,
         onCaptureChanged = vm::onCaptureChanged,
+        onRetryCapture = vm::refresh,
         onReconfigure = onReconfigure,
         onForgetDevice = vm::forgetDevice,
         onOpenDevice = onOpenDevice,
@@ -86,8 +95,10 @@ fun SettingsRoute(
 @Composable
 fun SettingsScreen(
     config: Config,
-    capture: CaptureSettings,
+    capture: CaptureUiState,
+    device: DeviceStatus?,
     onCaptureChanged: (CaptureSettings) -> Unit,
+    onRetryCapture: () -> Unit,
     onReconfigure: () -> Unit,
     onForgetDevice: () -> Unit,
     onOpenDevice: () -> Unit,
@@ -121,7 +132,43 @@ fun SettingsScreen(
             SettingsValueRow(
                 label = "Status",
                 value = if (config.provisioned) "Provisioned" else "Not set up",
+            )
+            // Connection freshness is the honest signal here and it leads.
+            // The firmware keeps sending gap-marker packets while its voice
+            // detector suppresses silence, so packets flowing means the
+            // device is alive, not that anyone is talking — the two lines
+            // below separate "alive and hearing speech", "alive in a quiet
+            // room" and "gone".
+            SettingsValueRow(
+                label = "Link",
+                value = linkLine(device),
+            )
+            SettingsValueRow(
+                label = "Last speech",
+                value = device?.lastTranscriptAgeS?.let { relativeAge(it) } ?: "—",
+            )
+            SettingsValueRow(
+                label = "Battery",
+                value = batteryLine(device),
+                // Ships as a fixed server-side placeholder: battery sensing
+                // does not exist at any layer of this product. Tagged rather
+                // than rendered as a fact, because a plausible-looking
+                // percentage is worse than a blank if anyone acts on it.
+                onClick = null,
+            )
+            SettingsValueRow(
+                label = "Firmware",
+                value = device?.firmwareVersion ?: "Not reported",
                 last = true,
+            )
+        }
+        if (device != null && !device.measured) {
+            Text(
+                text = "The wearable reports no telemetry yet, so battery and firmware " +
+                    "are placeholders. Everything above them is measured.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.grey,
+                modifier = Modifier.padding(top = 10.dp),
             )
         }
 
@@ -145,37 +192,10 @@ fun SettingsScreen(
         }
 
         RecallGroupLabel("Capture", Modifier.padding(top = 26.dp, bottom = 12.dp))
-        SettingsGroup {
-            SettingsToggleRow(
-                title = "Capture automatically",
-                subtitle = "Start a session whenever the device hears speech.",
-                checked = capture.autoCapture,
-                onCheckedChange = { onCaptureChanged(capture.copy(autoCapture = it)) },
-                trailing = { PlaceholderTag() },
-            )
-            SettingsToggleRow(
-                title = "Wake word",
-                subtitle = "Only listen after “Hey OpenRecall”.",
-                checked = capture.wakeWord,
-                onCheckedChange = { onCaptureChanged(capture.copy(wakeWord = it)) },
-                trailing = { PlaceholderTag() },
-            )
-            SettingsToggleRow(
-                title = "Redact names on device",
-                subtitle = "Strip identifiers before audio leaves the phone.",
-                checked = capture.redactNames,
-                onCheckedChange = { onCaptureChanged(capture.copy(redactNames = it)) },
-                last = true,
-                trailing = { PlaceholderTag() },
-            )
-        }
-        Text(
-            text = "These preferences are saved on this phone. The firmware and relay " +
-                "don't expose controls for them yet, so they don't change capture " +
-                "behaviour today.",
-            style = MaterialTheme.typography.bodySmall,
-            color = colors.grey,
-            modifier = Modifier.padding(top = 10.dp),
+        CaptureSection(
+            capture = capture,
+            onCaptureChanged = onCaptureChanged,
+            onRetry = onRetryCapture,
         )
 
         RecallGroupLabel("Diagnostics", Modifier.padding(top = 26.dp, bottom = 12.dp))
@@ -242,6 +262,142 @@ fun SettingsScreen(
             },
         )
     }
+}
+
+/**
+ * The three capture toggles and the retention line.
+ *
+ * These write to the **relay**, not to this phone. That matters: a command
+ * only reaches the wearable while it is connected, so the server holds the
+ * desired state and converges the device on it at the next reconnect. The
+ * toggles are therefore meaningful with the device switched off, which is
+ * exactly when a phone-local preference would have been a no-op.
+ *
+ * Until the document loads the switches are inert — showing defaults the
+ * server might not agree with would be a lie the user could act on.
+ */
+@Composable
+private fun CaptureSection(
+    capture: CaptureUiState,
+    onCaptureChanged: (CaptureSettings) -> Unit,
+    onRetry: () -> Unit,
+) {
+    val colors = RecallTheme.colors
+    val settings = capture.settings
+    if (settings == null) {
+        SettingsGroup {
+            SettingsValueRow(
+                label = "Capture",
+                value = if (capture.loading) "Loading…" else "Unavailable",
+                last = true,
+            )
+        }
+        if (!capture.loading) {
+            Text(
+                text = capture.error ?: "Couldn't read the relay's capture settings.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.grey,
+                modifier = Modifier.padding(top = 10.dp),
+            )
+            SecondaryButton(
+                label = "Try again",
+                onClick = onRetry,
+                modifier = Modifier.padding(top = 10.dp),
+            )
+        }
+        return
+    }
+
+    val c = settings.capture
+    SettingsGroup {
+        SettingsToggleRow(
+            title = "Microphone",
+            subtitle = "Let the wearable listen. Turning this off stops capture at " +
+                "the device and at the relay.",
+            checked = c.audioEnabled,
+            onCheckedChange = { onCaptureChanged(c.copy(audioEnabled = it)) },
+        )
+        SettingsToggleRow(
+            title = "Keep audio",
+            subtitle = "Save the recordings themselves. Off still transcribes — you " +
+                "get the text, without anything to play back.",
+            checked = c.saveAudio,
+            onCheckedChange = { onCaptureChanged(c.copy(saveAudio = it)) },
+        )
+        SettingsToggleRow(
+            title = "Vision",
+            subtitle = "Process images from the wearable's camera.",
+            checked = c.visionEnabled,
+            onCheckedChange = { onCaptureChanged(c.copy(visionEnabled = it)) },
+        )
+        SettingsValueRow(
+            label = "Audio kept for",
+            value = retentionLine(settings.retention.audioDays),
+            last = true,
+        )
+    }
+    Text(
+        text = retentionNote(settings.retention.audioDays) +
+            " These settings live on the relay, so they apply even while your " +
+            "OpenRecall is offline.",
+        style = MaterialTheme.typography.bodySmall,
+        color = colors.grey,
+        modifier = Modifier.padding(top = 10.dp),
+    )
+    if (capture.error != null) {
+        Text(
+            text = capture.error,
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.danger,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+    }
+}
+
+private fun retentionLine(days: Int): String = when {
+    days <= 0 -> "Not kept"
+    days == 1 -> "1 day"
+    else -> "$days days"
+}
+
+/**
+ * Retention is tiered and the difference is not what a user assumes: audio
+ * expires, the transcript and the memories drawn from it do not. Saying so
+ * plainly is the point of this line.
+ */
+private fun retentionNote(days: Int): String = if (days <= 0) {
+    "Audio isn't kept at all; transcripts and memories are."
+} else {
+    "Recordings are deleted after ${retentionLine(days).lowercase()}. " +
+        "Their transcripts and memories are kept."
+}
+
+/** "Connected · heard 4s ago", or why not. */
+private fun linkLine(device: DeviceStatus?): String {
+    if (device == null) return "—"
+    if (!device.relayConnected) return "Not connected"
+    val age = device.lastPacketAgeS ?: return "Connected"
+    return if (device.isFresh()) {
+        "Connected · ${relativeAge(age)}"
+    } else {
+        // Packets flow continuously while the device is awake, so a long gap
+        // means it stopped talking to us — the failure worth surfacing.
+        "Connected · silent for ${relativeAge(age)}"
+    }
+}
+
+private fun batteryLine(device: DeviceStatus?): String {
+    val pct = device?.batteryPct ?: return "Not reported"
+    val rendered = "${(pct * 100).toInt()}%"
+    // The tag is load-bearing: without it the number reads as measured.
+    return if (device.measured) rendered else "$rendered (estimated)"
+}
+
+/** "4s ago" / "3 min ago" / "2 h ago" for an age in seconds. */
+private fun relativeAge(seconds: Double): String = when {
+    seconds < 60 -> "${seconds.toInt()}s ago"
+    seconds < 3600 -> "${(seconds / 60).toInt()} min ago"
+    else -> "${(seconds / 3600).toInt()} h ago"
 }
 
 @Composable
