@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # scripts/install_idf_5.1.6.sh — one-shot install + reconfigure for the
-# IDF 5.1.6 downgrade path. See ~/.claude/plans/wobbly-tickling-salamander.md
-# (Context section) for the full rationale.
+# IDF 5.1.6 downgrade path. See the firmware README for the rationale.
 #
 # This script:
 #   1. Clones ESP-IDF v5.1.6 to ~/esp/esp-idf-v5.1.6/ (idempotent)

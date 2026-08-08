@@ -41,6 +41,9 @@ android/local.properties
 # --- SDD scratch (progress ledger is git-ignored scratch) ---
 .superpowers/sdd/
 
+# --- Internal AI-assisted planning docs (kept local, not published) ---
+docs/superpowers/
+
 # --- Editor ---
 .idea/
 .vscode/

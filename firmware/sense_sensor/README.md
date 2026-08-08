@@ -50,8 +50,7 @@ idf.py -p /dev/cu.usbmodem* flash monitor
 We pin to **ESP-IDF v5.1.6** (NimBLE 1.6) — the last 5.x line that's been
 heavily field-tested on Xtensa LX7 + S3. IDF 6.0.1 (NimBLE 1.7) hits a
 `xQueueSemaphoreTake uxItemSize == 0` assert on the first BLE connect that
-isn't yet fixed upstream; see `~/.claude/plans/wobbly-tickling-salamander.md`
-for the full analysis. Once the bring-up is live end-to-end we can revisit
+isn't yet fixed upstream. Once the bring-up is live end-to-end we can revisit
 IDF 6 with more time + a real debugger.
 
 Provision the server key first: copy the hex `run_gateway.py` prints on startup into
