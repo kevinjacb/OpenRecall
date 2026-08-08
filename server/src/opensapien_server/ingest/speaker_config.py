@@ -43,8 +43,8 @@ class SpeakerConfig(BaseModel):
     embed_base_url: str | None = None
     embed_api_key: str | None = None
 
-    confirm_threshold: float = 0.7
-    tentative_threshold: float = 0.55
+    confirm_threshold: float = 0.78
+    tentative_threshold: float = 0.70
     min_speech_ms: int = 500
     cluster_threshold: float = 0.65
     corroborate_n: int = 3
@@ -71,6 +71,13 @@ class SpeakerConfig(BaseModel):
             raise ValueError(
                 f"confirm_threshold ({self.confirm_threshold}) must be > "
                 f"tentative_threshold ({self.tentative_threshold})"
+            )
+        if self.cluster_threshold >= self.tentative_threshold:
+            raise ValueError(
+                f"cluster_threshold ({self.cluster_threshold}) must be < "
+                f"tentative_threshold ({self.tentative_threshold}); otherwise a "
+                f"distinct voice in [cluster, tentative) is tentatively absorbed "
+                f"into an existing speaker instead of clustering"
             )
         for name in (
             "min_speech_ms", "corroborate_n", "corroborate_window_s",

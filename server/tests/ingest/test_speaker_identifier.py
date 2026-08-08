@@ -86,7 +86,7 @@ def test_identify_confirmed_match_when_cosine_above_confirm_threshold():
 def test_identify_tentative_match_does_not_touch_centroid():
     c = e0(8)
     reg = _reg_with_speaker("s1", c)
-    near = _vec_cos_e0(8, 0.6)  # cosine 0.6 -> tentative band [0.55, 0.7)
+    near = _vec_cos_e0(8, 0.72)  # cosine 0.72 -> tentative band [0.70, 0.78)
     ident = SpeakerIdentifier(_EmbedReturns(near), reg, SpeakerConfig())
     a = ident.identify(_pcm(), 16000)
     assert a is not None and a.assignment == "tentative"
@@ -98,9 +98,10 @@ def test_identify_tentative_match_does_not_touch_centroid():
 def test_identify_promotes_tentative_to_confirmed_after_n_agreeing():
     c = e0(8)
     reg = _reg_with_speaker("s1", c)
-    near = _vec_cos_e0(8, 0.6)
+    near = _vec_cos_e0(8, 0.72)  # cosine 0.72 -> tentative band [0.70, 0.78)
     ident = SpeakerIdentifier(_EmbedReturns(near), reg, SpeakerConfig(
-        corroborate_n=3, confirm_threshold=0.7, tentative_threshold=0.55))
+        corroborate_n=3, confirm_threshold=0.78, tentative_threshold=0.70,
+        cluster_threshold=0.6))
     outs = [ident.identify(_pcm(), 16000) for _ in range(3)]
     assert outs[-1].assignment == "confirmed"
     assert reg.ring_buffer("s1")  # promoted -> folded into ring buffer
@@ -109,7 +110,7 @@ def test_identify_promotes_tentative_to_confirmed_after_n_agreeing():
 def test_identify_falling_below_tentative_does_not_assign():
     c = e0(8)
     reg = _reg_with_speaker("s1", c)
-    far = _vec_cos_e0(8, 0.3)  # cosine 0.3 < 0.55 -> below tentative
+    far = _vec_cos_e0(8, 0.3)  # cosine 0.3 < 0.70 -> below tentative
     ident = SpeakerIdentifier(_EmbedReturns(far), reg, SpeakerConfig())
     assert ident.identify(_pcm(), 16000) is None  # fall-through to clustering
 
@@ -212,3 +213,29 @@ def test_two_close_cold_start_clusters_hold_without_auto_you():
     # both minted, neither auto-tagged "You" (counts too close)
     wearers = [s for s in reg.list_speakers() if s.is_wearer]
     assert wearers == []
+
+
+def test_second_distinct_voice_mints_own_speaker_not_absorbed_into_wearer():
+    # RC5 regression: a 2nd voice at cosine ~0.6 to the wearer must mint as its
+    # OWN speaker, not be tentatively absorbed into the wearer's centroid. With
+    # tentative_threshold=0.70 (the new default), 0.6 < 0.70 falls through to
+    # clustering; with the old default 0.55 it was >= tentative and folded into
+    # the wearer (the "all voices tagged You" bug).
+    dim = 8
+    wearer_c = e0(dim)
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    reg.add_speaker(Speaker(
+        speaker_id="you", display_name="You", is_wearer=True,
+        enrollment_status="confirmed", centroid=wearer_c, embedding_model="fake",
+        dim=dim, turn_count=5, first_seen="2026-07-26T00:00:00+00:00",
+        updated_at="2026-07-26T00:00:00+00:00",
+    ))
+    second = _vec_cos_e0(dim, 0.6)  # cosine 0.6 with the wearer's e0 centroid
+    ident = SpeakerIdentifier(_EmbedReturns(second), reg, SpeakerConfig(corroborate_n=3))
+    outs = [ident.identify(_pcm(), 16000) for _ in range(3)]
+    speakers = reg.list_speakers()
+    new = [s for s in speakers if s.speaker_id != "you"]
+    assert new, "expected the 2nd distinct voice to mint its own speaker"
+    assert not new[0].is_wearer
+    # The wearer's centroid is unchanged — the 2nd voice was not folded in.
+    assert reg.centroid("you") == wearer_c
