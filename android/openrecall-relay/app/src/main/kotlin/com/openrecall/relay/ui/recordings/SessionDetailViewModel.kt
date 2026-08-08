@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.openrecall.relay.core.RecallLog
 import com.openrecall.relay.core.result.Outcome
 import com.openrecall.relay.core.ui.toDisplayMessage
+import com.openrecall.relay.core.util.AUTO_REFRESH_INTERVAL_MS
+import com.openrecall.relay.core.util.launchAutoRefresh
 import com.openrecall.relay.data.MemoryAtom
 import com.openrecall.relay.data.MemoryOutcome
 import com.openrecall.relay.data.MemoryRepository
@@ -18,6 +20,7 @@ import com.openrecall.relay.domain.model.SessionId
 import com.openrecall.relay.domain.model.SessionSummary
 import com.openrecall.relay.domain.model.TranscriptChunk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -139,6 +142,23 @@ class SessionDetailViewModel(
     /** Guards against re-prompting within this session once the user has acted. */
     private var youPromptShown = false
 
+    // The last event list that actually loaded, kept so a re-collection (a
+    // refresh) doesn't blank the timeline back to LoadedSummary while the
+    // new fetch is in flight — at the auto-refresh cadence that would be a
+    // once-a-second flicker. Written on the flow's dispatcher, read by
+    // `reduce` on the same one; @Volatile guards a future dispatcher change.
+    @Volatile
+    private var lastEvents: List<CaptureEvent>? = null
+
+    private var autoRefreshJob: Job? = null
+
+    // True between an auto-refresh tick and the first state emission it
+    // produces. Ticks are skipped while it is set, so a slow server can't
+    // make flatMapLatest cancel each in-flight fetch a second later and
+    // starve the screen of updates entirely.
+    @Volatile
+    private var autoTickPending = false
+
     val state: StateFlow<SessionDetailUiState> = revision
         .flatMapLatest {
             // Flow is covariant, so a non-null events flow binds to a nullable-
@@ -151,13 +171,18 @@ class SessionDetailViewModel(
             combine(
                 repo.observeSession(id),
                 eventsOrPending.onStart { emit(null) },
-            ) { summary, events -> reduce(summary, events) }
-                // Clear the refresh flag on the first emission of this (re-)
+            ) { summary, events ->
+                if (events is Outcome.Success) lastEvents = events.value
+                reduce(summary, events, lastEvents)
+            }
+                // Clear the refresh flags on the first emission of this (re-)
                 // collection — the summary fetch has landed, the spinner can
-                // dismiss. A no-op for the initial collection (flag is false).
+                // dismiss and the next auto tick is allowed. A no-op for the
+                // initial collection (flags are false).
                 // Also scan the loaded events for a wearer needing confirmation.
                 .onEach { ui ->
                     if (_isRefreshing.value) _isRefreshing.value = false
+                    autoTickPending = false
                     (ui as? SessionDetailUiState.Loaded)?.events?.let {
                         seedCacheFromSession(it)
                         maybePromptYouConfirmation(it)
@@ -177,6 +202,41 @@ class SessionDetailViewModel(
         _isRefreshing.value = true
         revision.value = revision.value + 1
         loadMemories()
+    }
+
+    /**
+     * Start the silent auto-refresh loop (see [AUTO_REFRESH_INTERVAL_MS]):
+     * the transcript keeps filling in while the screen is open. Idempotent;
+     * the route starts it on `ON_RESUME` and stops it on `ON_PAUSE`.
+     */
+    fun startAutoRefresh(intervalMs: Long = AUTO_REFRESH_INTERVAL_MS) {
+        if (autoRefreshJob?.isActive == true) return
+        autoRefreshJob = viewModelScope.launchAutoRefresh(intervalMs) { autoRefreshTick() }
+    }
+
+    /** Stop the auto-refresh loop. Safe to call when it isn't running. */
+    fun stopAutoRefresh() {
+        autoRefreshJob?.cancel()
+        autoRefreshJob = null
+    }
+
+    /**
+     * One silent tick: re-collect summary + events (and the session's
+     * memories) exactly as [onRefresh] does, but without raising
+     * [isRefreshing] — no pull-to-refresh spinner appears, and the timeline
+     * stays on screen throughout (see [reduce]'s cached events). Skipped
+     * while a manual refresh or a previous tick is still outstanding.
+     */
+    private fun autoRefreshTick() {
+        if (_isRefreshing.value || autoTickPending) return
+        autoTickPending = true
+        revision.value = revision.value + 1
+        loadMemories()
+    }
+
+    override fun onCleared() {
+        stopAutoRefresh()
+        super.onCleared()
     }
 
     /**
@@ -278,16 +338,31 @@ class SessionDetailViewModel(
     }
 }
 
+/**
+ * Fold a summary + (possibly pending or failed) event fetch into UI state.
+ *
+ * [cachedEvents] is the last timeline that loaded, if any. It only matters on
+ * a re-fetch: while the new events are pending — or if they fail — the
+ * previously loaded timeline keeps rendering rather than collapsing to
+ * [SessionDetailUiState.LoadedSummary]. Stale-but-visible beats a blank
+ * screen once a second, and the fresh summary still renders above it. On the
+ * initial load there is nothing cached, so the progressive
+ * LoadedSummary → Loaded sequence is unchanged.
+ */
 private fun reduce(
     summary: Outcome<SessionDetails>,
     events: Outcome<List<CaptureEvent>>?,
+    cachedEvents: List<CaptureEvent>? = null,
 ): SessionDetailUiState = when (summary) {
     is Outcome.Failure -> SessionDetailUiState.Failed(summary.error.toDisplayMessage())
     is Outcome.Success -> {
         val s = summary.value.summary
         when (events) {
-            null -> SessionDetailUiState.LoadedSummary(s) // events still pending
-            is Outcome.Failure -> SessionDetailUiState.LoadedSummary(s) // events failed; summary stands
+            // Pending, or failed and the summary stands — fall back to the
+            // last loaded timeline when there is one.
+            null, is Outcome.Failure ->
+                cachedEvents?.let { SessionDetailUiState.Loaded(s, it) }
+                    ?: SessionDetailUiState.LoadedSummary(s)
             is Outcome.Success -> SessionDetailUiState.Loaded(s, events.value)
         }
     }

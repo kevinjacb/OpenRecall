@@ -2,6 +2,8 @@ package com.openrecall.relay.ui.memory
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.openrecall.relay.core.util.AUTO_REFRESH_INTERVAL_MS
+import com.openrecall.relay.core.util.launchAutoRefresh
 import com.openrecall.relay.data.MemoryAtom
 import com.openrecall.relay.data.MemoryOutcome
 import com.openrecall.relay.data.MemoryRepository
@@ -122,6 +124,63 @@ class MemoryViewModel(
             sessionId != null -> loadSession(sessionId)
             else -> Unit // nothing to re-run yet
         }
+    }
+
+    private var autoRefreshJob: Job? = null
+
+    /**
+     * Start the silent auto-refresh loop (see [AUTO_REFRESH_INTERVAL_MS]), so
+     * atoms the extractor writes while the tab is open appear on their own.
+     * Idempotent; the route starts it on `ON_RESUME`, stops it on `ON_PAUSE`.
+     */
+    fun startAutoRefresh(intervalMs: Long = AUTO_REFRESH_INTERVAL_MS) {
+        if (autoRefreshJob?.isActive == true) return
+        autoRefreshJob = viewModelScope.launchAutoRefresh(intervalMs) { autoRefreshTick() }
+    }
+
+    /** Stop the auto-refresh loop. Safe to call when it isn't running. */
+    fun stopAutoRefresh() {
+        autoRefreshJob?.cancel()
+        autoRefreshJob = null
+    }
+
+    /**
+     * One silent tick: re-run whatever the screen is currently showing — the
+     * last search, or the deep-linked session's atoms. Unlike [onRefresh] it
+     * never sets [MemoryState.loading], because that swaps the list for a
+     * spinner; at this cadence the screen would be a strobe. A failed tick is
+     * dropped rather than shown: the visible atoms stay, and a persistent
+     * problem still surfaces through a user-initiated search or refresh.
+     *
+     * Nothing runs before the first search — with no query and no session
+     * there is nothing to poll (the endpoint has no "list all" mode).
+     */
+    private suspend fun autoRefreshTick() {
+        val s = _state.value
+        if (s.loading) return
+        // Fall back to the box contents so a tick also retries a search that
+        // errored (which never sets `lastQuery`).
+        val query = s.lastQuery.ifEmpty { s.query.trim() }
+        val sessionId = lastSessionId
+        val result = when {
+            query.isNotEmpty() -> repo.search(query)
+            sessionId != null -> repo.sessionAtoms(sessionId)
+            else -> return
+        }
+        if (result is MemoryOutcome.Success) {
+            _state.update {
+                it.copy(
+                    atoms = result.atoms,
+                    lastQuery = if (query.isNotEmpty()) query else it.lastQuery,
+                    errorMessage = null,
+                )
+            }
+        }
+    }
+
+    override fun onCleared() {
+        stopAutoRefresh()
+        super.onCleared()
     }
 
     private companion object {

@@ -37,12 +37,24 @@ interface SessionRepository {
      *  call after the list is [PagedResult.Exhausted] is a no-op. */
     suspend fun loadMoreSessions()
 
-    /** Reset to page 1 and re-fetch (a pull-to-refresh / "update" gesture).
-     *  Clears the accumulated list + cursor + exhaustion, emits
-     *  [PagedResult.Loading], then loads the first page. Default is a
-     *  no-op so fakes that don't model pagination stay compatible; the
-     *  real impl + [FakeSessionRepository] override it. */
-    suspend fun refreshSessions() {}
+    /**
+     * Re-fetch the newest sessions.
+     *
+     * With [silent] `false` (a pull-to-refresh / "update" gesture) this
+     * resets to page 1: it clears the accumulated list + cursor + exhaustion,
+     * emits [PagedResult.Loading], then loads the first page.
+     *
+     * With [silent] `true` (the auto-refresh tick) nothing is cleared and no
+     * [PagedResult.Loading] is emitted: page 1 is fetched and merged into the
+     * accumulated list — new sessions land at the front, already-loaded ones
+     * are updated in place — so a screen refreshing every second neither
+     * flashes a spinner, nor discards pages the user scrolled in, nor
+     * replaces the list with an error when a tick fails.
+     *
+     * Default is a no-op so fakes that don't model pagination stay
+     * compatible; the real impl + [FakeSessionRepository] override it.
+     */
+    suspend fun refreshSessions(silent: Boolean = false) {}
 
     /** Per-session detail (summary + events). Emits once on
      *  subscribe; Phase 5 backs this with `GET /sessions/{id}`. */
@@ -147,13 +159,19 @@ class FakeSessionRepository : SessionRepository {
         }
     }
 
-    override suspend fun refreshSessions() {
+    /**
+     * Re-serve the scripted pages from the start. [silent] only suppresses
+     * the [PagedResult.Loading] emission — the fake has no server to diff
+     * against, so it re-plays its queue either way (the real impl merges;
+     * see [SessionRepositoryImpl]).
+     */
+    override suspend fun refreshSessions(silent: Boolean) {
         refreshCount++
         accumulated.clear()
         exhausted = false
         queued.clear()
         queued.addAll(queuedOriginal)
-        pages.value = PagedResult.Loading
+        if (!silent) pages.value = PagedResult.Loading
         if (queuedOriginal.isEmpty()) return
         loadMoreSessions()
     }

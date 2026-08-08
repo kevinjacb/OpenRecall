@@ -5,9 +5,12 @@ import androidx.lifecycle.viewModelScope
 import com.openrecall.relay.core.model.ApiError
 import com.openrecall.relay.core.model.PagedResult
 import com.openrecall.relay.core.ui.toDisplayMessage
+import com.openrecall.relay.core.util.AUTO_REFRESH_INTERVAL_MS
+import com.openrecall.relay.core.util.launchAutoRefresh
 import com.openrecall.relay.data.SessionRepository
 import com.openrecall.relay.domain.model.SessionSummary
 import com.openrecall.relay.data.httpApiError
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -106,6 +109,43 @@ class RecordingsViewModel(
                 _isRefreshing.value = false
             }
         }
+    }
+
+    private var autoRefreshJob: Job? = null
+
+    /**
+     * Start the silent auto-refresh loop (see [AUTO_REFRESH_INTERVAL_MS]).
+     * Idempotent — a second call while the loop is running is a no-op. The
+     * route starts this on `ON_RESUME` and stops it on `ON_PAUSE`, so the
+     * polling is foreground- and screen-scoped.
+     */
+    fun startAutoRefresh(intervalMs: Long = AUTO_REFRESH_INTERVAL_MS) {
+        if (autoRefreshJob?.isActive == true) return
+        autoRefreshJob = viewModelScope.launchAutoRefresh(intervalMs) { autoRefreshTick() }
+    }
+
+    /** Stop the auto-refresh loop. Safe to call when it isn't running. */
+    fun stopAutoRefresh() {
+        autoRefreshJob?.cancel()
+        autoRefreshJob = null
+    }
+
+    /** One silent tick: merge the newest page in. Skipped while a page load
+     *  or a pull-to-refresh is in flight, so ticks never queue up behind a
+     *  slow request or fight a user gesture. */
+    private suspend fun autoRefreshTick() {
+        if (loading || _isRefreshing.value) return
+        loading = true
+        try {
+            repo.refreshSessions(silent = true)
+        } finally {
+            loading = false
+        }
+    }
+
+    override fun onCleared() {
+        stopAutoRefresh()
+        super.onCleared()
     }
 
     private fun loadMore() {
