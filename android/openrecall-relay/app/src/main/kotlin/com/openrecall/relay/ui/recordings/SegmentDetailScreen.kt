@@ -72,6 +72,7 @@ import com.openrecall.relay.ui.design.RecallIcons
 import com.openrecall.relay.ui.design.RecallTextField
 import com.openrecall.relay.ui.design.WaveformScrubber
 import com.openrecall.relay.ui.design.WaveformStrip
+import com.openrecall.relay.ui.design.placeholderPeaks
 
 /** Bars in the scrubber. The server publishes fixed 500 ms buckets and the
  *  client downsamples, so this is a display constant and nothing else. */
@@ -332,9 +333,10 @@ private fun Body(
     // so open at the bottom. Only once per recording — after that the position
     // is the reader's, and later events must not yank them back down.
     var landedAtLatest by remember { mutableStateOf(false) }
-    // Fixed items ahead of the transcript in the LazyColumn: meta, player,
-    // you-confirm, transcript-label, plus memories when present.
-    val fixedItemCount = 4 + if (memories.isNotEmpty()) 1 else 0
+    // Fixed items ahead of the transcript inside the scroller: the transcript
+    // label, plus memories when this recording produced any. Everything above
+    // that (meta, player, you-confirm) is pinned outside the scroller.
+    val fixedItemCount = 1 + if (memories.isNotEmpty()) 1 else 0
     LaunchedEffect(events.size) {
         if (!landedAtLatest && events.isNotEmpty()) {
             // The list clamps to its max scroll, so targeting the last index
@@ -344,78 +346,80 @@ private fun Body(
         }
     }
 
-
-    PullToRefreshBox(
-        isRefreshing = isRefreshing,
-        onRefresh = onRefresh,
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        // Keyed by the stable event id — NOT by text, which would collide on
-        // two transcripts with identical content and crash the LazyColumn.
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp),
-        ) {
-            item(key = "meta") {
-                Text(
-                    text = metaLine(summary),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.grey,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-
-            item(key = "player") {
-                PlayerCard(
-                    summary = summary,
-                    waveform = waveform,
-                    audio = audio,
-                    modifier = Modifier.padding(top = 16.dp),
-                )
-            }
-
+    Column(Modifier.fillMaxSize()) {
+        // Pinned above the scroller. The transcript opens at its latest hop,
+        // which used to carry the player off-screen with it — the player is the
+        // one control you always want reachable, so it does not scroll.
+        Column(Modifier.padding(horizontal = 20.dp)) {
+            Text(
+                text = metaLine(summary),
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.grey,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            PlayerCard(
+                summary = summary,
+                waveform = waveform,
+                audio = audio,
+                modifier = Modifier.padding(top = 16.dp),
+            )
             // One-time "is this you?" prompt. Composes nothing unless the
             // state is Prompting, so it costs no space when idle.
-            item(key = "you-confirm") {
-                YouConfirmationBanner(
-                    state = youConfirmation,
-                    onConfirm = onConfirmYou,
-                    onDismiss = onDismissYouConfirmation,
-                )
-            }
+            YouConfirmationBanner(
+                state = youConfirmation,
+                onConfirm = onConfirmYou,
+                onDismiss = onDismissYouConfirmation,
+            )
+        }
 
-            if (memories.isNotEmpty()) {
-                item(key = "memories") {
-                    MemoriesSection(memories, Modifier.padding(top = 26.dp))
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = onRefresh,
+            modifier = Modifier.fillMaxWidth().weight(1f),
+        ) {
+            // Keyed by the stable event id — NOT by text, which would collide on
+            // two transcripts with identical content and crash the LazyColumn.
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp),
+            ) {
+                // Memories scroll with the transcript rather than sitting in the
+                // pinned block: the chips wrap to as many lines as the text
+                // needs, and an unbounded pinned block would squeeze the
+                // transcript down to nothing on a chatty recording.
+                if (memories.isNotEmpty()) {
+                    item(key = "memories") {
+                        MemoriesSection(memories, Modifier.padding(top = 26.dp))
+                    }
                 }
-            }
 
-            item(key = "transcript-label") {
-                Text(
-                    text = "TRANSCRIPT",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.slate,
-                    modifier = Modifier.padding(top = 28.dp, bottom = 14.dp),
-                )
-            }
-
-            if (events.isEmpty()) {
-                item(key = "events-empty") {
-                    EmptyState(
-                        title = "No transcript yet",
-                        body = "This recording hasn't produced any transcript lines.",
+                item(key = "transcript-label") {
+                    Text(
+                        text = "TRANSCRIPT",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.slate,
+                        modifier = Modifier.padding(top = 28.dp, bottom = 14.dp),
                     )
                 }
-            } else {
-                items(events, key = { it.id }) { event ->
-                    EventRow(
-                        event = event,
-                        speakerCache = speakerCache,
-                        personLabels = labels,
-                        onRename = onRenameSpeaker,
-                        onReassign = onReassignSpeaker,
-                    )
+
+                if (events.isEmpty()) {
+                    item(key = "events-empty") {
+                        EmptyState(
+                            title = "No transcript yet",
+                            body = "This recording hasn't produced any transcript lines.",
+                        )
+                    }
+                } else {
+                    items(events, key = { it.id }) { event ->
+                        EventRow(
+                            event = event,
+                            speakerCache = speakerCache,
+                            personLabels = labels,
+                            onRename = onRenameSpeaker,
+                            onReassign = onReassignSpeaker,
+                        )
+                    }
                 }
             }
         }
@@ -456,7 +460,29 @@ private fun PlayerCard(
     } else {
         0f
     }
-    val bars = remember(waveform) { waveform?.resampled(WAVEFORM_BARS).orEmpty() }
+    // Real peaks when the server published them. When it didn't but the audio
+    // still plays, the deterministic placeholder curve stands in — the strip is
+    // then a transport you can drag rather than a decoration you can't.
+    val bars = remember(waveform, summary.id, summary.hasAudio) {
+        waveform?.resampled(WAVEFORM_BARS)?.takeIf { it.isNotEmpty() }
+            ?: if (summary.hasAudio) placeholderPeaks(summary.id.value, WAVEFORM_BARS) else emptyList()
+    }
+
+    // Where the finger is mid-drag, or null when nobody is scrubbing. While it
+    // is set it wins over the player's own position for both the playhead and
+    // the elapsed label, so the drag reads as continuous instead of fighting
+    // the 200 ms position poll. The decoder is only asked to seek on release —
+    // a drag across the strip would otherwise fire a seek per touch event.
+    var scrubFraction by remember { mutableStateOf<Float?>(null) }
+    // Scrubbing needs a length to map the fraction onto, but *not* the player's
+    // own: it reports zero for a stream with no length in its container. The
+    // segment's duration, derived from event timestamps, is the one that always
+    // exists — `durationMs` above already prefers the decoder's when it has one.
+    val seekable = summary.hasAudio && durationMs > 0
+    val displayProgress = scrubFraction ?: progress
+    val displayPositionMs = scrubFraction
+        ?.let { (durationMs * it).toLong() }
+        ?: playback.positionMs
 
     RecallCard(modifier = modifier, contentPadding = PaddingValues(16.dp)) {
         Row(
@@ -493,8 +519,12 @@ private fun PlayerCard(
                 if (bars.isNotEmpty()) {
                     WaveformScrubber(
                         peaks = bars,
-                        progress = progress,
-                        onSeek = player::seekToFraction,
+                        progress = displayProgress,
+                        onScrub = if (seekable) ({ scrubFraction = it }) else null,
+                        onScrubEnd = { fraction ->
+                            player.seekTo((durationMs * fraction).toLong())
+                            scrubFraction = null
+                        },
                     )
                 } else {
                     WaveformStrip(seed = summary.id.value)
@@ -504,7 +534,7 @@ private fun PlayerCard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Text(
-                        formatHmMs(playback.positionMs),
+                        formatHmMs(displayPositionMs),
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.greyFaint,
                     )
