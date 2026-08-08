@@ -1,6 +1,5 @@
 package com.opensapien.relay.core.ui
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -20,12 +19,20 @@ import androidx.compose.runtime.ReadOnlyComposable
  *
  * Dynamic colour is off: the brand must not drift with the user's wallpaper.
  *
- * `darkTheme` is exposed for tests and previews; production callers omit it
- * and let the system flag decide.
+ * **The app is light-only.** `darkTheme` defaults to `false` rather than
+ * `isSystemInDarkTheme()`, so a phone in dark mode still gets the light comp.
+ * The dark palette is kept and still reachable by passing `darkTheme = true`
+ * (tests and previews do), but nothing in production sets it.
+ *
+ * Forcing light here is only one of three layers — the platform window theme
+ * (`res/values/themes.xml`, with no `values-night` counterpart and force-dark
+ * disabled) and the system-bar icon style (`enableEdgeToEdge` in the
+ * Activities) have to agree, or you get a light app under dark system bars
+ * whose icons are invisible.
  */
 @Composable
 fun OpenSapienTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val sense = if (darkTheme) SenseColors.dark() else SenseColors.light()

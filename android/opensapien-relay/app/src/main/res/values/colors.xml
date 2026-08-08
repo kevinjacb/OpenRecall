@@ -3,7 +3,9 @@
     <!-- Mirrors SenseColors.canvas in core/ui/Color.kt. Used only as the
          window background, so the frame drawn before Compose composes is the
          same colour as the screen it's about to draw — otherwise every cold
-         start flashes white (or, on the platform default, near-black). -->
+         start flashes white (or, on the platform default, near-black).
+
+         There is no dark counterpart: the app is light-only, in every system
+         theme. See values/themes.xml. -->
     <color name="canvas">#FBFAF8</color>
-    <color name="canvas_dark">#121212</color>
 </resources>
