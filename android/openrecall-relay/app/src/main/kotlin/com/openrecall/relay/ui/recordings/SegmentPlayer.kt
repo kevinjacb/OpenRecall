@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.SystemClock
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -43,6 +44,11 @@ class SegmentPlayer(private val context: Context) {
 
     private var player: MediaPlayer? = null
 
+    /** Non-null while a seek is in flight; see [seekTo]. */
+    private var seekTargetMs: Long? = null
+    /** When that seek was issued, for the [SEEK_TIMEOUT_MS] escape hatch. */
+    private var seekIssuedAt: Long = 0
+
     var state by mutableStateOf(PlaybackState())
         private set
 
@@ -53,6 +59,7 @@ class SegmentPlayer(private val context: Context) {
      */
     fun load(source: AudioSource) {
         release()
+        seekTargetMs = null
         state = PlaybackState(available = true, preparing = true)
         val mp = MediaPlayer()
         player = mp
@@ -69,6 +76,14 @@ class SegmentPlayer(private val context: Context) {
                     preparing = false,
                     durationMs = prepared.duration.toLong().coerceAtLeast(0),
                 )
+            }
+            mp.setOnSeekCompleteListener { seeked ->
+                seekTargetMs = null
+                // Where it actually landed, which is not necessarily what was
+                // asked for — the playhead should tell the truth once it can.
+                runCatching {
+                    state = state.copy(positionMs = seeked.currentPosition.toLong())
+                }
             }
             mp.setOnCompletionListener {
                 // Park the playhead at the start rather than at the end: the
@@ -124,10 +139,22 @@ class SegmentPlayer(private val context: Context) {
         if (!state.available) return
         val known = state.durationMs
         val target = if (known > 0) positionMs.coerceIn(0L, known) else positionMs.coerceAtLeast(0L)
+        // Held until onSeekComplete. A seek is asynchronous, and until it
+        // lands `currentPosition` still reports where playback was *before*
+        // it — so the position poll would overwrite the playhead with the old
+        // value a fraction of a second later, which reads exactly like the
+        // drag having been thrown away.
+        seekTargetMs = target
+        seekIssuedAt = SystemClock.elapsedRealtime()
+        state = state.copy(positionMs = target)
         runCatching {
-            mp.seekTo(target.toInt())
-            state = state.copy(positionMs = target)
+            // SEEK_CLOSEST rather than plain seekTo(Int), which means
+            // SEEK_PREVIOUS_SYNC: this is Ogg Opus with a page per second, so
+            // the previous sync point is up to a second behind where the
+            // finger was let go, and lands the playhead visibly short.
+            mp.seekTo(target, MediaPlayer.SEEK_CLOSEST)
         }.onFailure {
+            seekTargetMs = null
             RecallLog.w(tag = TAG, msg = "seek failed: ${it.javaClass.simpleName}")
         }
     }
@@ -136,6 +163,14 @@ class SegmentPlayer(private val context: Context) {
      *  has no position callback. */
     fun syncPosition() {
         val mp = player ?: return
+        // A seek in flight owns the playhead until it completes. The timeout
+        // is an escape hatch: an extractor that quietly ignores a seek never
+        // calls back, and a playhead frozen on a position the audio never
+        // reached is a worse lie than one that admits where it is.
+        seekTargetMs?.let {
+            if (SystemClock.elapsedRealtime() - seekIssuedAt < SEEK_TIMEOUT_MS) return
+            seekTargetMs = null
+        }
         runCatching {
             if (mp.isPlaying) state = state.copy(positionMs = mp.currentPosition.toLong())
         }
@@ -146,16 +181,20 @@ class SegmentPlayer(private val context: Context) {
             runCatching {
                 mp.setOnPreparedListener(null)
                 mp.setOnCompletionListener(null)
+                mp.setOnSeekCompleteListener(null)
                 mp.setOnErrorListener(null)
                 mp.reset()
                 mp.release()
             }
         }
         player = null
+        seekTargetMs = null
     }
 
     private companion object {
         const val TAG = "SegmentPlayer"
+        /** How long a seek may hold the playhead before polling takes it back. */
+        const val SEEK_TIMEOUT_MS = 2_000L
     }
 }
 
