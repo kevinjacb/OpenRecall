@@ -5,6 +5,9 @@ import androidx.lifecycle.viewModelScope
 import com.openrecall.relay.data.ConfigurationRepository
 import com.openrecall.relay.data.DashboardRepository
 import com.openrecall.relay.data.DashboardState
+import com.openrecall.relay.data.RelaySettingsRepository
+import com.openrecall.relay.core.result.Outcome
+import com.openrecall.relay.domain.model.DeviceStatus
 import com.openrecall.relay.relay.RelayStarter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -42,8 +45,9 @@ sealed interface HomeUiState {
  * [viewModelScope]. The mapping is total.
  *
  * Three user actions:
- *  - [onRefresh]: pull-to-refresh — forces a status poll and resets the
- *    session list to page 1, toggling [isRefreshing] around the call.
+ *  - [onRefresh]: pull-to-refresh — forces a status poll, resets the
+ *    recordings list to page 1 and re-reads the device status, toggling
+ *    [isRefreshing] around the call.
  *  - [onRetryConnection]: re-launches the foreground
  *    [com.openrecall.relay.RelayService] via [RelayStarter] when the link has
  *    dropped. The service also auto-reconnects; this is the manual hatch.
@@ -52,6 +56,8 @@ class HomeViewModel(
     private val repo: DashboardRepository,
     private val relayStarter: RelayStarter,
     configuration: ConfigurationRepository,
+    /** Optional so tests can omit it; the battery tile simply reads "—". */
+    private val relaySettings: RelaySettingsRepository? = null,
 ) : ViewModel() {
 
     val state: StateFlow<HomeUiState> = combine(
@@ -65,11 +71,30 @@ class HomeViewModel(
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState.Loading)
 
+    private val _device = MutableStateFlow<DeviceStatus?>(null)
+    /**
+     * What the relay knows about the wearable. Null until the first fetch
+     * lands or when it fails — the tiles fall back to "—" rather than to a
+     * number nobody measured.
+     */
+    val device: StateFlow<DeviceStatus?> = _device.asStateFlow()
+
+    init {
+        loadDeviceStatus()
+    }
+
+    private fun loadDeviceStatus() {
+        val repo = relaySettings ?: return
+        viewModelScope.launch {
+            _device.value = (repo.deviceStatus() as? Outcome.Success)?.value
+        }
+    }
+
     private val _isRefreshing = MutableStateFlow(false)
     /** True while a pull-to-refresh is in flight; drives the refresh spinner. */
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
-    /** Pull-to-refresh: re-fetch status + reset sessions to page 1. Guards
+    /** Pull-to-refresh: re-fetch status + reset recordings to page 1. Guards
      *  against overlapping refreshes so a second gesture mid-flight is a
      *  no-op — the spinner is already showing. */
     fun onRefresh() {
@@ -78,6 +103,7 @@ class HomeViewModel(
             _isRefreshing.value = true
             try {
                 repo.refresh()
+                loadDeviceStatus()
             } finally {
                 _isRefreshing.value = false
             }

@@ -1,6 +1,7 @@
 package com.openrecall.relay.ui.nav
 
-import com.openrecall.relay.domain.model.SessionId
+import com.openrecall.relay.domain.model.SegmentId
+import java.net.URLEncoder
 
 /**
  * The closed set of in-app screens. Sealed so the type-checker enforces
@@ -26,10 +27,21 @@ sealed interface Destination {
     /** Cognitive read path: browse + search the memory. */
     data object Memory : Destination { override val route = "memory" }
 
-    /** Session detail screen — per-session transcript timeline. The id is
-     *  encoded in the route so deep-links can address a specific session. */
-    data class SessionDetail(val id: SessionId) : Destination {
-        override val route: String = "session/${id.value}"
+    /**
+     * Recording detail — one segment's transcript, memories and audio.
+     *
+     * The id is `"<session_id>:<seq>"`, so it is URL-encoded into the route:
+     * a raw colon in a path segment is legal per RFC 3986 but is exactly the
+     * kind of thing that breaks silently in one navigation library version
+     * and not the next, and the encode/decode pair costs nothing.
+     */
+    data class SegmentDetail(val id: SegmentId) : Destination {
+        override val route: String = "segment/${URLEncoder.encode(id.value, "UTF-8")}"
+
+        companion object {
+            const val ARG_SEGMENT_ID = "segmentId"
+            const val ROUTE_TEMPLATE = "segment/{segmentId}"
+        }
     }
 
     /** Atom detail screen — one cited atom, drilled into from a chat chip.

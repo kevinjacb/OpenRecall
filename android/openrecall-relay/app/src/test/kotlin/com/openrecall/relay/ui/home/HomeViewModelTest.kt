@@ -82,7 +82,7 @@ class HomeViewModelTest {
                 uptimeSeconds = 1, activeSessions = 0, totalSessions = 0, recentEvents24h = 0,
             ),
         ),
-        recentSessions = emptyList(),
+        recentSegments = emptyList(),
     )
 
     @Test fun initialStateIsLoading() = runTest(dispatcher) {

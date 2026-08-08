@@ -34,9 +34,10 @@ import com.openrecall.relay.core.util.formatHmMs
 import com.openrecall.relay.core.util.formatRelative
 import com.openrecall.relay.data.DashboardState
 import com.openrecall.relay.data.RepositoryModule
+import com.openrecall.relay.domain.model.DeviceStatus
+import com.openrecall.relay.domain.model.Segment
+import com.openrecall.relay.domain.model.SegmentId
 import com.openrecall.relay.domain.model.ServerStatus
-import com.openrecall.relay.domain.model.SessionId
-import com.openrecall.relay.domain.model.SessionSummary
 import com.openrecall.relay.relay.DeviceState
 import com.openrecall.relay.relay.RelayConnectionState
 import com.openrecall.relay.relay.RelayState
@@ -58,7 +59,6 @@ import com.openrecall.relay.ui.design.StatusDot
 import com.openrecall.relay.ui.design.StatusTone
 import com.openrecall.relay.ui.design.TileMeter
 import com.openrecall.relay.ui.design.TileSegments
-import com.openrecall.relay.ui.recordings.sessionTitle
 
 /**
  * Home route. Builds the [HomeViewModel] from the process-singleton
@@ -67,7 +67,7 @@ import com.openrecall.relay.ui.recordings.sessionTitle
  * preview- and test-friendly.
  *
  * Home is the app's launch screen. [onSetUpDevice] opens the pairing wizard;
- * [onOpenSession] pushes a session detail; [onSeeAllRecordings] and
+ * [onOpenSegment] pushes a recording detail; [onSeeAllRecordings] and
  * [onOpenSettings] switch tabs.
  */
 @Composable
@@ -75,7 +75,7 @@ fun HomeRoute(
     onSetUpDevice: () -> Unit,
     onOpenSettings: () -> Unit,
     onSeeAllRecordings: () -> Unit,
-    onOpenSession: (SessionId) -> Unit,
+    onOpenSegment: (SegmentId) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val vm: HomeViewModel = viewModel(
@@ -85,21 +85,24 @@ fun HomeRoute(
                     RepositoryModule.repos.dashboard,
                     RepositoryModule.repos.relayStarter,
                     RepositoryModule.repos.configuration,
+                    RepositoryModule.repos.relaySettings,
                 )
             }
         },
     )
     val state by vm.state.collectAsState()
     val isRefreshing by vm.isRefreshing.collectAsState()
+    val device by vm.device.collectAsState()
     HomeScreen(
         state = state,
+        device = device,
         isRefreshing = isRefreshing,
         onRefresh = vm::onRefresh,
         onRetryConnection = vm::onRetryConnection,
         onSetUpDevice = onSetUpDevice,
         onOpenSettings = onOpenSettings,
         onSeeAllRecordings = onSeeAllRecordings,
-        onOpenSession = onOpenSession,
+        onOpenSegment = onOpenSegment,
         modifier = modifier,
     )
 }
@@ -112,13 +115,14 @@ fun HomeRoute(
 @Composable
 fun HomeScreen(
     state: HomeUiState,
+    device: DeviceStatus? = null,
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
     onRetryConnection: () -> Unit = {},
     onSetUpDevice: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
     onSeeAllRecordings: () -> Unit = {},
-    onOpenSession: (SessionId) -> Unit = {},
+    onOpenSegment: (SegmentId) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = RecallTheme.colors
@@ -143,6 +147,7 @@ fun HomeScreen(
 
             is HomeUiState.Loaded -> Dashboard(
                 dashboard = state.dashboard,
+                device = device,
                 provisioned = state.provisioned,
                 isRefreshing = isRefreshing,
                 onRefresh = onRefresh,
@@ -150,7 +155,7 @@ fun HomeScreen(
                 onSetUpDevice = onSetUpDevice,
                 onOpenSettings = onOpenSettings,
                 onSeeAllRecordings = onSeeAllRecordings,
-                onOpenSession = onOpenSession,
+                onOpenSegment = onOpenSegment,
             )
         }
     }
@@ -160,6 +165,7 @@ fun HomeScreen(
 @Composable
 private fun Dashboard(
     dashboard: DashboardState.Loaded,
+    device: DeviceStatus?,
     provisioned: Boolean,
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
@@ -167,7 +173,7 @@ private fun Dashboard(
     onSetUpDevice: () -> Unit,
     onOpenSettings: () -> Unit,
     onSeeAllRecordings: () -> Unit,
-    onOpenSession: (SessionId) -> Unit,
+    onOpenSegment: (SegmentId) -> Unit,
 ) {
     val colors = RecallTheme.colors
     val relay = dashboard.relay
@@ -229,13 +235,13 @@ private fun Dashboard(
                 modifier = Modifier.fillMaxWidth().padding(top = 22.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                BatteryTile(Modifier.weight(1f))
+                BatteryTile(device, Modifier.weight(1f))
                 BleLinkTile(device = relay.device, modifier = Modifier.weight(1f))
             }
 
             HearingNowCard(
                 relay = relay,
-                lastSession = dashboard.recentSessions.firstOrNull(),
+                lastRecording = dashboard.recentSegments.firstOrNull(),
                 modifier = Modifier.padding(top = 10.dp),
             )
 
@@ -245,15 +251,15 @@ private fun Dashboard(
             )
 
             SectionHeader(
-                title = "Recent sessions",
+                title = "Recent recordings",
                 modifier = Modifier.padding(top = 28.dp),
                 trailing = { SectionHeaderAction("See all", onSeeAllRecordings) },
             )
 
-            if (dashboard.recentSessions.isEmpty()) {
+            if (dashboard.recentSegments.isEmpty()) {
                 RecallCard(modifier = Modifier.padding(top = 12.dp)) {
                     Text(
-                        text = "Nothing recorded yet. Sessions land here as soon as " +
+                        text = "Nothing recorded yet. Recordings land here as soon as " +
                             "your OpenRecall starts hearing.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = colors.grey,
@@ -262,10 +268,10 @@ private fun Dashboard(
                     )
                 }
             } else {
-                dashboard.recentSessions.forEach { session ->
-                    SessionCard(
-                        session = session,
-                        onClick = { onOpenSession(session.id) },
+                dashboard.recentSegments.forEach { segment ->
+                    SegmentCard(
+                        segment = segment,
+                        onClick = { onOpenSegment(segment.id) },
                         modifier = Modifier.padding(top = 10.dp),
                     )
                 }
@@ -277,20 +283,30 @@ private fun Dashboard(
 /**
  * Battery level.
  *
- * **Placeholder.** The firmware exposes no battery characteristic over the
- * relay's BLE link and the server's `/status` carries no device telemetry,
- * so there is nothing to read. The tile keeps its slot in the layout and
- * reads "—" rather than inventing a number.
+ * The relay reports a value, but until the wearable actually gains battery
+ * sensing that value is a fixed server-side placeholder — the status payload
+ * says as much, and this tile has to pass that on rather than launder an
+ * estimate into a reading. So the label carries "est." and the meter is drawn
+ * in the muted colour instead of the healthy green: someone trusting a
+ * half-full battery on a device that is actually dead is the failure that
+ * matters here.
  */
 @Composable
-private fun BatteryTile(modifier: Modifier = Modifier) {
+private fun BatteryTile(device: DeviceStatus?, modifier: Modifier = Modifier) {
     val colors = RecallTheme.colors
+    val pct = device?.batteryPct
+    val measured = device?.measured == true
     StatTile(
-        label = "Battery",
-        value = "—",
+        label = if (pct != null && !measured) "Battery (est.)" else "Battery",
+        value = pct?.let { "${(it * 100).toInt()}%" } ?: "—",
         icon = RecallIcons.Battery,
         modifier = modifier,
-        meter = { TileMeter(fraction = 0f, color = colors.ok) },
+        meter = {
+            TileMeter(
+                fraction = pct?.toFloat() ?: 0f,
+                color = if (measured) colors.ok else colors.greyFaint,
+            )
+        },
     )
 }
 
@@ -322,13 +338,13 @@ private fun BleLinkTile(device: DeviceState, modifier: Modifier = Modifier) {
  *
  * **Partial placeholder.** The comp shows the sentence currently being
  * transcribed; the app has no live-transcript stream — transcripts are only
- * readable per-session over HTTP after the fact — so the body falls back to
- * the most recent session's preview, labelled as such.
+ * readable over HTTP after the fact — so the body falls back to the most
+ * recent recording's preview, labelled as such.
  */
 @Composable
 private fun HearingNowCard(
     relay: RelayState,
-    lastSession: SessionSummary?,
+    lastRecording: Segment?,
     modifier: Modifier = Modifier,
 ) {
     val colors = RecallTheme.colors
@@ -369,7 +385,8 @@ private fun HearingNowCard(
         ) {
             Text(
                 text = when {
-                    lastSession != null && lastSession.preview.isNotBlank() -> lastSession.preview
+                    lastRecording != null && lastRecording.preview.isNotBlank() ->
+                        lastRecording.preview
                     live != null -> "Listening. Nothing transcribed yet."
                     else -> "Your OpenRecall isn't streaming right now."
                 },
@@ -429,10 +446,10 @@ private fun RelayServerCard(server: Outcome<ServerStatus>, modifier: Modifier = 
     }
 }
 
-/** A recent-session card: preview, relative time, duration and hop count. */
+/** A recent-recording card: title, relative time, preview and metadata. */
 @Composable
-private fun SessionCard(
-    session: SessionSummary,
+private fun SegmentCard(
+    segment: Segment,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -444,7 +461,7 @@ private fun SessionCard(
             verticalAlignment = Alignment.Top,
         ) {
             Text(
-                text = sessionTitle(session),
+                text = segment.displayTitle,
                 style = MaterialTheme.typography.titleSmall,
                 color = colors.ink,
                 maxLines = 1,
@@ -452,13 +469,13 @@ private fun SessionCard(
                 modifier = Modifier.weight(1f),
             )
             Text(
-                text = formatRelative(System.currentTimeMillis(), session.startedAt.toEpochMilli()),
+                text = formatRelative(System.currentTimeMillis(), segment.startedAt.toEpochMilli()),
                 style = MaterialTheme.typography.labelMedium,
                 color = colors.greyLight,
             )
         }
         Text(
-            text = session.preview.ifBlank { "No transcript yet." },
+            text = segment.preview.ifBlank { "No transcript yet." },
             style = MaterialTheme.typography.bodyMedium,
             color = colors.inkMuted,
             maxLines = 2,
@@ -466,7 +483,7 @@ private fun SessionCard(
             modifier = Modifier.padding(top = 6.dp),
         )
         Text(
-            text = "${formatHmMs(session.durationMs)} · ${session.transcriptCount} segments",
+            text = "${formatHmMs(segment.durationMs)} · ${segment.transcriptCount} lines",
             style = MaterialTheme.typography.bodySmall,
             color = colors.greyLight,
             modifier = Modifier.padding(top = 8.dp),
@@ -476,40 +493,40 @@ private fun SessionCard(
 
 /** The device hero's label, visual state and tone, resolved together so they
  *  can never disagree. */
-private data class DeviceStatus(
+private data class HeroStatus(
     val label: String,
     val tone: StatusTone,
     val visual: DeviceVisualState,
     val canRetry: Boolean,
 )
 
-private fun deviceStatus(relay: RelayState, provisioned: Boolean): DeviceStatus = when {
-    !provisioned -> DeviceStatus(
+private fun deviceStatus(relay: RelayState, provisioned: Boolean): HeroStatus = when {
+    !provisioned -> HeroStatus(
         label = "Not connected",
         tone = StatusTone.Idle,
         visual = DeviceVisualState.Off,
         canRetry = false,
     )
     else -> when (val c = relay.connection) {
-        is RelayConnectionState.Live -> DeviceStatus(
+        is RelayConnectionState.Live -> HeroStatus(
             "Connected · listening", StatusTone.Healthy, DeviceVisualState.Connected, false,
         )
-        is RelayConnectionState.BleConnected -> DeviceStatus(
+        is RelayConnectionState.BleConnected -> HeroStatus(
             "Linked · connecting", StatusTone.Working, DeviceVisualState.Searching, false,
         )
-        is RelayConnectionState.SocketConnecting -> DeviceStatus(
+        is RelayConnectionState.SocketConnecting -> HeroStatus(
             "Connecting…", StatusTone.Working, DeviceVisualState.Searching, false,
         )
-        RelayConnectionState.BleScanning -> DeviceStatus(
+        RelayConnectionState.BleScanning -> HeroStatus(
             "Searching…", StatusTone.Working, DeviceVisualState.Searching, false,
         )
-        is RelayConnectionState.Reconnecting -> DeviceStatus(
+        is RelayConnectionState.Reconnecting -> HeroStatus(
             "Reconnecting…", StatusTone.Working, DeviceVisualState.Searching, false,
         )
-        is RelayConnectionState.Failed -> DeviceStatus(
+        is RelayConnectionState.Failed -> HeroStatus(
             "Disconnected", StatusTone.Problem, DeviceVisualState.Off, true,
         )
-        RelayConnectionState.Idle -> DeviceStatus(
+        RelayConnectionState.Idle -> HeroStatus(
             "Not connected", StatusTone.Idle, DeviceVisualState.Off, true,
         )
     }.let { status ->

@@ -3,6 +3,7 @@ package com.openrecall.relay.data
 import com.openrecall.relay.http.ErrorCode
 import com.openrecall.relay.http.HttpApiError
 import com.openrecall.relay.http.dto.CommandRecordDto
+import com.openrecall.relay.http.dto.CreateCommandRequestDto
 import com.openrecall.relay.http.dto.DtoJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -45,6 +46,66 @@ open class CommandApi(
                     kotlinx.serialization.builtins.ListSerializer(CommandRecordDto.serializer()),
                     text,
                 )
+            } catch (e: Exception) {
+                throw HttpApiError(
+                    code = ErrorCode.INTERNAL_ERROR,
+                    httpStatus = response.code,
+                    message = "malformed response: ${e.message}",
+                )
+            }
+        }
+    }
+
+    /**
+     * `POST /commands` — issue a command to the wearable.
+     *
+     * Until the server grew this route, commands could only be created by the
+     * agent's internal planner path, so the app had no way to act on the
+     * device at all. It goes through the same validate → guardrails → sign
+     * chain the planner uses.
+     *
+     * No `session_id` is sent: session ids are relay-minted UUIDs never
+     * surfaced over HTTP, so the client has nothing truthful to put there.
+     * An absent value means "the device, whenever it is next connected" and
+     * the gateway stamps the live session id at delivery.
+     *
+     * [idempotencyKey] must be stable across retries of the *same* intent —
+     * the server dedupes on it, and a fresh key on a retry issues the command
+     * twice. A guardrail refusal comes back as 403, which is a "the device
+     * can't do this right now" answer rather than a malformed request.
+     */
+    open suspend fun create(
+        type: String,
+        idempotencyKey: String,
+        params: Map<String, String> = emptyMap(),
+    ): CommandRecordDto = withContext(Dispatchers.IO) {
+        val body = DtoJson.encodeToString(
+            CreateCommandRequestDto.serializer(),
+            CreateCommandRequestDto(
+                type = type,
+                idempotency_key = idempotencyKey,
+                params = params,
+            ),
+        ).toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url(baseUrl.trimEnd('/') + "/commands")
+            .post(body)
+            .addHeader("Authorization", "Bearer $token")
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (response.code == 403) {
+                throw HttpApiError(
+                    code = ErrorCode.BAD_REQUEST,
+                    httpStatus = 403,
+                    message = response.body?.string() ?: "the device can't run that right now",
+                )
+            }
+            if (!response.isSuccessful) {
+                throw httpError(response.code, response.body?.string())
+            }
+            val text = response.body?.string() ?: ""
+            try {
+                DtoJson.decodeFromString(CommandRecordDto.serializer(), text)
             } catch (e: Exception) {
                 throw HttpApiError(
                     code = ErrorCode.INTERNAL_ERROR,

@@ -52,6 +52,14 @@ data class MemoryAtomDto(
     val kind: String,
     val text: String,
     val created_at: String,
+    /**
+     * Conversation time — when this was *said*, not when the server extracted
+     * it. Extraction runs in batch after the fact, so `created_at` would
+     * report last night's conversation as "added today" and give every atom
+     * in it one identical timestamp. This is the field the list orders and
+     * groups on. Null only for atoms written before the field existed.
+     */
+    val occurred_at: String? = null,
     val start_ms: Int,
     val source_event_id: String,
     val source_modality: String,
@@ -72,6 +80,39 @@ data class MemorySearchResponseDto(
     val returned_count: Int = 0,
     val top_score: Double = 0.0,
     val retrieval_latency_ms: Int = 0,
+)
+
+/**
+ * `GET /memory` in **list mode** (no `q`) — a page of the browsable
+ * collection, ordered by `occurred_at` descending.
+ *
+ * Deliberately a different shape from [MemorySearchResponseDto]: search
+ * returns ranked hits with a relevance score and a retrieval trace, listing
+ * returns a page with a cursor. Collapsing them would mean a `top_score`
+ * that is meaningless half the time.
+ */
+@Serializable
+data class MemoryListResponseDto(
+    val schema_version: String = "v1",
+    val atoms: List<MemoryAtomDto> = emptyList(),
+    val returned_count: Int = 0,
+    val next_cursor: String? = null,
+)
+
+/**
+ * `GET /memory/stats` — the Memories header ("128 memories · 6 today").
+ *
+ * [by_kind] is also how the client discovers the kind vocabulary: the
+ * extractor emits free-form kinds, so the filter chips are built from what
+ * actually exists rather than from a hardcoded list that silently hides
+ * everything else.
+ */
+@Serializable
+data class MemoryStatsResponseDto(
+    val schema_version: String = "v1",
+    val total: Int = 0,
+    val added_24h: Int = 0,
+    val by_kind: Map<String, Int> = emptyMap(),
 )
 
 @Serializable

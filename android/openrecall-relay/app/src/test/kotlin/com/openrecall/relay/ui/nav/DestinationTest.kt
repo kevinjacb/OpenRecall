@@ -1,6 +1,6 @@
 package com.openrecall.relay.ui.nav
 
-import com.openrecall.relay.domain.model.SessionId
+import com.openrecall.relay.domain.model.SegmentId
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -28,22 +28,29 @@ class DestinationTest {
         assertEquals("settings", Destination.Settings.route)
     }
 
-    @Test fun sessionDetailRouteEmbedsId() {
-        val s = Destination.SessionDetail(SessionId("abc"))
-        assertEquals("session/abc", s.route)
+    @Test fun segmentDetailRouteEmbedsId() {
+        val s = Destination.SegmentDetail(SegmentId("abc"))
+        assertEquals("segment/abc", s.route)
     }
 
-    @Test fun sessionDetailRouteIsDeterministic() {
+    @Test fun segmentDetailRouteEncodesTheColon() {
+        // Ids are "<session_id>:<seq>". The colon is percent-encoded so the
+        // route is a single unambiguous path segment.
+        val s = Destination.SegmentDetail(SegmentId("sess-1:412"))
+        assertEquals("segment/sess-1%3A412", s.route)
+    }
+
+    @Test fun segmentDetailRouteIsDeterministic() {
         // Two equal ids → two equal routes. Required for saved-state and
         // back-stack equality.
-        val a = Destination.SessionDetail(SessionId("xyz"))
-        val b = Destination.SessionDetail(SessionId("xyz"))
+        val a = Destination.SegmentDetail(SegmentId("xyz:1"))
+        val b = Destination.SegmentDetail(SegmentId("xyz:1"))
         assertEquals(a.route, b.route)
     }
 
     @Test fun differentIdsGiveDifferentRoutes() {
-        val a = Destination.SessionDetail(SessionId("abc"))
-        val b = Destination.SessionDetail(SessionId("def"))
+        val a = Destination.SegmentDetail(SegmentId("abc:1"))
+        val b = Destination.SegmentDetail(SegmentId("def:1"))
         assertNotEquals(a.route, b.route)
     }
 

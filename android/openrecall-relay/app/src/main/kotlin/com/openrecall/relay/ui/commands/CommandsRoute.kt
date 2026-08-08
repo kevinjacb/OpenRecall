@@ -33,6 +33,7 @@ fun CommandsRoute(onBack: () -> Unit, modifier: Modifier = Modifier) {
     )
     val state by vm.state.collectAsState()
     val isRefreshing by vm.isRefreshing.collectAsState()
+    val issueError by vm.issueError.collectAsState()
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.startPolling() }
     LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { vm.stopPolling() }
@@ -44,6 +45,8 @@ fun CommandsRoute(onBack: () -> Unit, modifier: Modifier = Modifier) {
         isRefreshing = isRefreshing,
         onRefresh = vm::onRefresh,
         onBack = onBack,
+        onIssue = vm::issue,
+        issueError = issueError,
         modifier = modifier,
     )
 }

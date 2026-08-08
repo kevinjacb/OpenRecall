@@ -43,6 +43,7 @@ fun MemoryRoute(
         onAtomTap = onOpenAtom,
         isRefreshing = isRefreshing,
         onRefresh = vm::onRefresh,
+        onLoadMore = vm::onLoadMore,
         modifier = modifier,
     )
 }

@@ -1,8 +1,8 @@
 package com.openrecall.relay.data
 
 import com.openrecall.relay.core.result.Outcome
+import com.openrecall.relay.domain.model.Segment
 import com.openrecall.relay.domain.model.ServerStatus
-import com.openrecall.relay.domain.model.SessionSummary
 import com.openrecall.relay.relay.RelayState
 
 /**
@@ -10,7 +10,7 @@ import com.openrecall.relay.relay.RelayState
  * [DashboardRepository] by fanning three independent sources into one:
  * the relay/connection [RelayState], the polled server [ServerStatus]
  * (wrapped in an [Outcome] so an unreachable server is a rendered state,
- * not a crash), and the most-recent handful of [SessionSummary]s.
+ * not a crash), and the most-recent handful of [Segment]s.
  *
  * Sealed so the Home ViewModel/screen can render it with one exhaustive
  * `when`.
@@ -27,7 +27,7 @@ sealed interface DashboardState {
     data class Loaded(
         val relay: RelayState,
         val server: Outcome<ServerStatus>,
-        val recentSessions: List<SessionSummary>,
+        val recentSegments: List<Segment>,
     ) : DashboardState
 
     /** The aggregate flow itself errored (rare — the individual sources
