@@ -147,7 +147,7 @@ private fun ServerForm(step: SetupStep.EnterServer, onServer: (String, String) -
             }
         }
         PrimaryButton(
-            label = "Connect Sense",
+            label = "Connect device",
             onClick = { onServer(url.trim(), token.trim()) },
             enabled = url.isNotBlank() && token.isNotBlank(),
             modifier = Modifier.padding(top = 6.dp),
@@ -208,5 +208,5 @@ private fun SetupStep.supporting(): String = when (this) {
     is SetupStep.Scanning ->
         "Hold the button until the light breathes amber, then keep it near your phone."
     is SetupStep.Provisioning -> "Writing the relay's public key to the device."
-    is SetupStep.Done -> "Your Sense is paired and the relay is running."
+    is SetupStep.Done -> "Your OpenSapien is paired and the relay is running."
 }

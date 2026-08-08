@@ -157,7 +157,7 @@ fun SettingsScreen(
             )
             SettingsToggleRow(
                 title = "Wake word",
-                subtitle = "Only listen after “Hey Sense”.",
+                subtitle = "Only listen after “Hey OpenSapien”.",
                 checked = capture.wakeWord,
                 onCheckedChange = { onCaptureChanged(capture.copy(wakeWord = it)) },
                 trailing = { PlaceholderTag() },

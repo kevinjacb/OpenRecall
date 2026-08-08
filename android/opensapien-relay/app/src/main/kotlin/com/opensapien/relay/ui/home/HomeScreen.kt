@@ -371,7 +371,7 @@ private fun HearingNowCard(
                 text = when {
                     lastSession != null && lastSession.preview.isNotBlank() -> lastSession.preview
                     live != null -> "Listening. Nothing transcribed yet."
-                    else -> "Your Sense isn't streaming right now."
+                    else -> "Your OpenSapien isn't streaming right now."
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = colors.inkMuted,
