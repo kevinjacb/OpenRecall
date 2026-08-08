@@ -3,27 +3,30 @@ package com.opensapien.relay.ui.device
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import androidx.compose.runtime.collectAsState
 import com.opensapien.relay.core.model.ApiError
 import com.opensapien.relay.core.result.Outcome
 import com.opensapien.relay.core.ui.SenseTheme
-import com.opensapien.relay.core.ui.Spacing
 import com.opensapien.relay.data.RepositoryModule
 import com.opensapien.relay.domain.model.DeviceSummary
 import com.opensapien.relay.domain.model.ServerStatus
@@ -31,17 +34,23 @@ import com.opensapien.relay.relay.DeviceState
 import com.opensapien.relay.relay.RelayConnectionState
 import com.opensapien.relay.relay.RelayState
 import com.opensapien.relay.relay.ServerState
-import com.opensapien.relay.ui.design.ConnectionBadge
-import com.opensapien.relay.ui.design.InfoRow
-import com.opensapien.relay.ui.design.SectionHeader
-import com.opensapien.relay.ui.design.SenseTopBar
-import com.opensapien.relay.ui.design.Tone
-import com.opensapien.relay.ui.design.TopBarState
+import com.opensapien.relay.ui.copyToClipboard
+import com.opensapien.relay.ui.design.SecondaryButton
+import com.opensapien.relay.ui.design.SenseCard
+import com.opensapien.relay.ui.design.SenseDetailHeader
+import com.opensapien.relay.ui.design.SenseGroupLabel
+import com.opensapien.relay.ui.design.SenseIcons
+import com.opensapien.relay.ui.design.SettingsGroup
+import com.opensapien.relay.ui.design.SettingsValueRow
+import com.opensapien.relay.ui.design.StatTile
+import com.opensapien.relay.ui.design.StatusBadge
+import com.opensapien.relay.ui.design.StatusTone
 
 /**
  * Device route. Builds the [DeviceViewModel] from the process singleton
  * (manual DI) and renders the stateless [DeviceScreen] under a back-arrow
- * top bar — Device is a push screen reached from Settings, not a bar tab.
+ * detail header — Device is a push screen reached from Settings, not a bar
+ * tab.
  */
 @Composable
 fun DeviceRoute(onBack: () -> Unit, modifier: Modifier = Modifier) {
@@ -65,7 +74,7 @@ fun DeviceRoute(onBack: () -> Unit, modifier: Modifier = Modifier) {
             .background(SenseTheme.colors.canvas)
             .statusBarsPadding(),
     ) {
-        SenseTopBar(TopBarState(title = "Device", onBack = onBack))
+        SenseDetailHeader(title = "Device", onBack = onBack)
         DeviceScreen(
             state = state,
             isRefreshing = isRefreshing,
@@ -76,13 +85,19 @@ fun DeviceRoute(onBack: () -> Unit, modifier: Modifier = Modifier) {
 }
 
 /**
- * Stateless Device content. A scrollable column of [SectionHeader] +
- * [InfoRow] groups (Device / Relay / Server), topped by a [ConnectionBadge]
- * for the composite state. Diagnostic — no editing, but a "Retry connection"
- * button when the link has dropped and a pull-to-refresh to re-poll.
+ * Stateless Device content, in the comp's Settings vocabulary: a link hero
+ * card carrying the composite status, then [SenseGroupLabel] + [SettingsGroup]
+ * blocks for Device / Relay / Server.
  *
- * Wrapped in a [PullToRefreshBox]: a pull-down forces a status poll + a
- * relay state re-emit.
+ * Diagnostic — no editing, but a "Retry connection" button when the link has
+ * dropped, and a pull-to-refresh that forces a status poll plus a relay state
+ * re-emit.
+ *
+ * The comp has no design for this screen (Diagnostics is an app-side addition
+ * to Settings), so the layout is extrapolated from the vocabulary the comp
+ * does define rather than invented: the same grouped white cards, hairline
+ * dividers and group labels used by Settings, plus the Home screen's
+ * [StatTile] for the two server counters worth reading at a glance.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -102,26 +117,52 @@ fun DeviceScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(Spacing.md),
-            verticalArrangement = Arrangement.spacedBy(Spacing.md),
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
         ) {
-            ConnectionBadge(state = compositeLabel(state.relay), tone = compositeTone(state.relay))
+            LinkHero(relay = state.relay, onRetryConnection = onRetryConnection)
 
-            if (shouldOfferRetry(state.relay)) {
-                Button(
-                    onClick = onRetryConnection,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Retry connection") }
-            }
+            SenseGroupLabel("Device", Modifier.padding(top = 26.dp, bottom = 12.dp))
+            SettingsGroup { DeviceRows(state.relay, state.device) }
 
-            SectionHeader(title = "Device")
-            DeviceRows(state.relay, state.device)
+            SenseGroupLabel("Relay", Modifier.padding(top = 26.dp, bottom = 12.dp))
+            SettingsGroup { RelayRows(state.relay) }
 
-            SectionHeader(title = "Relay")
-            RelayRows(state.relay)
+            SenseGroupLabel("Server", Modifier.padding(top = 26.dp, bottom = 12.dp))
+            ServerSection(state.server)
+        }
+    }
+}
 
-            SectionHeader(title = "Server")
-            ServerRows(state.server)
+/**
+ * The hero: composite status pill, the device name, and the long-form
+ * connection detail underneath. This is the one place the verbose
+ * [connectionLabel] earns its length — Home flattens the same state into a
+ * single badge, so the reason a socket is retrying is only readable here.
+ */
+@Composable
+private fun LinkHero(relay: RelayState, onRetryConnection: () -> Unit) {
+    val colors = SenseTheme.colors
+    SenseCard {
+        StatusBadge(label = compositeLabel(relay), tone = compositeTone(relay))
+        Text(
+            text = (relay.device as? DeviceState.Connected)?.name ?: "OpenSapien",
+            style = MaterialTheme.typography.headlineSmall,
+            color = colors.ink,
+            modifier = Modifier.padding(top = 12.dp),
+        )
+        Text(
+            text = connectionLabel(relay.connection),
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.grey,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        if (shouldOfferRetry(relay)) {
+            SecondaryButton(
+                label = "Retry connection",
+                onClick = onRetryConnection,
+                modifier = Modifier.padding(top = 14.dp),
+            )
         }
     }
 }
@@ -142,41 +183,118 @@ private fun shouldOfferRetry(relay: RelayState): Boolean =
     }
 
 @Composable
-private fun DeviceRows(relay: RelayState, device: DeviceSummary) {
+private fun ColumnScope.DeviceRows(relay: RelayState, device: DeviceSummary) {
+    val context = LocalContext.current
     val (address, name) = when (val d = relay.device) {
         is DeviceState.Connected -> d.address to (d.name ?: "—")
         else -> "—" to "—"
     }
-    InfoRow(label = "BLE address", value = address)
-    InfoRow(label = "Name", value = name)
-    InfoRow(label = "State", value = deviceStateLabel(relay.device))
+    SettingsValueRow(
+        label = "BLE address",
+        value = address,
+        onClick = address.takeIf { it != "—" }?.let {
+            { copyToClipboard(context, "BLE address", it) }
+        },
+    )
+    SettingsValueRow(label = "Name", value = name)
+    SettingsValueRow(label = "State", value = deviceStateLabel(relay.device))
     // `lastSeen` lives on the DeviceRepository's DeviceSummary (the relay
     // state itself has no timestamp); null until the first device update.
-    InfoRow(label = "Last seen", value = device.lastSeen?.toString() ?: "—")
+    SettingsValueRow(
+        label = "Last seen",
+        value = device.lastSeen?.toString() ?: "—",
+        last = true,
+    )
 }
 
 @Composable
-private fun RelayRows(relay: RelayState) {
-    InfoRow(label = "Connection", value = connectionLabel(relay.connection))
-    InfoRow(label = "Session", value = sessionLabel(relay.connection))
-    InfoRow(label = "Last error", value = relay.lastError ?: "—")
-    InfoRow(label = "Server (relay)", value = serverStateLabel(relay.server))
+private fun ColumnScope.RelayRows(relay: RelayState) {
+    SettingsValueRow(label = "Connection", value = connectionLabel(relay.connection))
+    SettingsValueRow(label = "Session", value = sessionLabel(relay.connection))
+    SettingsValueRow(label = "Last error", value = relay.lastError ?: "—")
+    SettingsValueRow(
+        label = "Server",
+        value = serverStateLabel(relay.server),
+        last = true,
+    )
 }
 
+/**
+ * The polled `/status` block. On success the two counters that read well at a
+ * glance go in [StatTile]s and the rest stay as rows; on failure the whole
+ * group collapses to one card naming the specific [ApiError].
+ */
 @Composable
-private fun ServerRows(server: Outcome<ServerStatus>) {
+private fun ServerSection(server: Outcome<ServerStatus>) {
+    val colors = SenseTheme.colors
     when (server) {
         is Outcome.Success -> {
             val s = server.value
-            InfoRow(label = "Reachable", value = if (s.reachable) "yes" else "no")
-            InfoRow(label = "Authenticated", value = if (s.authenticated) "yes" else "no")
-            InfoRow(label = "Version", value = s.version ?: "—")
-            InfoRow(label = "Uptime", value = "${s.uptimeSeconds}s")
-            InfoRow(label = "Active sessions", value = s.activeSessions.toString())
-            InfoRow(label = "Total sessions", value = s.totalSessions.toString())
-            InfoRow(label = "Events (24h)", value = s.recentEvents24h.toString())
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                StatTile(
+                    label = "Active sessions",
+                    value = s.activeSessions.toString(),
+                    icon = SenseIcons.Sparkle,
+                    modifier = Modifier.weight(1f),
+                )
+                StatTile(
+                    label = "Events (24h)",
+                    value = s.recentEvents24h.toString(),
+                    icon = SenseIcons.Signal,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            SettingsGroup(Modifier.padding(top = 12.dp)) {
+                SettingsValueRow(label = "Reachable", value = if (s.reachable) "Yes" else "No")
+                SettingsValueRow(
+                    label = "Authenticated",
+                    value = if (s.authenticated) "Yes" else "No",
+                )
+                SettingsValueRow(label = "Version", value = s.version ?: "—")
+                SettingsValueRow(label = "Uptime", value = formatUptime(s.uptimeSeconds))
+                SettingsValueRow(
+                    label = "Total sessions",
+                    value = s.totalSessions.toString(),
+                    last = true,
+                )
+            }
         }
-        is Outcome.Failure -> InfoRow(label = "Server", value = apiErrorLabel(server.error))
+
+        is Outcome.Failure -> SenseCard {
+            Text(
+                text = "Status unavailable",
+                style = MaterialTheme.typography.titleSmall,
+                color = colors.ink,
+            )
+            Text(
+                text = apiErrorLabel(server.error),
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.grey,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+    }
+}
+
+/**
+ * Uptime as a human duration rather than a raw second count — the comp writes
+ * every duration this way. Largest two units only: `3d 4h`, `2h 51m`, `14m
+ * 08s`, `47s`.
+ */
+internal fun formatUptime(seconds: Long): String {
+    if (seconds < 0) return "—"
+    val d = seconds / 86_400
+    val h = (seconds % 86_400) / 3_600
+    val m = (seconds % 3_600) / 60
+    val s = seconds % 60
+    return when {
+        d > 0 -> "${d}d ${h}h"
+        h > 0 -> "${h}h ${m}m"
+        m > 0 -> "${m}m ${"%02d".format(s)}s"
+        else -> "${s}s"
     }
 }
 
@@ -211,10 +329,20 @@ private fun compositeLabel(relay: RelayState): String = when (relay.connection) 
     is RelayConnectionState.Failed -> "Disconnected"
 }
 
-private fun compositeTone(relay: RelayState): Tone = when (relay.connection) {
-    is RelayConnectionState.Live -> Tone.Accent
-    is RelayConnectionState.Failed -> Tone.Muted
-    else -> Tone.Neutral
+/**
+ * Composite state → pill tone. Live is the only healthy state; anything
+ * mid-handshake is [StatusTone.Working] so the pill's dot breathes and the
+ * screen reads as "still trying" without a spinner.
+ */
+private fun compositeTone(relay: RelayState): StatusTone = when (relay.connection) {
+    is RelayConnectionState.Live -> StatusTone.Healthy
+    RelayConnectionState.Idle -> StatusTone.Idle
+    is RelayConnectionState.Failed -> StatusTone.Problem
+    RelayConnectionState.BleScanning,
+    is RelayConnectionState.BleConnected,
+    is RelayConnectionState.SocketConnecting,
+    is RelayConnectionState.Reconnecting,
+    -> StatusTone.Working
 }
 
 private fun deviceStateLabel(d: DeviceState): String = when (d) {

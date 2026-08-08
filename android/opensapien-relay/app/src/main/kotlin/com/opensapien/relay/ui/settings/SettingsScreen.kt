@@ -1,9 +1,6 @@
 package com.opensapien.relay.ui.settings
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -33,6 +30,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.opensapien.relay.core.ui.SenseTheme
 import com.opensapien.relay.data.RepositoryModule
 import com.opensapien.relay.store.Config
+import com.opensapien.relay.ui.copyToClipboard
 import com.opensapien.relay.ui.design.DangerButton
 import com.opensapien.relay.ui.design.PlaceholderTag
 import com.opensapien.relay.ui.design.SecondaryButton
@@ -117,7 +115,7 @@ fun SettingsScreen(
                 label = "Address",
                 value = config.deviceAddress ?: "Not paired",
                 onClick = config.deviceAddress?.let {
-                    { copy(context, "Address", it) }
+                    { copyToClipboard(context, "Address", it) }
                 },
             )
             SettingsValueRow(
@@ -132,12 +130,12 @@ fun SettingsScreen(
             SettingsValueRow(
                 label = "URL",
                 value = config.serverUrl.ifBlank { "—" },
-                onClick = { copy(context, "URL", config.serverUrl) },
+                onClick = { copyToClipboard(context, "URL", config.serverUrl) },
             )
             SettingsValueRow(
                 label = "Token",
                 value = maskedToken(config.token),
-                onClick = { copy(context, "Token", config.token) },
+                onClick = { copyToClipboard(context, "Token", config.token) },
             )
             SettingsValueRow(
                 label = "Gateway port",
@@ -261,12 +259,4 @@ private fun maskedToken(token: String): String = when {
     token.isBlank() -> "—"
     token.length <= 6 -> "•".repeat(token.length)
     else -> "${token.take(3)}${"•".repeat(6)}${token.takeLast(3)}"
-}
-
-/** Copy [value] to the system clipboard and toast a confirmation. */
-private fun copy(context: Context, label: String, value: String) {
-    if (value.isBlank()) return
-    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
-    Toast.makeText(context, "$label copied", Toast.LENGTH_SHORT).show()
 }
