@@ -52,7 +52,7 @@ class SettingsViewModel(
     suspend fun save(c: Config) = config.save(c)
 
     /**
-     * "Forget this Sense": erase the relay URL, token, paired address and
+     * "Forget this device": erase the relay URL, token, paired address and
      * the provisioned flag. Writing an empty [Config] rather than deleting
      * the store keeps every observer on a valid value — Home flips straight
      * back to its "Not connected / set up" state.

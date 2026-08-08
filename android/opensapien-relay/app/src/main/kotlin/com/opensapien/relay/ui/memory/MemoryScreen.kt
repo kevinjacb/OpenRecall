@@ -127,7 +127,7 @@ fun MemoryScreen(
  */
 private fun supportingLine(state: MemoryState): String = when {
     state.lastQuery.isEmpty() && state.atoms.isEmpty() ->
-        "Search what your Sense chose to remember. Nothing here leaves your relay."
+        "Search what your OpenSapien chose to remember. Nothing here leaves your relay."
     state.filter != MemoryState.ALL_FILTER ->
         "${state.visibleAtoms.size} of ${state.atoms.size} memories. Nothing here leaves your relay."
     else ->
@@ -171,7 +171,7 @@ private fun EmptyMemories(state: MemoryState) {
         )
         else -> EmptyState(
             title = "Nothing kept yet",
-            body = "Search across what your Sense has heard. Memories it decides " +
+            body = "Search across what your OpenSapien has heard. Memories it decides " +
                 "are worth keeping show up here.",
             modifier = Modifier.testTag("memory_empty_initial"),
         )

@@ -26,7 +26,7 @@ fun RefuseMessageBubble(
         modifier = modifier.testTag("refuse_bubble"),
     ) { contentColor ->
         Text(
-            text = "I don't have a memory about that yet. Try again once your Sense " +
+            text = "I don't have a memory about that yet. Try again once your OpenSapien " +
                 "has heard more, or",
             style = MaterialTheme.typography.bodyMedium,
             color = contentColor,

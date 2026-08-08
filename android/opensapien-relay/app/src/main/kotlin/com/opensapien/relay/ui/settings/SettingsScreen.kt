@@ -203,7 +203,7 @@ fun SettingsScreen(
             modifier = Modifier.padding(top = 26.dp),
         )
         DangerButton(
-            label = "Forget this Sense",
+            label = "Forget this device",
             onClick = { confirmForget = true },
             modifier = Modifier.padding(top = 6.dp),
         )
@@ -223,7 +223,7 @@ fun SettingsScreen(
             containerColor = colors.card,
             titleContentColor = colors.ink,
             textContentColor = colors.inkMuted,
-            title = { Text("Forget this Sense?") },
+            title = { Text("Forget this device?") },
             text = {
                 Text(
                     "The relay URL, token and paired device are erased from this phone. " +

@@ -65,10 +65,10 @@ fun SetupScreen(
             .imePadding(),
     ) {
         if (onCancel != null) {
-            SenseDetailHeader(title = "Set up your Sense", onBack = onCancel)
+            SenseDetailHeader(title = "Set up your device", onBack = onCancel)
         } else {
             Text(
-                text = "Set up your Sense",
+                text = "Set up your device",
                 style = MaterialTheme.typography.titleMedium,
                 color = colors.ink,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
@@ -196,14 +196,14 @@ private fun SetupStep.visualState(): DeviceVisualState = when (this) {
 private fun SetupStep.headline(): String = when (this) {
     is SetupStep.EnterServer -> "Point it at your relay"
     is SetupStep.Connecting -> "Checking your relay"
-    is SetupStep.Scanning -> "Looking for your Sense"
+    is SetupStep.Scanning -> "Looking for your OpenSapien"
     is SetupStep.Provisioning -> "Handing over the keys"
     is SetupStep.Done -> "You're all set"
 }
 
 private fun SetupStep.supporting(): String = when (this) {
     is SetupStep.EnterServer ->
-        "Tell your Sense where to send what it hears. Both values come from the relay you're running."
+        "Tell your device where to send what it hears. Both values come from the relay you're running."
     is SetupStep.Connecting -> "Making sure the relay answers and the token is good."
     is SetupStep.Scanning ->
         "Hold the button until the light breathes amber, then keep it near your phone."

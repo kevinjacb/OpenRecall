@@ -3,14 +3,16 @@
 Redesign of the Android relay app against the comp in `design/`, plus the
 launch-screen change (Home first, not the connect wizard).
 
-**State: builds green, 318 unit tests pass, verified running on an emulator.
-Nothing is committed yet — the whole redesign is uncommitted working-tree
-changes on branch `taslim`.**
+**State: builds green, 318 unit tests pass. The redesign, the `design/` comp
+and the brand rename are all committed on branch `taslim`.**
 
 ```
 git branch --show-current   # taslim
-./gradlew :app:assembleDebug :app:testDebugUnitTest --offline   # BUILD SUCCESSFUL
+./gradlew :app:assembleDebug :app:testDebugUnitTest   # BUILD SUCCESSFUL
 ```
+
+`--offline` only works on a machine whose Gradle cache already has AGP 8.5.2;
+on a fresh checkout drop the flag for the first build.
 
 ---
 
@@ -136,18 +138,18 @@ lists every one.
 
 ## Open items — pick up here
 
-### 1. Finish the brand rename (Sense → OpenSapien) — **not applied**
+### 1. Finish the brand rename (Sense → OpenSapien) — **done**
 
 The comp says "Sense" throughout, but commit `d9d39ab` deliberately rebranded
-the repo Sense → OpenSapien, and existing copy already said "your OpenSapien".
-I was mid-rename when this paused; **a `cd` in my patch script failed silently,
-so none of it landed.** User-facing strings still say "Sense".
+the repo Sense → OpenSapien. All user-facing copy below has been replaced; the
+only remaining match is the KDoc on `SetupScreen.kt:41`, which quotes the
+comp's own wording and is a doc reference, not app copy.
 
 ```bash
 grep -rn "Sense Relay\|your Sense\|this Sense\|\"Sense\"" app/src/main/kotlin/
 ```
 
-Intended replacements:
+Replacements applied:
 
 | File:line | Current | Intended |
 |---|---|---|
@@ -194,10 +196,13 @@ adb shell screencap -p /sdcard/s.png && adb pull /sdcard/s.png /tmp/s.png
 Check: no dark title bar; gear/chat/signal icons legible; then walk all five
 tabs, session detail, and the setup wizard.
 
+**Still outstanding.** The machine this was picked up on has no `emulator`
+package, no AVD and no attached device (`adb devices` is empty), so this could
+not be re-run. It needs `sdkmanager emulator "system-images;…"` + `avdmanager
+create avd`, or a physical device.
+
 ### 3. Not yet done at all
 
-- **Commit.** Nothing is staged. `design/` is untracked — decide whether it
-  belongs in git (it's ~150KB incl. images).
 - **Dark theme** is defined but never visually checked.
 - **Device / Commands screens** got a back arrow and inherit the new tokens,
   but their internals were not redesigned — they still use the old

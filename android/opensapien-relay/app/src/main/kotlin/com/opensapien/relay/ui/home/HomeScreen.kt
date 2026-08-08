@@ -186,7 +186,7 @@ private fun Dashboard(
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 28.dp),
         ) {
-            SenseAppHeader(title = "Sense Relay", onSettings = onOpenSettings)
+            SenseAppHeader(title = "OpenSapien Relay", onSettings = onOpenSettings)
 
             DeviceVisual(
                 state = status.visual,
@@ -213,7 +213,7 @@ private fun Dashboard(
             // the call to action that gets a device paired.
             if (!provisioned) {
                 PrimaryButton(
-                    label = "Set up your Sense",
+                    label = "Set up your OpenSapien",
                     onClick = onSetUpDevice,
                     modifier = Modifier.padding(top = 22.dp),
                 )
@@ -254,7 +254,7 @@ private fun Dashboard(
                 SenseCard(modifier = Modifier.padding(top = 12.dp)) {
                     Text(
                         text = "Nothing recorded yet. Sessions land here as soon as " +
-                            "your Sense starts hearing.",
+                            "your OpenSapien starts hearing.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = colors.grey,
                         textAlign = TextAlign.Center,
@@ -520,4 +520,4 @@ private fun deviceStatus(relay: RelayState, provisioned: Boolean): DeviceStatus 
 }
 
 private fun deviceName(device: DeviceState): String =
-    (device as? DeviceState.Connected)?.name ?: "Sense"
+    (device as? DeviceState.Connected)?.name ?: "OpenSapien"

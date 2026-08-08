@@ -107,7 +107,7 @@ fun RecordingsScreen(
                 EmptyState(
                     title = if (query.isBlank()) "No recordings yet" else "Nothing matches",
                     body = if (query.isBlank()) {
-                        "Sessions from your Sense will appear here."
+                        "Sessions from your OpenSapien will appear here."
                     } else {
                         "No session mentions “$query”."
                     },
