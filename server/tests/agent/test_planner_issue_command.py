@@ -20,21 +20,21 @@ from datetime import datetime, timezone
 
 import pytest
 
-from opensapien_server.agent.audit import InMemoryAuditLogger
-from opensapien_server.agent.capability import ConstantCapabilityProvider
-from opensapien_server.agent.context import ContextBuilder
-from opensapien_server.agent.guardrails import ConfidenceGateGuardrails
-from opensapien_server.agent.guardrails_command import StrictCommandGuardrails
-from opensapien_server.agent.intent import OpenAICompatibleAgentLLM, AgentLLM
-from opensapien_server.agent.metrics import InMemoryMetricsRecorder
-from opensapien_server.agent.planner import Planner
-from opensapien_server.agent.validator import StrictJSONValidator
-from opensapien_server.agent.validator_command import StrictCommandValidator
-from opensapien_server.commands.dispatcher import CommandDispatcher
-from opensapien_server.commands.model import Command
-from opensapien_server.commands.signing import CommandSigner
-from opensapien_server.commands.status import CommandStatus
-from opensapien_server.contracts.clock import FakeClock as _BaseFakeClock
+from openrecall_server.agent.audit import InMemoryAuditLogger
+from openrecall_server.agent.capability import ConstantCapabilityProvider
+from openrecall_server.agent.context import ContextBuilder
+from openrecall_server.agent.guardrails import ConfidenceGateGuardrails
+from openrecall_server.agent.guardrails_command import StrictCommandGuardrails
+from openrecall_server.agent.intent import OpenAICompatibleAgentLLM, AgentLLM
+from openrecall_server.agent.metrics import InMemoryMetricsRecorder
+from openrecall_server.agent.planner import Planner
+from openrecall_server.agent.validator import StrictJSONValidator
+from openrecall_server.agent.validator_command import StrictCommandValidator
+from openrecall_server.commands.dispatcher import CommandDispatcher
+from openrecall_server.commands.model import Command
+from openrecall_server.commands.signing import CommandSigner
+from openrecall_server.commands.status import CommandStatus
+from openrecall_server.contracts.clock import FakeClock as _BaseFakeClock
 
 
 class _CallableClock(_BaseFakeClock):
@@ -43,8 +43,8 @@ class _CallableClock(_BaseFakeClock):
     supports both .now() and __call__()."""
     def __call__(self) -> datetime:
         return self.now()
-from opensapien_server.contracts.id_generator import DeterministicIdGenerator
-from opensapien_server.contracts.types import (
+from openrecall_server.contracts.id_generator import DeterministicIdGenerator
+from openrecall_server.contracts.types import (
     AgentAction,
     AgentActionKind,
     IssueCommandPayload,
@@ -159,11 +159,11 @@ class _MockCapabilityProvider:
     """A capability provider that always returns the full set."""
 
     def capabilities(self):
-        from opensapien_server.contracts.types import CapabilitySet
+        from openrecall_server.contracts.types import CapabilitySet
         return CapabilitySet(camera=True, microphone=True, retrospective_buffer=True)
 
     def resources(self):
-        from opensapien_server.contracts.types import DeviceResourceStatus
+        from openrecall_server.contracts.types import DeviceResourceStatus
         return DeviceResourceStatus(
             battery_pct=1.0,
             storage_free_bytes=1 << 30,
@@ -294,10 +294,10 @@ async def test_issue_command_without_camera_capability_becomes_refuse():
 
     class _NoCamCaps:
         def capabilities(self):
-            from opensapien_server.contracts.types import CapabilitySet
+            from openrecall_server.contracts.types import CapabilitySet
             return CapabilitySet(camera=False, microphone=True, retrospective_buffer=True)
         def resources(self):
-            from opensapien_server.contracts.types import DeviceResourceStatus
+            from openrecall_server.contracts.types import DeviceResourceStatus
             return DeviceResourceStatus()
 
     llm = FakeAgentLLM(parsed=parsed)

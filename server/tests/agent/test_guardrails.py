@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from opensapien_server.contracts.types import (
+from openrecall_server.contracts.types import (
     AgentAction,
     AgentActionKind,
     GuardOutcome,
@@ -11,7 +11,7 @@ from opensapien_server.contracts.types import (
     ValidatedAction,
     ValidatorContext,
 )
-from opensapien_server.agent.guardrails import ConfidenceGateGuardrails
+from openrecall_server.agent.guardrails import ConfidenceGateGuardrails
 
 
 def _validated(kind=AgentActionKind.ANSWER, confidence=0.9, atom_ids=("a1",), rejection=None) -> ValidatedAction:

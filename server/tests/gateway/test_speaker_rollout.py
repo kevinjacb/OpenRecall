@@ -1,15 +1,15 @@
 """Rollout guard for speaker recognition.
 
-When OPENSAPIEN_SPEAKER_ENABLED=false the gateway must wire NO SpeakerIdentifier
+When OPENRECALL_SPEAKER_ENABLED=false the gateway must wire NO SpeakerIdentifier
 into the pipeline — zero embed calls and speaker=None on every Transcript.
 ``build_speaker_identifier`` centralizes that decision so the rollout guard is
 structural, not a runtime branch the hot path has to check.
 """
 from __future__ import annotations
 
-from opensapien_server.gateway.adapter import build_pipeline_factory, build_speaker_identifier
-from opensapien_server.ingest.speaker_config import SpeakerConfig
-from opensapien_server.memory.speaker_registry import InMemorySpeakerRegistry
+from openrecall_server.gateway.adapter import build_pipeline_factory, build_speaker_identifier
+from openrecall_server.ingest.speaker_config import SpeakerConfig
+from openrecall_server.memory.speaker_registry import InMemorySpeakerRegistry
 
 
 def test_disabled_config_yields_no_identifier():
@@ -33,7 +33,7 @@ def test_build_pipeline_factory_accepts_speaker_identifier():
 
 
 def test_resemblyzer_model_yields_resemblyzer_embedder():
-    from opensapien_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
+    from openrecall_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
 
     cfg = SpeakerConfig(enabled=True, embed_model="resemblyzer")
     ident = build_speaker_identifier(cfg, InMemorySpeakerRegistry(cfg), embedder=None)
@@ -43,7 +43,7 @@ def test_resemblyzer_model_yields_resemblyzer_embedder():
 
 
 def test_unset_embed_model_yields_fake_embedder():
-    from opensapien_server.ingest.speaker_embedder import FakeSpeakerEmbedder
+    from openrecall_server.ingest.speaker_embedder import FakeSpeakerEmbedder
 
     cfg = SpeakerConfig(enabled=True)  # embed_model defaults to ""
     ident = build_speaker_identifier(cfg, InMemorySpeakerRegistry(cfg), embedder=None)
@@ -52,7 +52,7 @@ def test_unset_embed_model_yields_fake_embedder():
 
 
 def test_explicit_fake_overrides_resemblyzer_model():
-    from opensapien_server.ingest.speaker_embedder import FakeSpeakerEmbedder
+    from openrecall_server.ingest.speaker_embedder import FakeSpeakerEmbedder
 
     cfg = SpeakerConfig(enabled=True, embed_model="resemblyzer")
     # Explicit "fake" sentinel overrides cfg.embed_model.

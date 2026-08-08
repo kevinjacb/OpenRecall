@@ -9,11 +9,11 @@ verification (forged/tampered by the untrusted relay) is dropped, never acked.
 import json
 from datetime import datetime, timedelta, timezone
 
-from opensapien_server.commands.model import Command
-from opensapien_server.commands.signing import CommandSigner
-from opensapien_server.ingest.audio_packet import AudioPacket, PacketType, VadState
-from opensapien_server.protocol.messages import Ack, CommandMessage, Hello, TranscriptMsg
-from opensapien_server.sim.device import DeviceClient
+from openrecall_server.commands.model import Command
+from openrecall_server.commands.signing import CommandSigner
+from openrecall_server.ingest.audio_packet import AudioPacket, PacketType, VadState
+from openrecall_server.protocol.messages import Ack, CommandMessage, Hello, TranscriptMsg
+from openrecall_server.sim.device import DeviceClient
 
 NOW = datetime.now(timezone.utc)
 

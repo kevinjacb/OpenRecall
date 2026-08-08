@@ -13,31 +13,31 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from opensapien_server.agent.metrics import InMemoryMetricsRecorder
-from opensapien_server.contracts.clock import FakeClock
-from opensapien_server.contracts.id_generator import DeterministicIdGenerator
-from opensapien_server.contracts.metrics import Metrics
-from opensapien_server.contracts.types import RetrieverContext
-from opensapien_server.events.model import CaptureEvent
-from opensapien_server.events.store import InMemoryEventStore
-from opensapien_server.memory.atom import MemoryAtom
-from opensapien_server.memory.embeddings import Embedder
-from opensapien_server.memory.extract import ExtractedMemory, Extractor
-from opensapien_server.memory.extraction_worker import (
+from openrecall_server.agent.metrics import InMemoryMetricsRecorder
+from openrecall_server.contracts.clock import FakeClock
+from openrecall_server.contracts.id_generator import DeterministicIdGenerator
+from openrecall_server.contracts.metrics import Metrics
+from openrecall_server.contracts.types import RetrieverContext
+from openrecall_server.events.model import CaptureEvent
+from openrecall_server.events.store import InMemoryEventStore
+from openrecall_server.memory.atom import MemoryAtom
+from openrecall_server.memory.embeddings import Embedder
+from openrecall_server.memory.extract import ExtractedMemory, Extractor
+from openrecall_server.memory.extraction_worker import (
     ExtractionEnqueuer,
     ExtractionWorker,
 )
-from opensapien_server.memory.index import InMemoryMemoryIndex
-from opensapien_server.memory.retrieval import Retriever
-from opensapien_server.memory.scoring import SimRecencyScorer
-from opensapien_server.memory.stages import (
+from openrecall_server.memory.index import InMemoryMemoryIndex
+from openrecall_server.memory.retrieval import Retriever
+from openrecall_server.memory.scoring import SimRecencyScorer
+from openrecall_server.memory.stages import (
     EmbeddingStage,
     ExtractionStage,
     IndexingStage,
     Pipeline,
     VersionStampStage,
 )
-from opensapien_server.memory.store import InMemoryAtomStore
+from openrecall_server.memory.store import InMemoryAtomStore
 
 
 # --- helpers -----------------------------------------------------------------

@@ -5,10 +5,10 @@ from datetime import datetime, timedelta, timezone
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from opensapien_server.contracts.id_generator import DeterministicIdGenerator
-from opensapien_server.http.app import build_app
-from opensapien_server.memory.atom import MemoryAtom
-from opensapien_server.memory.store import InMemoryAtomStore
+from openrecall_server.contracts.id_generator import DeterministicIdGenerator
+from openrecall_server.http.app import build_app
+from openrecall_server.memory.atom import MemoryAtom
+from openrecall_server.memory.store import InMemoryAtomStore
 
 _NOW = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
 

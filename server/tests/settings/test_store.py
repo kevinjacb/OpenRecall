@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from opensapien_server.settings.model import SettingsDocument, SettingsPatch
-from opensapien_server.settings.store import (
+from openrecall_server.settings.model import SettingsDocument, SettingsPatch
+from openrecall_server.settings.store import (
     InMemorySettingsStore,
     SqliteSettingsStore,
 )

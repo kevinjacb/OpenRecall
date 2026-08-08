@@ -6,7 +6,7 @@ exactly one segment per word, even when the word straddles the hop.
 """
 from __future__ import annotations
 
-from opensapien_server.ingest.streaming_transcriber import (
+from openrecall_server.ingest.streaming_transcriber import (
     Segment,
     streaming_from_tokens,
     Token,

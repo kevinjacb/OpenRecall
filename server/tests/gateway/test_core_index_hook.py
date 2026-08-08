@@ -13,14 +13,14 @@ from __future__ import annotations
 import struct
 from datetime import datetime, timezone
 
-from opensapien_server.events.store import InMemoryEventStore
-from opensapien_server.gateway.core import GatewayCore
-from opensapien_server.ingest.audio_packet import PacketType, VadState
-from opensapien_server.ingest.pipeline import AudioIngestPipeline
-from opensapien_server.ingest.reassembler import SessionReassembler
-from opensapien_server.protocol.messages import Bye, Hello
-from opensapien_server.sessions.index import SessionIndex
-from opensapien_server.sessions.lifecycle import SessionLifecycle
+from openrecall_server.events.store import InMemoryEventStore
+from openrecall_server.gateway.core import GatewayCore
+from openrecall_server.ingest.audio_packet import PacketType, VadState
+from openrecall_server.ingest.pipeline import AudioIngestPipeline
+from openrecall_server.ingest.reassembler import SessionReassembler
+from openrecall_server.protocol.messages import Bye, Hello
+from openrecall_server.sessions.index import SessionIndex
+from openrecall_server.sessions.lifecycle import SessionLifecycle
 
 
 # ---- fixtures / fakes -------------------------------------------------------

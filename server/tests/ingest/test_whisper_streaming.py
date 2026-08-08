@@ -1,7 +1,7 @@
 """Tests for the production WhisperStreamingBackend.
 
 The backend wraps mlx-whisper with ``word_timestamps=True`` and
-returns a list of :class:`~opensapien_server.ingest.streaming_transcriber.Token`
+returns a list of :class:`~openrecall_server.ingest.streaming_transcriber.Token`
 suitable for the streaming transcriber to consume. The tests use a
 fake mlx_whisper (no MLX dependency in the unit test path) that
 returns a dict shaped like mlx-whisper's real output.
@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from opensapien_server.ingest.streaming_transcriber import Token
-from opensapien_server.ingest.whisper_streaming import (
+from openrecall_server.ingest.streaming_transcriber import Token
+from openrecall_server.ingest.whisper_streaming import (
     WhisperStreamingBackend,
     _mlx_segments_to_tokens,
     _seconds_to_ms,

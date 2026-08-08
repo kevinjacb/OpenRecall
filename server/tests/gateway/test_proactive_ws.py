@@ -17,12 +17,12 @@ from typing import Any
 
 import pytest
 
-from opensapien_server.agent.metrics import InMemoryMetricsRecorder
-from opensapien_server.contracts.clock import FakeClock
-from opensapien_server.gateway.core import GatewayCore, ProactiveOutbox
-from opensapien_server.ingest.pipeline import AudioIngestPipeline
-from opensapien_server.ingest.reassembler import SessionReassembler
-from opensapien_server.protocol.messages import ProactiveMessage
+from openrecall_server.agent.metrics import InMemoryMetricsRecorder
+from openrecall_server.contracts.clock import FakeClock
+from openrecall_server.gateway.core import GatewayCore, ProactiveOutbox
+from openrecall_server.ingest.pipeline import AudioIngestPipeline
+from openrecall_server.ingest.reassembler import SessionReassembler
+from openrecall_server.protocol.messages import ProactiveMessage
 
 
 class _FakeDecoder:

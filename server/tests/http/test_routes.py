@@ -5,13 +5,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from opensapien_server.agent.metrics import InMemoryMetricsRecorder
-from opensapien_server.contracts.clock import FakeClock
-from opensapien_server.contracts.id_generator import DeterministicIdGenerator
-from opensapien_server.contracts.types import RetrieverContext, RetrievedContext, ScoredAtom
-from opensapien_server.http.app import build_app
-from opensapien_server.memory.atom import MemoryAtom
-from opensapien_server.memory.store import InMemoryAtomStore
+from openrecall_server.agent.metrics import InMemoryMetricsRecorder
+from openrecall_server.contracts.clock import FakeClock
+from openrecall_server.contracts.id_generator import DeterministicIdGenerator
+from openrecall_server.contracts.types import RetrieverContext, RetrievedContext, ScoredAtom
+from openrecall_server.http.app import build_app
+from openrecall_server.memory.atom import MemoryAtom
+from openrecall_server.memory.store import InMemoryAtomStore
 
 
 def _atom(atom_id: str, session_id: str = "s1", text: str = "x") -> MemoryAtom:

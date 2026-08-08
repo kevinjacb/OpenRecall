@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the OpenSapien gateway WebSocket server + HTTP control API.
+"""Run the OpenRecall gateway WebSocket server + HTTP control API.
 
 This is the live entry point the Android relay connects to (XIAO -> Android -> Mac).
 It wires the real Opus decoder + MLX-whisper transcriber per session, so it needs
@@ -33,44 +33,44 @@ from pathlib import Path
 
 import aiohttp.web
 
-from opensapien_server.agent.metrics import InMemoryMetricsRecorder
-from opensapien_server.auth import load_or_create_token
-from opensapien_server.commands.dispatcher import CommandDispatcher
-from opensapien_server.commands.signing import load_or_create_signer
-from opensapien_server.contracts.clock import SystemClock
-from opensapien_server.events.store import SqliteEventStore
-from opensapien_server.gateway.adapter import build_pipeline_factory, serve
-from opensapien_server.gateway.core import ProactiveOutbox
-from opensapien_server.http.app import build_app
-from opensapien_server.media.audio import AudioStore
-from opensapien_server.media.retention import RetentionSweeper
-from opensapien_server.memory.atom import MemoryAtom  # noqa: F401  (used in stage wiring)
-from opensapien_server.memory.backfill import backfill_occurred_at
-from opensapien_server.memory.embeddings import OpenAICompatibleEmbedder
-from opensapien_server.memory.extract import LLMExtractor
-from opensapien_server.memory.llm import OpenAICompatibleChatModel
-from opensapien_server.memory.extraction_worker import (
+from openrecall_server.agent.metrics import InMemoryMetricsRecorder
+from openrecall_server.auth import load_or_create_token
+from openrecall_server.commands.dispatcher import CommandDispatcher
+from openrecall_server.commands.signing import load_or_create_signer
+from openrecall_server.contracts.clock import SystemClock
+from openrecall_server.events.store import SqliteEventStore
+from openrecall_server.gateway.adapter import build_pipeline_factory, serve
+from openrecall_server.gateway.core import ProactiveOutbox
+from openrecall_server.http.app import build_app
+from openrecall_server.media.audio import AudioStore
+from openrecall_server.media.retention import RetentionSweeper
+from openrecall_server.memory.atom import MemoryAtom  # noqa: F401  (used in stage wiring)
+from openrecall_server.memory.backfill import backfill_occurred_at
+from openrecall_server.memory.embeddings import OpenAICompatibleEmbedder
+from openrecall_server.memory.extract import LLMExtractor
+from openrecall_server.memory.llm import OpenAICompatibleChatModel
+from openrecall_server.memory.extraction_worker import (
     ExtractionEnqueuer,
     ExtractionWorker,
 )
-from opensapien_server.memory.index import SqliteMemoryIndex
-from opensapien_server.memory.stages import (
+from openrecall_server.memory.index import SqliteMemoryIndex
+from openrecall_server.memory.stages import (
     EmbeddingStage,
     ExtractionStage,
     IndexingStage,
     Pipeline,
     VersionStampStage,
 )
-from opensapien_server.memory.store import SqliteAtomStore
-from opensapien_server.gateway.liveness import DeviceLiveness
-from opensapien_server.sessions.index import SessionIndex
-from opensapien_server.sessions.lifecycle import SessionLifecycle
-from opensapien_server.sessions.segment_meta import SqliteSegmentMetaStore
-from opensapien_server.sessions.segments import SegmentIndex
-from opensapien_server.sessions.sweeper import SegmentSweeper
-from opensapien_server.sessions.titler import SegmentTitler
-from opensapien_server.settings.reconciler import DeviceReconciler
-from opensapien_server.settings.store import SqliteSettingsStore
+from openrecall_server.memory.store import SqliteAtomStore
+from openrecall_server.gateway.liveness import DeviceLiveness
+from openrecall_server.sessions.index import SessionIndex
+from openrecall_server.sessions.lifecycle import SessionLifecycle
+from openrecall_server.sessions.segment_meta import SqliteSegmentMetaStore
+from openrecall_server.sessions.segments import SegmentIndex
+from openrecall_server.sessions.sweeper import SegmentSweeper
+from openrecall_server.sessions.titler import SegmentTitler
+from openrecall_server.settings.reconciler import DeviceReconciler
+from openrecall_server.settings.store import SqliteSettingsStore
 
 
 def main() -> None:
@@ -91,10 +91,10 @@ def main() -> None:
     # Bring-up observability: INFO shows the full relay + memory + proactive
     # flow (connection, hello, transcripts, event append, extraction enqueue,
     # windowing, LLM calls, cursor advance, proactive triggers). DEBUG adds
-    # per-frame / per-event detail. Override with OPENSAPIEN_LOG_LEVEL (e.g.
-    # OPENSAPIEN_LOG_LEVEL=WARNING to quiet it once stable, =DEBUG for everything).
+    # per-frame / per-event detail. Override with OPENRECALL_LOG_LEVEL (e.g.
+    # OPENRECALL_LOG_LEVEL=WARNING to quiet it once stable, =DEBUG for everything).
     # Format includes time + logger name so the source is obvious.
-    _log_level = __import__("os").environ.get("OPENSAPIEN_LOG_LEVEL", "INFO").upper()
+    _log_level = __import__("os").environ.get("OPENRECALL_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
         level=getattr(logging, _log_level, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -104,7 +104,7 @@ def main() -> None:
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
     store = SqliteEventStore(args.db)
     signer = load_or_create_signer(args.key_file)
-    from opensapien_server.commands.store import SqliteCommandStore
+    from openrecall_server.commands.store import SqliteCommandStore
     command_store = SqliteCommandStore(
         args.db.replace("events.db", "commands.db")
     )
@@ -158,13 +158,13 @@ def main() -> None:
     backfill_occurred_at(store, atom_store)
     memory_index = SqliteMemoryIndex(args.db.replace("events.db", "memory_index.db"))
     # Speaker recognition: a Sqlite registry + an identifier wired into the
-    # pipeline only when OPENSAPIEN_SPEAKER_ENABLED=true. Off by default — when
+    # pipeline only when OPENRECALL_SPEAKER_ENABLED=true. Off by default — when
     # disabled, build_speaker_identifier returns None and the pipeline wires
     # no identifier, so zero embed calls run and every Transcript carries
     # speaker=None.
-    from opensapien_server.gateway.adapter import build_speaker_identifier
-    from opensapien_server.ingest.speaker_config import load_speaker_config
-    from opensapien_server.memory.speaker_registry import SqliteSpeakerRegistry
+    from openrecall_server.gateway.adapter import build_speaker_identifier
+    from openrecall_server.ingest.speaker_config import load_speaker_config
+    from openrecall_server.memory.speaker_registry import SqliteSpeakerRegistry
 
     speaker_cfg = load_speaker_config(__import__("os").environ)
     speaker_registry = SqliteSpeakerRegistry(
@@ -232,23 +232,23 @@ def main() -> None:
     # guardrails, durable audit log, and a constant capability stub.
     # The retriever and atoms store are the same ones the worker
     # populates, so a freshly-extracted atom is immediately queryable.
-    from opensapien_server.agent.audit import InMemoryAuditLogger
-    from opensapien_server.agent.capability import ConstantCapabilityProvider
-    from opensapien_server.agent.config import load_agent_config
-    from opensapien_server.agent.context import ContextBuilder
-    from opensapien_server.agent.guardrails import ConfidenceGateGuardrails
-    from opensapien_server.agent.guardrails_command import StrictCommandGuardrails
-    from opensapien_server.agent.intent import OpenAICompatibleAgentLLM
-    from opensapien_server.agent.planner import Planner
-    from opensapien_server.agent.validator import StrictJSONValidator
-    from opensapien_server.agent.validator_command import StrictCommandValidator
-    from opensapien_server.contracts.id_generator import UuidIdGenerator
-    from opensapien_server.memory.retrieval import Retriever
-    from opensapien_server.memory.scoring import SimRecencyScorer
+    from openrecall_server.agent.audit import InMemoryAuditLogger
+    from openrecall_server.agent.capability import ConstantCapabilityProvider
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.agent.context import ContextBuilder
+    from openrecall_server.agent.guardrails import ConfidenceGateGuardrails
+    from openrecall_server.agent.guardrails_command import StrictCommandGuardrails
+    from openrecall_server.agent.intent import OpenAICompatibleAgentLLM
+    from openrecall_server.agent.planner import Planner
+    from openrecall_server.agent.validator import StrictJSONValidator
+    from openrecall_server.agent.validator_command import StrictCommandValidator
+    from openrecall_server.contracts.id_generator import UuidIdGenerator
+    from openrecall_server.memory.retrieval import Retriever
+    from openrecall_server.memory.scoring import SimRecencyScorer
 
     agent_llm = OpenAICompatibleAgentLLM(llm_chat)
-    # Read OPENSAPIEN_CONFIDENCE_AUTONOMOUS / OPENSAPIEN_CONFIDENCE_CONFIRM /
-    # OPENSAPIEN_RATE_LIMIT_PER_MIN from the process environment. Defaults match
+    # Read OPENRECALL_CONFIDENCE_AUTONOMOUS / OPENRECALL_CONFIDENCE_CONFIRM /
+    # OPENRECALL_RATE_LIMIT_PER_MIN from the process environment. Defaults match
     # the spec; a bad value aborts startup with a clear error.
     agent_config = load_agent_config(__import__("os").environ)
     planner = Planner(
@@ -298,7 +298,7 @@ def main() -> None:
     # 2s timeout, every drop counted. The placeholder ws_sender is
     # replaced on every WebSocket connect in serve() via
     # ProactiveTriggerEngine.set_ws_sender.
-    from opensapien_server.agent.proactive import ProactiveTriggerEngine, plan_timeout_from_env
+    from openrecall_server.agent.proactive import ProactiveTriggerEngine, plan_timeout_from_env
 
     class _PlaceholderWsSender:
         """No-op ws_sender. Replaced on every WebSocket connect. If a
@@ -335,7 +335,7 @@ def main() -> None:
     token = load_or_create_token(args.token_file)
     # Thread the whisper noise-filter thresholds into the streaming
     # transcriber backend.
-    from opensapien_server.gateway.adapter import build_pipeline_factory as _bpf
+    from openrecall_server.gateway.adapter import build_pipeline_factory as _bpf
     def _make_factory():
         return _bpf(
             window_ms=args.window_ms,
@@ -414,7 +414,7 @@ def main() -> None:
             # re-raises into the worker loop.
             speaker_nudge = None
             if speaker_cfg.enabled:
-                from opensapien_server.agent.speaker_nudge import SpeakerNudgeListener
+                from openrecall_server.agent.speaker_nudge import SpeakerNudgeListener
                 speaker_nudge = SpeakerNudgeListener(
                     speaker_registry, store, _PlaceholderWsSender(),
                     speaker_cfg,
@@ -429,7 +429,7 @@ def main() -> None:
             else:
                 print(
                     "speaker recognition DISABLED "
-                    "(set OPENSAPIEN_SPEAKER_ENABLED=true to enable)"
+                    "(set OPENRECALL_SPEAKER_ENABLED=true to enable)"
                 )
             print(f"http control API on http://{args.host}:{args.http_port}")
             print(f"gateway listening on ws://{args.host}:{args.port}  "

@@ -5,8 +5,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from opensapien_server.events.model import CaptureEvent
-from opensapien_server.events.store import InMemoryEventStore, SqliteEventStore
+from openrecall_server.events.model import CaptureEvent
+from openrecall_server.events.store import InMemoryEventStore, SqliteEventStore
 
 _T0 = datetime(2026, 8, 8, 9, 0, 0, tzinfo=timezone.utc)
 

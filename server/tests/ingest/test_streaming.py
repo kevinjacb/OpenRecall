@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from opensapien_server.ingest.streaming_transcriber import (
+from openrecall_server.ingest.streaming_transcriber import (
     Segment,
     streaming_from_tokens,
     Token,

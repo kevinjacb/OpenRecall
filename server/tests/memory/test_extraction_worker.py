@@ -16,28 +16,28 @@ from typing import Iterable
 
 import pytest
 
-from opensapien_server.agent.metrics import InMemoryMetricsRecorder
-from opensapien_server.contracts.clock import FakeClock
-from opensapien_server.contracts.id_generator import DeterministicIdGenerator
-from opensapien_server.contracts.metrics import Metrics
-from opensapien_server.events.model import CaptureEvent
-from opensapien_server.events.store import InMemoryEventStore, SqliteEventStore
-from opensapien_server.memory.atom import MemoryAtom
-from opensapien_server.memory.embeddings import Embedder
-from opensapien_server.memory.extract import ExtractedMemory, Extractor, LLMParseError
-from opensapien_server.memory.index import InMemoryMemoryIndex
-from opensapien_server.memory.extraction_worker import (
+from openrecall_server.agent.metrics import InMemoryMetricsRecorder
+from openrecall_server.contracts.clock import FakeClock
+from openrecall_server.contracts.id_generator import DeterministicIdGenerator
+from openrecall_server.contracts.metrics import Metrics
+from openrecall_server.events.model import CaptureEvent
+from openrecall_server.events.store import InMemoryEventStore, SqliteEventStore
+from openrecall_server.memory.atom import MemoryAtom
+from openrecall_server.memory.embeddings import Embedder
+from openrecall_server.memory.extract import ExtractedMemory, Extractor, LLMParseError
+from openrecall_server.memory.index import InMemoryMemoryIndex
+from openrecall_server.memory.extraction_worker import (
     ExtractionEnqueuer,
     ExtractionWorker,
 )
-from opensapien_server.memory.stages import (
+from openrecall_server.memory.stages import (
     EmbeddingStage,
     ExtractionStage,
     IndexingStage,
     Pipeline,
     VersionStampStage,
 )
-from opensapien_server.memory.store import InMemoryAtomStore, SqliteAtomStore
+from openrecall_server.memory.store import InMemoryAtomStore, SqliteAtomStore
 
 
 # --- fakes ------------------------------------------------------------------
@@ -636,7 +636,7 @@ def test_worker_logs_parse_error_detail_on_parse_failure(caplog):
         store=atoms,
     )
     w = ExtractionWorker(events=events, atoms=atoms, pipeline=pipeline, metrics=metrics)
-    with caplog.at_level(logging.WARNING, logger="opensapien_server.memory.extraction_worker"):
+    with caplog.at_level(logging.WARNING, logger="openrecall_server.memory.extraction_worker"):
         with pytest.raises(LLMParseError):
             w.process_session("s1")
     records = [r for r in caplog.records if "extraction_parse_failed" in r.message]

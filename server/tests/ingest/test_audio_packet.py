@@ -4,7 +4,7 @@ import struct
 
 import pytest
 
-from opensapien_server.ingest.audio_packet import (
+from openrecall_server.ingest.audio_packet import (
     AudioPacket,
     PacketType,
     VadState,

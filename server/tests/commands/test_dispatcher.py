@@ -8,9 +8,9 @@ twice does not duplicate it.
 
 from datetime import datetime, timedelta, timezone
 
-from opensapien_server.commands.dispatcher import CommandDispatcher
-from opensapien_server.commands.model import Command
-from opensapien_server.commands.signing import CommandSigner, verify_command
+from openrecall_server.commands.dispatcher import CommandDispatcher
+from openrecall_server.commands.model import Command
+from openrecall_server.commands.signing import CommandSigner, verify_command
 
 T0 = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
 

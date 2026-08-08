@@ -12,25 +12,25 @@ from datetime import datetime, timezone
 
 import pytest
 
-from opensapien_server.agent.metrics import InMemoryMetricsRecorder
-from opensapien_server.contracts.metrics import Metrics
-from opensapien_server.events.model import CaptureEvent
-from opensapien_server.events.store import InMemoryEventStore
-from opensapien_server.memory.extract import ExtractedMemory
-from opensapien_server.memory.extraction_worker import (
+from openrecall_server.agent.metrics import InMemoryMetricsRecorder
+from openrecall_server.contracts.metrics import Metrics
+from openrecall_server.events.model import CaptureEvent
+from openrecall_server.events.store import InMemoryEventStore
+from openrecall_server.memory.extract import ExtractedMemory
+from openrecall_server.memory.extraction_worker import (
     ExtractionEnqueuer,
     ExtractionWorker,
     SessionCompletion,
 )
-from opensapien_server.memory.index import InMemoryMemoryIndex
-from opensapien_server.memory.stages import (
+from openrecall_server.memory.index import InMemoryMemoryIndex
+from openrecall_server.memory.stages import (
     EmbeddingStage,
     ExtractionStage,
     IndexingStage,
     Pipeline,
     VersionStampStage,
 )
-from opensapien_server.memory.store import InMemoryAtomStore
+from openrecall_server.memory.store import InMemoryAtomStore
 
 
 class FixedExtractor:

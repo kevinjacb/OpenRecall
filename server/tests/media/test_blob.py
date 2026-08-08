@@ -9,7 +9,7 @@ import hashlib
 
 import pytest
 
-from opensapien_server.media.blob import FilesystemBlobStore, InMemoryBlobStore
+from openrecall_server.media.blob import FilesystemBlobStore, InMemoryBlobStore
 
 
 @pytest.fixture(params=["memory", "fs"])

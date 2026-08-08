@@ -156,12 +156,12 @@ def main() -> int:
     print("[3/4] Loading mlx-whisper model + running streaming pipeline...")
     print(f"      (this may take a few seconds on first load)")
     t_load = time.monotonic()
-    from opensapien_server.ingest.audio_packet import AudioPacket, PacketType, VadState
-    from opensapien_server.ingest.opus_decoder import OpusStreamDecoder
-    from opensapien_server.ingest.pipeline import AudioIngestPipeline
-    from opensapien_server.ingest.reassembler import SessionReassembler
-    from opensapien_server.ingest.streaming_transcriber import streaming_from_tokens
-    from opensapien_server.ingest.whisper_streaming import WhisperStreamingBackend
+    from openrecall_server.ingest.audio_packet import AudioPacket, PacketType, VadState
+    from openrecall_server.ingest.opus_decoder import OpusStreamDecoder
+    from openrecall_server.ingest.pipeline import AudioIngestPipeline
+    from openrecall_server.ingest.reassembler import SessionReassembler
+    from openrecall_server.ingest.streaming_transcriber import streaming_from_tokens
+    from openrecall_server.ingest.whisper_streaming import WhisperStreamingBackend
 
     backend = WhisperStreamingBackend(model=args.model)
     streamer = streaming_from_tokens(

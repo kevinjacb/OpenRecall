@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from opensapien_server.gateway.liveness import DeviceLiveness
+from openrecall_server.gateway.liveness import DeviceLiveness
 
 
 class Ticker:

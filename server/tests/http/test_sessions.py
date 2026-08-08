@@ -11,12 +11,12 @@ from datetime import datetime, timezone
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from opensapien_server.auth import load_or_create_token
-from opensapien_server.events.model import CaptureEvent
-from opensapien_server.events.store import InMemoryEventStore
-from opensapien_server.http.app import build_app
-from opensapien_server.sessions.index import SessionIndex
-from opensapien_server.sessions.lifecycle import SessionLifecycle
+from openrecall_server.auth import load_or_create_token
+from openrecall_server.events.model import CaptureEvent
+from openrecall_server.events.store import InMemoryEventStore
+from openrecall_server.http.app import build_app
+from openrecall_server.sessions.index import SessionIndex
+from openrecall_server.sessions.lifecycle import SessionLifecycle
 
 
 # ---- helpers ----------------------------------------------------------------
@@ -289,8 +289,8 @@ async def test_session_events_empty_session_returns_200_empty_list(tmp_path):
 
 
 def _speaker(speaker_id, display_name, is_wearer=False):
-    from opensapien_server.ingest.speaker_config import SpeakerConfig  # noqa: F401
-    from opensapien_server.memory.speaker_registry import Speaker
+    from openrecall_server.ingest.speaker_config import SpeakerConfig  # noqa: F401
+    from openrecall_server.memory.speaker_registry import Speaker
 
     return Speaker(
         speaker_id=speaker_id, display_name=display_name, is_wearer=is_wearer,
@@ -321,8 +321,8 @@ async def _client_with_speakers(tmp_path, registry):
 
 
 async def test_session_events_carry_speaker_fields(tmp_path):
-    from opensapien_server.memory.speaker_registry import InMemorySpeakerRegistry
-    from opensapien_server.ingest.speaker_config import SpeakerConfig
+    from openrecall_server.memory.speaker_registry import InMemorySpeakerRegistry
+    from openrecall_server.ingest.speaker_config import SpeakerConfig
 
     reg = InMemorySpeakerRegistry(SpeakerConfig())
     reg.add_speaker(_speaker("sp-1", "Sarah"))
@@ -347,8 +347,8 @@ async def test_session_events_carry_speaker_fields(tmp_path):
 
 async def test_session_events_rename_reflects_at_read_time_without_backfill(tmp_path):
     """A registry rename shows up on the next read with no event backfill."""
-    from opensapien_server.memory.speaker_registry import InMemorySpeakerRegistry
-    from opensapien_server.ingest.speaker_config import SpeakerConfig
+    from openrecall_server.memory.speaker_registry import InMemorySpeakerRegistry
+    from openrecall_server.ingest.speaker_config import SpeakerConfig
 
     reg = InMemorySpeakerRegistry(SpeakerConfig())
     reg.add_speaker(_speaker("sp-2", "Sara"))
@@ -372,8 +372,8 @@ async def test_session_events_rename_reflects_at_read_time_without_backfill(tmp_
 
 async def test_session_events_speaker_none_yields_no_name(tmp_path):
     """A hop with no speaker (silence) yields speakerName=None, isWearer=False."""
-    from opensapien_server.memory.speaker_registry import InMemorySpeakerRegistry
-    from opensapien_server.ingest.speaker_config import SpeakerConfig
+    from openrecall_server.memory.speaker_registry import InMemorySpeakerRegistry
+    from openrecall_server.ingest.speaker_config import SpeakerConfig
 
     reg = InMemorySpeakerRegistry(SpeakerConfig())
     cli, token, index, store = await _client_with_speakers(tmp_path, reg)

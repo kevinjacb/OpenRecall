@@ -13,12 +13,12 @@ import struct
 
 import pytest
 
-from opensapien_server.ingest.audio_packet import AudioPacket, PacketType, VadState
-from opensapien_server.ingest.opus_decoder import OpusStreamDecoder
-from opensapien_server.ingest.pipeline import AudioIngestPipeline
-from opensapien_server.ingest.reassembler import SessionReassembler
-from opensapien_server.ingest.streaming_transcriber import streaming_from_tokens
-from opensapien_server.ingest.whisper_streaming import WhisperStreamingBackend
+from openrecall_server.ingest.audio_packet import AudioPacket, PacketType, VadState
+from openrecall_server.ingest.opus_decoder import OpusStreamDecoder
+from openrecall_server.ingest.pipeline import AudioIngestPipeline
+from openrecall_server.ingest.reassembler import SessionReassembler
+from openrecall_server.ingest.streaming_transcriber import streaming_from_tokens
+from openrecall_server.ingest.whisper_streaming import WhisperStreamingBackend
 
 
 def _build_opus_packet_with_real_opus_frame(chunk_seq: int) -> bytes:

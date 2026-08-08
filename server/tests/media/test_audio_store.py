@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from opensapien_server.media.audio import FRAME_MS, AudioStore
+from openrecall_server.media.audio import FRAME_MS, AudioStore
 
 
 @pytest.fixture

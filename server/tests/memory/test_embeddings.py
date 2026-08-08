@@ -1,14 +1,14 @@
 """Tests for the model-agnostic embedder's wire shape, config, and response parsing.
 
 Like the chat model, the embedder talks to any OpenAI-compatible ``/embeddings``
-endpoint (local Ollama/mlx, or cloud), chosen by OPENSAPIEN_EMBED_* config. The HTTP send
+endpoint (local Ollama/mlx, or cloud), chosen by OPENRECALL_EMBED_* config. The HTTP send
 is a thin shell; the pure parts — request shape, env config, and parsing the batched
 response back into per-input vectors in order — are tested here.
 """
 
 import pytest
 
-from opensapien_server.memory.embeddings import OpenAICompatibleEmbedder
+from openrecall_server.memory.embeddings import OpenAICompatibleEmbedder
 
 
 def test_payload_carries_model_and_batched_input():
@@ -36,15 +36,15 @@ def test_parse_returns_vectors_in_input_order():
 
 def test_from_env_requires_a_model():
     with pytest.raises(ValueError):
-        OpenAICompatibleEmbedder.from_env({"OPENSAPIEN_EMBED_BASE_URL": "http://x/v1"})
+        OpenAICompatibleEmbedder.from_env({"OPENRECALL_EMBED_BASE_URL": "http://x/v1"})
 
 
 def test_from_env_reads_config():
     e = OpenAICompatibleEmbedder.from_env(
         {
-            "OPENSAPIEN_EMBED_BASE_URL": "http://localhost:11434/v1",
-            "OPENSAPIEN_EMBED_MODEL": "nomic-embed-text",
-            "OPENSAPIEN_EMBED_API_KEY": "k",
+            "OPENRECALL_EMBED_BASE_URL": "http://localhost:11434/v1",
+            "OPENRECALL_EMBED_MODEL": "nomic-embed-text",
+            "OPENRECALL_EMBED_API_KEY": "k",
         }
     )
     assert e.model == "nomic-embed-text"

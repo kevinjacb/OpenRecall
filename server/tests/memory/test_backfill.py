@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from opensapien_server.events.model import CaptureEvent
-from opensapien_server.events.store import InMemoryEventStore
-from opensapien_server.memory.atom import MemoryAtom
-from opensapien_server.memory.backfill import backfill_occurred_at
-from opensapien_server.memory.store import InMemoryAtomStore
+from openrecall_server.events.model import CaptureEvent
+from openrecall_server.events.store import InMemoryEventStore
+from openrecall_server.memory.atom import MemoryAtom
+from openrecall_server.memory.backfill import backfill_occurred_at
+from openrecall_server.memory.store import InMemoryAtomStore
 
 _SPOKEN = datetime(2026, 8, 1, 9, 0, 0, tzinfo=timezone.utc)
 _EXTRACTED = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)

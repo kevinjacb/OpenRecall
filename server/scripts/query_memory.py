@@ -5,9 +5,9 @@ Indexes any not-yet-indexed atoms (idempotent), then returns the best matches fo
 query. The embedding model is configurable — local or cloud — via env (nothing
 hardcoded):
 
-    export OPENSAPIEN_EMBED_MODEL=nomic-embed-text                # required
-    export OPENSAPIEN_EMBED_BASE_URL=http://localhost:11434/v1     # default: Ollama
-    export OPENSAPIEN_EMBED_API_KEY=...                            # optional (cloud)
+    export OPENRECALL_EMBED_MODEL=nomic-embed-text                # required
+    export OPENRECALL_EMBED_BASE_URL=http://localhost:11434/v1     # default: Ollama
+    export OPENRECALL_EMBED_API_KEY=...                            # optional (cloud)
     pip install -e '.[llm]'
     python scripts/query_memory.py --session <id> --query "what did he say about tea?"
 """
@@ -17,10 +17,10 @@ from __future__ import annotations
 import argparse
 import os
 
-from opensapien_server.memory.embeddings import OpenAICompatibleEmbedder
-from opensapien_server.memory.index import SqliteMemoryIndex
-from opensapien_server.memory.retrieval import IndexingPipeline, MemoryRetriever
-from opensapien_server.memory.store import SqliteAtomStore
+from openrecall_server.memory.embeddings import OpenAICompatibleEmbedder
+from openrecall_server.memory.index import SqliteMemoryIndex
+from openrecall_server.memory.retrieval import IndexingPipeline, MemoryRetriever
+from openrecall_server.memory.store import SqliteAtomStore
 
 
 def main() -> None:

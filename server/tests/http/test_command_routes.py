@@ -19,10 +19,10 @@ from pathlib import Path
 
 import pytest
 
-from opensapien_server.commands.model import Command
-from opensapien_server.commands.record import CommandRecord
-from opensapien_server.commands.status import CommandStatus
-from opensapien_server.commands.store import SqliteCommandStore
+from openrecall_server.commands.model import Command
+from openrecall_server.commands.record import CommandRecord
+from openrecall_server.commands.status import CommandStatus
+from openrecall_server.commands.store import SqliteCommandStore
 
 
 T0 = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
@@ -40,7 +40,7 @@ def _build_rec(command_id: str = "c1", status: CommandStatus = CommandStatus.PEN
     rec = CommandRecord.at_issue(cmd)
     if status == CommandStatus.PENDING:
         return rec
-    from opensapien_server.commands.status import STATUS_ORDER
+    from openrecall_server.commands.status import STATUS_ORDER
     # Walk forward through non-terminal states to EXECUTING.
     for s in list(STATUS_ORDER)[1:]:
         rec = rec.with_transition(s, T0 + timedelta(seconds=1))
@@ -130,7 +130,7 @@ def test_ack_command_rejects_invalid_transition():
 
         with pytest.raises(ValueError, match="invalid transition"):
             # Try to walk to EXECUTING from COMPLETED — invalid.
-            from opensapien_server.commands.status import is_valid_transition, CommandStatus as CS
+            from openrecall_server.commands.status import is_valid_transition, CommandStatus as CS
             if is_valid_transition(rec.status, CS.EXECUTING):
                 rec = rec.with_transition(CS.EXECUTING, T0 + timedelta(seconds=10))
             else:

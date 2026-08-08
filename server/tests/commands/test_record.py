@@ -14,9 +14,9 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from opensapien_server.commands.model import Command
-from opensapien_server.commands.record import CommandRecord, StatusTransition
-from opensapien_server.commands.status import CommandStatus
+from openrecall_server.commands.model import Command
+from openrecall_server.commands.record import CommandRecord, StatusTransition
+from openrecall_server.commands.status import CommandStatus
 
 
 T0 = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)

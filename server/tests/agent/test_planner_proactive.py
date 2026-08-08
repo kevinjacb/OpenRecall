@@ -13,19 +13,19 @@ from datetime import datetime, timezone
 
 import pytest
 
-from opensapien_server.agent.audit import InMemoryAuditLogger
-from opensapien_server.agent.context import ContextBuilder
-from opensapien_server.agent.guardrails import ConfidenceGateGuardrails
-from opensapien_server.agent.guardrails_command import StrictCommandGuardrails
-from opensapien_server.agent.intent import AgentLLM
-from opensapien_server.agent.metrics import InMemoryMetricsRecorder
-from opensapien_server.agent.planner import Planner
-from opensapien_server.agent.validator import StrictJSONValidator
-from opensapien_server.agent.validator_command import StrictCommandValidator
-from opensapien_server.commands.dispatcher import CommandDispatcher
-from opensapien_server.commands.signing import CommandSigner
-from opensapien_server.contracts.clock import FakeClock as _BaseFakeClock
-from opensapien_server.contracts.id_generator import DeterministicIdGenerator
+from openrecall_server.agent.audit import InMemoryAuditLogger
+from openrecall_server.agent.context import ContextBuilder
+from openrecall_server.agent.guardrails import ConfidenceGateGuardrails
+from openrecall_server.agent.guardrails_command import StrictCommandGuardrails
+from openrecall_server.agent.intent import AgentLLM
+from openrecall_server.agent.metrics import InMemoryMetricsRecorder
+from openrecall_server.agent.planner import Planner
+from openrecall_server.agent.validator import StrictJSONValidator
+from openrecall_server.agent.validator_command import StrictCommandValidator
+from openrecall_server.commands.dispatcher import CommandDispatcher
+from openrecall_server.commands.signing import CommandSigner
+from openrecall_server.contracts.clock import FakeClock as _BaseFakeClock
+from openrecall_server.contracts.id_generator import DeterministicIdGenerator
 
 
 class _CallableClock(_BaseFakeClock):
@@ -34,7 +34,7 @@ class _CallableClock(_BaseFakeClock):
     supports both .now() and __call__()."""
     def __call__(self) -> datetime:
         return self.now()
-from opensapien_server.contracts.types import (
+from openrecall_server.contracts.types import (
     AgentAction,
     AgentActionKind,
     CapabilitySet,

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from opensapien_server.ingest.speaker_config import load_speaker_config
+from openrecall_server.ingest.speaker_config import load_speaker_config
 
 
 def test_defaults_when_disabled_and_unset():
@@ -26,17 +26,17 @@ def test_cluster_must_be_below_tentative():
     # reject any config that inverts this.
     with pytest.raises(ValueError, match="cluster_threshold"):
         load_speaker_config({
-            "OPENSAPIEN_SPEAKER_ENABLED": "true",
-            "OPENSAPIEN_SPEAKER_TENTATIVE_THRESHOLD": "0.60",
-            "OPENSAPIEN_SPEAKER_CLUSTER_THRESHOLD": "0.65",
+            "OPENRECALL_SPEAKER_ENABLED": "true",
+            "OPENRECALL_SPEAKER_TENTATIVE_THRESHOLD": "0.60",
+            "OPENRECALL_SPEAKER_CLUSTER_THRESHOLD": "0.65",
         })
 
 
 def test_env_overrides_are_parsed():
     cfg = load_speaker_config({
-        "OPENSAPIEN_SPEAKER_ENABLED": "true",
-        "OPENSAPIEN_SPEAKER_CONFIRM_THRESHOLD": "0.8",
-        "OPENSAPIEN_SPEAKER_RING_BUFFER_N": "50",
+        "OPENRECALL_SPEAKER_ENABLED": "true",
+        "OPENRECALL_SPEAKER_CONFIRM_THRESHOLD": "0.8",
+        "OPENRECALL_SPEAKER_RING_BUFFER_N": "50",
     })
     assert cfg.enabled is True
     assert cfg.confirm_threshold == 0.8
@@ -46,12 +46,12 @@ def test_env_overrides_are_parsed():
 def test_confirm_must_exceed_tentative():
     with pytest.raises(ValueError, match="confirm_threshold"):
         load_speaker_config({
-            "OPENSAPIEN_SPEAKER_ENABLED": "true",
-            "OPENSAPIEN_SPEAKER_CONFIRM_THRESHOLD": "0.5",
-            "OPENSAPIEN_SPEAKER_TENTATIVE_THRESHOLD": "0.6",
+            "OPENRECALL_SPEAKER_ENABLED": "true",
+            "OPENRECALL_SPEAKER_CONFIRM_THRESHOLD": "0.5",
+            "OPENRECALL_SPEAKER_TENTATIVE_THRESHOLD": "0.6",
         })
 
 
 def test_thresholds_must_be_in_unit_interval():
     with pytest.raises(ValueError):
-        load_speaker_config({"OPENSAPIEN_SPEAKER_CONFIRM_THRESHOLD": "1.5"})
+        load_speaker_config({"OPENRECALL_SPEAKER_CONFIRM_THRESHOLD": "1.5"})

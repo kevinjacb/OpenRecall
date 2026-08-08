@@ -10,9 +10,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from opensapien_server.memory.atom import MemoryAtom
-from opensapien_server.memory.index import InMemoryMemoryIndex, SearchResult
-from opensapien_server.memory.store import InMemoryAtomStore
+from openrecall_server.memory.atom import MemoryAtom
+from openrecall_server.memory.index import InMemoryMemoryIndex, SearchResult
+from openrecall_server.memory.store import InMemoryAtomStore
 
 
 def _atom(atom_id: str, session_id: str, text: str, start_ms: int = 0) -> MemoryAtom:

@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from opensapien_server.events.model import CaptureEvent
-from opensapien_server.events.store import InMemoryEventStore
-from opensapien_server.sessions.segment_meta import InMemorySegmentMetaStore
-from opensapien_server.sessions.segments import SEGMENT_IDLE_MS, SegmentIndex
-from opensapien_server.sessions.sweeper import SegmentSweeper
-from opensapien_server.sessions.titler import SegmentTitler
+from openrecall_server.events.model import CaptureEvent
+from openrecall_server.events.store import InMemoryEventStore
+from openrecall_server.sessions.segment_meta import InMemorySegmentMetaStore
+from openrecall_server.sessions.segments import SEGMENT_IDLE_MS, SegmentIndex
+from openrecall_server.sessions.sweeper import SegmentSweeper
+from openrecall_server.sessions.titler import SegmentTitler
 
 _T0 = datetime(2026, 8, 8, 9, 0, 0, tzinfo=timezone.utc)
 

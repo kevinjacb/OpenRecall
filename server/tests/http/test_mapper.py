@@ -5,17 +5,17 @@ from datetime import datetime, timezone
 
 import pytest
 
-from opensapien_server.contracts.types import (
+from openrecall_server.contracts.types import (
     PlannerOutcome,
     PlannerResult,
     RejectionReason,
     ScoredAtom,
 )
-from opensapien_server.http.routes.dto import (
+from openrecall_server.http.routes.dto import (
     AgentResponseDTO,
     MAX_ATOM_CHIP_TEXT_LEN,
 )
-from opensapien_server.http.routes.mapper import map_planner_result_to_dto
+from openrecall_server.http.routes.mapper import map_planner_result_to_dto
 
 
 def _atom(atom_id: str, text: str = "x", score: float = 0.5) -> ScoredAtom:

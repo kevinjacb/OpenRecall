@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from opensapien_server.agent.audit import InMemoryAuditLogger, SqliteAuditLogger
+from openrecall_server.agent.audit import InMemoryAuditLogger, SqliteAuditLogger
 
 
 def test_in_memory_audit_logger_records_entries():

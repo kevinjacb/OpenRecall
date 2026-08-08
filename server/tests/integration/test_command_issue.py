@@ -26,21 +26,21 @@ from typing import Iterable
 
 import pytest
 
-from opensapien_server.agent.audit import InMemoryAuditLogger
-from opensapien_server.agent.capability import ConstantCapabilityProvider
-from opensapien_server.agent.context import ContextBuilder
-from opensapien_server.agent.guardrails import ConfidenceGateGuardrails
-from opensapien_server.agent.guardrails_command import StrictCommandGuardrails
-from opensapien_server.agent.intent import AgentLLM
-from opensapien_server.agent.metrics import InMemoryMetricsRecorder
-from opensapien_server.agent.planner import Planner
-from opensapien_server.agent.validator import StrictJSONValidator
-from opensapien_server.agent.validator_command import StrictCommandValidator
-from opensapien_server.commands.dispatcher import CommandDispatcher
-from opensapien_server.commands.model import Command
-from opensapien_server.commands.signing import CommandSigner
-from opensapien_server.commands.store import SqliteCommandStore
-from opensapien_server.contracts.clock import FakeClock as _BaseFakeClock, SystemClock
+from openrecall_server.agent.audit import InMemoryAuditLogger
+from openrecall_server.agent.capability import ConstantCapabilityProvider
+from openrecall_server.agent.context import ContextBuilder
+from openrecall_server.agent.guardrails import ConfidenceGateGuardrails
+from openrecall_server.agent.guardrails_command import StrictCommandGuardrails
+from openrecall_server.agent.intent import AgentLLM
+from openrecall_server.agent.metrics import InMemoryMetricsRecorder
+from openrecall_server.agent.planner import Planner
+from openrecall_server.agent.validator import StrictJSONValidator
+from openrecall_server.agent.validator_command import StrictCommandValidator
+from openrecall_server.commands.dispatcher import CommandDispatcher
+from openrecall_server.commands.model import Command
+from openrecall_server.commands.signing import CommandSigner
+from openrecall_server.commands.store import SqliteCommandStore
+from openrecall_server.contracts.clock import FakeClock as _BaseFakeClock, SystemClock
 
 
 class _CallableClock(_BaseFakeClock):
@@ -49,8 +49,8 @@ class _CallableClock(_BaseFakeClock):
     supports both .now() and __call__()."""
     def __call__(self):
         return self.now()
-from opensapien_server.contracts.id_generator import DeterministicIdGenerator, UuidIdGenerator
-from opensapien_server.contracts.types import (
+from openrecall_server.contracts.id_generator import DeterministicIdGenerator, UuidIdGenerator
+from openrecall_server.contracts.types import (
     AgentAction,
     AgentActionKind,
     CapabilitySet,
@@ -61,20 +61,20 @@ from opensapien_server.contracts.types import (
     RetrieverContext,
     ScoredAtom,
 )
-from opensapien_server.events.store import InMemoryEventStore
-from opensapien_server.memory.atom import MemoryAtom
-from opensapien_server.memory.embeddings import Embedder
-from opensapien_server.memory.index import InMemoryMemoryIndex
-from opensapien_server.memory.retrieval import Retriever
-from opensapien_server.memory.scoring import SimRecencyScorer
-from opensapien_server.memory.store import InMemoryAtomStore
-from opensapien_server.http.app import build_app
-from opensapien_server.memory.atom import MemoryAtom
-from opensapien_server.memory.embeddings import Embedder
-from opensapien_server.memory.index import InMemoryMemoryIndex
-from opensapien_server.memory.retrieval import Retriever
-from opensapien_server.memory.scoring import SimRecencyScorer
-from opensapien_server.memory.store import InMemoryAtomStore
+from openrecall_server.events.store import InMemoryEventStore
+from openrecall_server.memory.atom import MemoryAtom
+from openrecall_server.memory.embeddings import Embedder
+from openrecall_server.memory.index import InMemoryMemoryIndex
+from openrecall_server.memory.retrieval import Retriever
+from openrecall_server.memory.scoring import SimRecencyScorer
+from openrecall_server.memory.store import InMemoryAtomStore
+from openrecall_server.http.app import build_app
+from openrecall_server.memory.atom import MemoryAtom
+from openrecall_server.memory.embeddings import Embedder
+from openrecall_server.memory.index import InMemoryMemoryIndex
+from openrecall_server.memory.retrieval import Retriever
+from openrecall_server.memory.scoring import SimRecencyScorer
+from openrecall_server.memory.store import InMemoryAtomStore
 
 
 class _StaticEmbedder(Embedder):
@@ -171,7 +171,7 @@ def _build_stack(command_response: dict, capability_provider=None):
     # Seed a memory atom for retrieval.
     atom = MemoryAtom(
         atom_id="a1", session_id="s1", source_event_id="e1",
-        kind="fact", text="I love working on OpenSapien every morning at 7am.",
+        kind="fact", text="I love working on OpenRecall every morning at 7am.",
         created_at=datetime(2026, 7, 7, 7, 0, 0, tzinfo=timezone.utc),
         start_ms=0,
     )
@@ -378,7 +378,7 @@ def _build_stack_full(command_response: dict, capability_provider=None):
     for sid in ("s1", "s2"):
         atom = MemoryAtom(
             atom_id=f"a-{sid}", session_id=sid, source_event_id=f"e-{sid}",
-            kind="fact", text="I love working on OpenSapien every morning at 7am.",
+            kind="fact", text="I love working on OpenRecall every morning at 7am.",
             created_at=datetime(2026, 7, 7, 7, 0, 0, tzinfo=timezone.utc),
             start_ms=0,
         )

@@ -7,10 +7,10 @@ from typing import Iterable
 
 import pytest
 
-from opensapien_server.contracts.clock import FakeClock
-from opensapien_server.contracts.id_generator import DeterministicIdGenerator
-from opensapien_server.contracts.metrics import Metrics
-from opensapien_server.contracts.types import (
+from openrecall_server.contracts.clock import FakeClock
+from openrecall_server.contracts.id_generator import DeterministicIdGenerator
+from openrecall_server.contracts.metrics import Metrics
+from openrecall_server.contracts.types import (
     AgentAction,
     AgentActionKind,
     GuardedAction,
@@ -27,12 +27,12 @@ from opensapien_server.contracts.types import (
     ValidatedAction,
     ValidatorContext,
 )
-from opensapien_server.agent.audit import InMemoryAuditLogger
-from opensapien_server.agent.guardrails import ConfidenceGateGuardrails
-from opensapien_server.agent.intent import AgentLLM
-from opensapien_server.agent.metrics import InMemoryMetricsRecorder
-from opensapien_server.agent.planner import Planner
-from opensapien_server.agent.validator import StrictJSONValidator
+from openrecall_server.agent.audit import InMemoryAuditLogger
+from openrecall_server.agent.guardrails import ConfidenceGateGuardrails
+from openrecall_server.agent.intent import AgentLLM
+from openrecall_server.agent.metrics import InMemoryMetricsRecorder
+from openrecall_server.agent.planner import Planner
+from openrecall_server.agent.validator import StrictJSONValidator
 
 
 # --- fakes ------------------------------------------------------------------
@@ -93,13 +93,13 @@ def _ctx(extra: dict | None = None) -> PlannerContext:
 def _planner(retriever, llm, validator=None, guardrails=None, audit=None, metrics=None) -> Planner:
     return Planner(
         retriever=retriever,
-        context_builder=__import__("opensapien_server.agent.context", fromlist=["ContextBuilder"]).ContextBuilder(),
+        context_builder=__import__("openrecall_server.agent.context", fromlist=["ContextBuilder"]).ContextBuilder(),
         llm=llm,
         validator=validator or StrictJSONValidator(),
         guardrails=guardrails or ConfidenceGateGuardrails(rate_limit_per_min=1000),
         audit=audit or InMemoryAuditLogger(),
         metrics=metrics or InMemoryMetricsRecorder(),
-        capability_provider=__import__("opensapien_server.agent.capability", fromlist=["ConstantCapabilityProvider"]).ConstantCapabilityProvider(),
+        capability_provider=__import__("openrecall_server.agent.capability", fromlist=["ConstantCapabilityProvider"]).ConstantCapabilityProvider(),
         clock=FakeClock(datetime(2026, 7, 7, tzinfo=timezone.utc)),
         ids=DeterministicIdGenerator(),
     )

@@ -9,11 +9,11 @@ async socket loop around it does nothing but move bytes.
 import json
 import struct
 
-from opensapien_server.gateway.adapter import handle_message
-from opensapien_server.gateway.core import GatewayCore
-from opensapien_server.ingest.audio_packet import PacketType, VadState
-from opensapien_server.ingest.pipeline import AudioIngestPipeline
-from opensapien_server.ingest.reassembler import SessionReassembler
+from openrecall_server.gateway.adapter import handle_message
+from openrecall_server.gateway.core import GatewayCore
+from openrecall_server.ingest.audio_packet import PacketType, VadState
+from openrecall_server.ingest.pipeline import AudioIngestPipeline
+from openrecall_server.ingest.reassembler import SessionReassembler
 
 
 class FakeDecoder:

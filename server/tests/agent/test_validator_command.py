@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import pytest
 
-from opensapien_server.contracts.types import IssueCommandPayload
-from opensapien_server.agent.validator_command import (
+from openrecall_server.contracts.types import IssueCommandPayload
+from openrecall_server.agent.validator_command import (
     ALLOWLIST,
     CommandValidator,
     RejectionReason,
@@ -218,7 +218,7 @@ def test_validator_schemas_match_allowlist():
     start the gateway. This test pins the invariant at unit-test
     time.
     """
-    from opensapien_server.agent.validator_command import _TYPE_SCHEMAS
+    from openrecall_server.agent.validator_command import _TYPE_SCHEMAS
     for cmd_type in ALLOWLIST:
         assert cmd_type in _TYPE_SCHEMAS, (
             f"type {cmd_type!r} is allowlisted but has no schema; "

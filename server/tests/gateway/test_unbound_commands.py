@@ -9,17 +9,17 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from opensapien_server.commands.dispatcher import CommandDispatcher
-from opensapien_server.commands.model import Command
-from opensapien_server.commands.signing import CommandSigner
-from opensapien_server.contracts.clock import FakeClock
-from opensapien_server.gateway.core import GatewayCore
-from opensapien_server.ingest.pipeline import AudioIngestPipeline
-from opensapien_server.ingest.reassembler import SessionReassembler
-from opensapien_server.protocol.messages import CommandAck, CommandMessage, Hello
-from opensapien_server.settings.model import SettingsDocument
-from opensapien_server.settings.reconciler import DeviceReconciler
-from opensapien_server.settings.store import InMemorySettingsStore
+from openrecall_server.commands.dispatcher import CommandDispatcher
+from openrecall_server.commands.model import Command
+from openrecall_server.commands.signing import CommandSigner
+from openrecall_server.contracts.clock import FakeClock
+from openrecall_server.gateway.core import GatewayCore
+from openrecall_server.ingest.pipeline import AudioIngestPipeline
+from openrecall_server.ingest.reassembler import SessionReassembler
+from openrecall_server.protocol.messages import CommandAck, CommandMessage, Hello
+from openrecall_server.settings.model import SettingsDocument
+from openrecall_server.settings.reconciler import DeviceReconciler
+from openrecall_server.settings.store import InMemorySettingsStore
 
 from .test_core_index_hook import FakeDecoder, FakeTranscriber
 
@@ -118,7 +118,7 @@ def _core_with_reconciler(*, audio_enabled=True, device_state=None):
     if device_state is not None:
         settings.put_device_state(device_state)
     dispatcher = _dispatcher(clock)
-    from opensapien_server.contracts.id_generator import DeterministicIdGenerator
+    from openrecall_server.contracts.id_generator import DeterministicIdGenerator
 
     reconciler = DeviceReconciler(
         settings=settings, dispatcher=dispatcher,

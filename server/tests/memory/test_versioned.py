@@ -12,8 +12,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from opensapien_server.memory.atom import MemoryAtom
-from opensapien_server.memory.versioned import stamp_version_metadata
+from openrecall_server.memory.atom import MemoryAtom
+from openrecall_server.memory.versioned import stamp_version_metadata
 
 
 def _atom(atom_id: str = "a1", text: str = "x") -> MemoryAtom:

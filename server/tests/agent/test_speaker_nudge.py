@@ -4,7 +4,7 @@ The listener fires on SessionCompletion: a confirm nudge for the implicit
 "You" once it crosses confirm_turns, and a name nudge for a corroborated but
 unnamed unknown once it crosses name_nudge_turns (carrying a
 propose={kind:"name_speaker", speaker_id}). Dedupes per speaker_id, respects
-the rate limit, and never fires when OPENSAPIEN_SPEAKER_ENABLED=false.
+the rate limit, and never fires when OPENRECALL_SPEAKER_ENABLED=false.
 """
 from __future__ import annotations
 
@@ -12,12 +12,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from opensapien_server.agent.speaker_nudge import SpeakerNudgeListener
-from opensapien_server.events.model import CaptureEvent
-from opensapien_server.events.store import InMemoryEventStore
-from opensapien_server.ingest.speaker_config import SpeakerConfig
-from opensapien_server.memory.extraction_worker import SessionCompletion
-from opensapien_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
+from openrecall_server.agent.speaker_nudge import SpeakerNudgeListener
+from openrecall_server.events.model import CaptureEvent
+from openrecall_server.events.store import InMemoryEventStore
+from openrecall_server.ingest.speaker_config import SpeakerConfig
+from openrecall_server.memory.extraction_worker import SessionCompletion
+from openrecall_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
 
 
 class _FakeWs:

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from opensapien_server.commands.status import (
+from openrecall_server.commands.status import (
     CommandStatus,
     STATUS_ORDER,
     is_valid_transition,

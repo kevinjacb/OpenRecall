@@ -65,7 +65,7 @@ def main() -> None:
     ap.add_argument("--model", default=None, help="override the MLX-whisper model repo")
     args = ap.parse_args()
 
-    from opensapien_server.ingest.whisper_mlx import DEFAULT_MODEL, MlxWhisperTranscriber
+    from openrecall_server.ingest.whisper_mlx import DEFAULT_MODEL, MlxWhisperTranscriber
 
     model = args.model or DEFAULT_MODEL
     pcm = load_wav(args.wav) if args.wav else synth_pcm(args.seconds)

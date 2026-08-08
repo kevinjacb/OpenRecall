@@ -23,10 +23,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from opensapien_server.commands.dispatcher import CommandDispatcher
-from opensapien_server.commands.model import Command
-from opensapien_server.commands.signing import CommandSigner
-from opensapien_server.commands.status import (
+from openrecall_server.commands.dispatcher import CommandDispatcher
+from openrecall_server.commands.model import Command
+from openrecall_server.commands.signing import CommandSigner
+from openrecall_server.commands.status import (
     CommandStatus,
     is_valid_transition,
 )
