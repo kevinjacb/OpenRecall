@@ -73,10 +73,13 @@ async def rename_speaker(request: web.Request) -> web.Response:
         dto = RenameSpeakerDTO.model_validate(body)
     except Exception as e:
         return _bad_request(f"invalid request: {e}")
-    try:
-        reg.name(speaker_id, dto.name)
-    except KeyError:
+    # Existence check (not reg.name() raising KeyError): SqliteSpeakerRegistry.name()
+    # is a silent UPDATE that no-ops on a missing row, so a KeyError never fires
+    # there — relying on it 500s (_speaker_to_wire(None)) on the real (Sqlite)
+    # backend. Mirror reassign_speaker_route's reg.get(...) is None guard instead.
+    if reg.get(speaker_id) is None:
         return web.json_response({"error": "speaker_not_found"}, status=404)
+    reg.name(speaker_id, dto.name)
     return web.json_response({"speaker": _speaker_to_wire(reg.get(speaker_id))})
 
 

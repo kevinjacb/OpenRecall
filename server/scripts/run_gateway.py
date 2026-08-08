@@ -309,6 +309,14 @@ def main() -> None:
         id_generator=UuidIdGenerator(),
         command_store=command_store,
         command_dispatcher=dispatcher,
+        # The HTTP control API must share the SAME speaker registry the WS
+        # gateway mints speakers into (passed to serve() below). Omitting it
+        # leaves app["sense_speaker_registry"]=None, so /speakers/{id}/rename
+        # + /speakers/reassign + GET /speakers all return 409/empty even with
+        # speaker rec ENABLED — the Android rename then fails with
+        # "Couldn't rename on the server". pytest can't catch this (it never
+        # imports run_gateway.py), so keep this kwarg wired.
+        speaker_registry=speaker_registry,
     )
 
     async def main_loop() -> None:

@@ -146,6 +146,56 @@ async def test_rename_returns_updated_speaker_without_biometrics(tmp_path):
         await cli.close()
 
 
+async def test_rename_404_unknown_speaker_sqlite(tmp_path):
+    # Regression: the real gateway wires a SqliteSpeakerRegistry, whose name()
+    # is a silent UPDATE that no-ops on a missing row (no KeyError). The route
+    # used to rely on reg.name() raising KeyError for the 404, so on the Sqlite
+    # backend an unknown speaker reached _speaker_to_wire(None) -> 500. The
+    # InMemory-only test above can't catch this; cover the real backend here.
+    from opensapien_server.memory.speaker_registry import SqliteSpeakerRegistry
+
+    reg = SqliteSpeakerRegistry(str(tmp_path / "speakers.db"), SpeakerConfig())
+    reg.add_speaker(_speaker("sp-1", "Sarah"))
+    cli, token = await _client(tmp_path, reg)
+    try:
+        resp = await cli.post(
+            "/speakers/does-not-exist/rename",
+            json={"name": "Mallory"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status == 404
+        assert (await resp.json())["error"] == "speaker_not_found"
+        # The known speaker is untouched.
+        assert reg.get("sp-1").display_name == "Sarah"
+    finally:
+        await cli.close()
+
+
+async def test_rename_sqlite_updates_and_returns_without_biometrics(tmp_path):
+    from opensapien_server.memory.speaker_registry import SqliteSpeakerRegistry
+
+    reg = SqliteSpeakerRegistry(str(tmp_path / "speakers.db"), SpeakerConfig())
+    reg.add_speaker(_speaker("sp-1", None))
+    cli, token = await _client(tmp_path, reg)
+    try:
+        resp = await cli.post(
+            "/speakers/sp-1/rename",
+            json={"name": "Sarah"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status == 200
+        sp = (await resp.json())["speaker"]
+        assert sp["speakerId"] == "sp-1"
+        assert sp["displayName"] == "Sarah"
+        assert sp["enrollmentStatus"] == "confirmed"
+        # Persisted: re-read from the registry, not the response.
+        assert reg.get("sp-1").display_name == "Sarah"
+        for key in ("centroid", "embeddingModel", "embedding_model", "dim"):
+            assert key not in sp
+    finally:
+        await cli.close()
+
+
 async def test_speakers_lists_all_excluding_biometrics(tmp_path):
     reg = InMemorySpeakerRegistry(SpeakerConfig())
     reg.add_speaker(_speaker("sp-1", "Sarah"))
