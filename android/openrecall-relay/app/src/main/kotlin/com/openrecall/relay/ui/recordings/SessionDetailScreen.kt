@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
@@ -232,6 +233,25 @@ private fun Body(
             ?: emptyList()
     }
     val labels = remember(orderedSpeakers) { personLabels(orderedSpeakers) }
+
+    val listState = rememberLazyListState()
+    // A transcript reads newest-last, and the newest hop is what you came for,
+    // so open at the bottom. Only once per session — after that the position is
+    // the reader's, and later events must not yank them back down.
+    var landedAtLatest by remember { mutableStateOf(false) }
+    // Fixed items ahead of the transcript in the LazyColumn: meta, player,
+    // you-confirm, transcript-label, plus memories when present.
+    val fixedItemCount = 4 + if (memories.isNotEmpty()) 1 else 0
+    LaunchedEffect(events?.size) {
+        val count = events?.size ?: 0
+        if (!landedAtLatest && count > 0) {
+            // The list clamps to its max scroll, so targeting the last index
+            // lands on the true bottom rather than parking it at the top.
+            listState.scrollToItem(fixedItemCount + count - 1)
+            landedAtLatest = true
+        }
+    }
+
     PullToRefreshBox(
         isRefreshing = isRefreshing,
         onRefresh = onRefresh,
@@ -240,6 +260,7 @@ private fun Body(
         // Keyed by the stable event id — NOT by title, which would collide on
         // two transcripts with identical text and crash the LazyColumn.
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp),
         ) {
