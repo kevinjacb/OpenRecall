@@ -132,7 +132,7 @@ enum c6_vad_state
  * audio_task) but is still captured for the per-second cal log, so keep it on
  * the away mic. Flip to 1 only if you re-mount the mouth mic on the right
  * (VDD) channel. */
-#define PRIMARY_CHANNEL 1 /* 1 = right is voice/primary, 0 = left is voice/primary */
+#define PRIMARY_CHANNEL 0 /* 1 = right is voice/primary, 0 = left is voice/primary */
 
 /* ---- Server identity: the device verifies §D command signatures against this ----
  * Replace with your gateway's 32-byte Ed25519 public key (run_gateway.py prints it
@@ -140,14 +140,14 @@ enum c6_vad_state
 static const uint8_t SERVER_ED25519_PUBKEY[32] = {0};
 
 /* ---- §D command executors (P4a) ---- */
-#define EXECUTOR_TASK_STACK      4096   /* core-0; cJSON parse + queue send only */
-#define EXECUTOR_TASK_PRIO       5      /* same as the other app tasks */
-#define EXECUTOR_TASK_CORE       0      /* with radio/drain, opposite audio encode */
-#define EXECUTOR_QUEUE_DEPTH     8      /* SPSC; 8 in-flight commands is generous */
+#define EXECUTOR_TASK_STACK 4096 /* core-0; cJSON parse + queue send only */
+#define EXECUTOR_TASK_PRIO 5     /* same as the other app tasks */
+#define EXECUTOR_TASK_CORE 0     /* with radio/drain, opposite audio encode */
+#define EXECUTOR_QUEUE_DEPTH 8   /* SPSC; 8 in-flight commands is generous */
 
 /* request_buffer bounds — mirror server _TYPE_SCHEMAS (defense-in-depth).
  * Seconds of retrospective audio to ship; used by executor_core.c's
  * replay_window + parse/validate. */
 #define REQ_BUFFER_MIN_SECONDS 1
 #define REQ_BUFFER_MAX_SECONDS 60
-#define DRAIN_REPLAY_QUEUE_DEPTH 4      /* SPSC; replays serialize in the drain task */
+#define DRAIN_REPLAY_QUEUE_DEPTH 4 /* SPSC; replays serialize in the drain task */
