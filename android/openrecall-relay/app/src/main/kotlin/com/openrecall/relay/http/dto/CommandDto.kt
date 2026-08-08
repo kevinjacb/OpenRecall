@@ -21,6 +21,25 @@ data class CommandHistoryEntryDto(
     val detail: Map<String, String> = emptyMap(),
 )
 
+/**
+ * `POST /commands` body (server spec §4.3).
+ *
+ * [session_id] is deliberately omitted. Session ids are relay-minted UUIDs
+ * that are never surfaced over HTTP, so an HTTP caller has nothing truthful
+ * to put in the field; an empty value means "the device, whenever it is next
+ * connected" and the gateway stamps the live session id at send time.
+ *
+ * [idempotency_key] is required by the server rather than generated, because
+ * only the caller knows which retries are the "same" request — a retry
+ * without a stable key issues the command twice.
+ */
+@Serializable
+data class CreateCommandRequestDto(
+    val type: String,
+    val idempotency_key: String,
+    val params: Map<String, String> = emptyMap(),
+)
+
 @Serializable
 data class CommandRecordDto(
     val command_id: String,

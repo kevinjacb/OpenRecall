@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -20,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.openrecall.relay.core.ui.RecallTheme
@@ -74,14 +77,75 @@ fun LiveBars(
 }
 
 /**
- * A static waveform strip for the session player.
+ * The scrubber: real audio peaks, with the played portion filled and the rest
+ * in the track colour. Tapping or dragging reports a 0..1 position through
+ * [onSeek].
  *
- * **Placeholder.** The server exposes no per-session audio waveform (or
- * audio download) endpoint, so the bar heights are derived deterministically
- * from the session id rather than from real samples — the same shape every
- * time you open a given session, but not that session's actual audio. It is
- * here so the player's layout is real; wire it to sample data when the
- * endpoint lands.
+ * [peaks] are amplitudes in `0f..1f`, already resampled to the bar count the
+ * caller wants — the server publishes fixed 500 ms buckets precisely so it
+ * doesn't have to know this display constant.
+ *
+ * Bars are laid out with fixed weights, so bar `i` covers a known fraction of
+ * the width and the fill boundary lines up with the playhead exactly.
+ */
+@Composable
+fun WaveformScrubber(
+    peaks: List<Float>,
+    progress: Float,
+    modifier: Modifier = Modifier,
+    height: Dp = 36.dp,
+    onSeek: ((Float) -> Unit)? = null,
+    playedColor: Color = RecallTheme.colors.accent,
+    remainingColor: Color = RecallTheme.colors.track,
+) {
+    val clamped = progress.coerceIn(0f, 1f)
+    val seekModifier = if (onSeek != null) {
+        Modifier
+            .pointerInput(Unit) {
+                detectTapGestures { offset ->
+                    if (size.width > 0) onSeek(offset.x / size.width)
+                }
+            }
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures { change, _ ->
+                    if (size.width > 0) onSeek(change.position.x / size.width)
+                }
+            }
+    } else {
+        Modifier
+    }
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(height)
+            .then(seekModifier),
+        verticalAlignment = Alignment.Bottom,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        peaks.forEachIndexed { i, peak ->
+            // A zero-amplitude bucket (silence, or a gap the reassembler
+            // dropped) still needs a visible baseline, or the strip reads as
+            // missing data rather than as quiet.
+            val fraction = (0.08f + peak.coerceIn(0f, 1f) * 0.92f)
+            val played = peaks.isNotEmpty() && (i + 1f) / peaks.size <= clamped
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxHeight(fraction)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(if (played) playedColor else remainingColor),
+            )
+        }
+    }
+}
+
+/**
+ * A static waveform strip used where no peak data exists.
+ *
+ * **Placeholder.** Bar heights are derived deterministically from a seed
+ * rather than from samples — the same shape every time you open a given
+ * recording, but not that recording's actual audio. Use [WaveformScrubber]
+ * whenever the server has peaks; this is the "recording has no audio" layout.
  */
 @Composable
 fun WaveformStrip(

@@ -1,17 +1,26 @@
 package com.openrecall.relay.http
 
+import com.openrecall.relay.domain.model.SegmentId
 import com.openrecall.relay.domain.model.SessionId
 import com.openrecall.relay.http.dto.CaptureEventDto
+import com.openrecall.relay.http.dto.DeviceStatusDto
 import com.openrecall.relay.http.dto.DtoJson
+import com.openrecall.relay.http.dto.PatchSegmentRequestDto
+import com.openrecall.relay.http.dto.SegmentDetailsDto
+import com.openrecall.relay.http.dto.SegmentMemoryDto
+import com.openrecall.relay.http.dto.SegmentSummaryDto
+import com.openrecall.relay.http.dto.SegmentsPageDto
 import com.openrecall.relay.http.dto.ServerStatusDto
 import com.openrecall.relay.http.dto.SessionDetailsDto
 import com.openrecall.relay.http.dto.SessionEventsDto
 import com.openrecall.relay.http.dto.SessionsPageDto
+import com.openrecall.relay.http.dto.SettingsDocumentDto
 import com.openrecall.relay.http.dto.SpeakerDto
 import com.openrecall.relay.http.dto.SpeakersDto
 import com.openrecall.relay.http.dto.RenameSpeakerRequestDto
 import com.openrecall.relay.http.dto.ReassignSpeakerRequestDto
 import com.openrecall.relay.http.dto.RenameSpeakerResponseDto
+import com.openrecall.relay.http.dto.WaveformDto
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -83,6 +92,31 @@ class OpenRecallHttpClient(
         .url(baseUrl.trimEnd('/') + path)
         .addHeader("Authorization", "Bearer $token")
         .build()
+
+    /**
+     * URL-encode one path segment or query value. Segment ids are
+     * `"<session_id>:<seq>"`, and cursors are opaque base64url — neither is
+     * safe to splice into a URL raw.
+     */
+    private fun enc(value: String): String = URLEncoder.encode(value, "UTF-8")
+
+    /**
+     * The shared non-2xx policy for the calls above: 401/403 →
+     * [SecurityException] (the "go to Settings" signal), 404 → a
+     * [HttpStatusException] carrying a caller-supplied message, anything else
+     * → [HttpStatusException] with the code. The body is decoded with the
+     * lenient [DtoJson] so a server field addition never hard-fails.
+     */
+    private fun <T> parse(
+        resp: okhttp3.Response,
+        serializer: kotlinx.serialization.KSerializer<T>,
+        notFound: String? = null,
+    ): T {
+        if (resp.code == 401 || resp.code == 403) throw SecurityException("unauthorized")
+        if (resp.code == 404 && notFound != null) throw HttpStatusException(404, notFound)
+        if (resp.code !in 200..299) throw HttpStatusException(resp.code)
+        return DtoJson.decodeFromString(serializer, resp.body?.string().orEmpty())
+    }
 
     suspend fun health(): Boolean = withContext(Dispatchers.IO) {
         client.newCall(req("/health")).execute().use { it.code in 200..299 }
@@ -166,6 +200,139 @@ class OpenRecallHttpClient(
                 DtoJson.decodeFromString(SessionEventsDto.serializer(), resp.body?.string().orEmpty()).events
             }
         }
+
+    // ---- Segments: the app's primary read surface (spec §2.3). `/sessions`
+    // above stays for plumbing and diagnostics; a session is the foreground
+    // service's lifetime, not a recording, so nothing user-facing addresses it.
+
+    /**
+     * `GET /segments?limit&cursor&q&session_id`.
+     *
+     * With `q`, the server runs a transcript substring search and returns one
+     * deduped row per matching segment with a `matchSnippet`. Search mode is
+     * unpaginated — `nextCursor` is always null — so the caller must not treat
+     * a missing cursor as "the list ended" while a query is active.
+     */
+    suspend fun listSegments(
+        limit: Int = 20,
+        cursor: String? = null,
+        query: String? = null,
+        sessionId: String? = null,
+    ): SegmentsPageDto = withContext(Dispatchers.IO) {
+        val path = buildString {
+            append("/segments?limit=").append(limit)
+            if (cursor != null) append("&cursor=").append(enc(cursor))
+            if (!query.isNullOrBlank()) append("&q=").append(enc(query))
+            if (sessionId != null) append("&session_id=").append(enc(sessionId))
+        }
+        client.newCall(req(path)).execute().use { resp -> parse(resp, SegmentsPageDto.serializer()) }
+    }
+
+    /** `GET /segments/{id}` — summary + the segment's slice of the event stream. */
+    suspend fun getSegment(id: SegmentId): SegmentDetailsDto = withContext(Dispatchers.IO) {
+        client.newCall(req("/segments/${enc(id.value)}")).execute().use { resp ->
+            parse(resp, SegmentDetailsDto.serializer(), notFound = "recording not found")
+        }
+    }
+
+    /** `GET /segments/{id}/memory` — the "memories from this recording" chips. */
+    suspend fun getSegmentMemory(id: SegmentId): SegmentMemoryDto = withContext(Dispatchers.IO) {
+        client.newCall(req("/segments/${enc(id.value)}/memory")).execute().use { resp ->
+            parse(resp, SegmentMemoryDto.serializer(), notFound = "recording not found")
+        }
+    }
+
+    /** `GET /segments/{id}/waveform` — 500 ms peak buckets for the scrubber.
+     *  404 when the segment has no audio, which is a normal state, not an error. */
+    suspend fun getSegmentWaveform(id: SegmentId): WaveformDto = withContext(Dispatchers.IO) {
+        client.newCall(req("/segments/${enc(id.value)}/waveform")).execute().use { resp ->
+            parse(resp, WaveformDto.serializer(), notFound = "no audio for this recording")
+        }
+    }
+
+    /** `PATCH /segments/{id}` — rename. The server records the title as
+     *  user-authored, which permanently protects it from the auto-titler. */
+    suspend fun renameSegment(id: SegmentId, title: String): SegmentSummaryDto =
+        withContext(Dispatchers.IO) {
+            val body = DtoJson.encodeToString(
+                PatchSegmentRequestDto.serializer(),
+                PatchSegmentRequestDto(title),
+            ).toRequestBody(JSON)
+            val request = Request.Builder()
+                .url(baseUrl.trimEnd('/') + "/segments/${enc(id.value)}")
+                .patch(body)
+                .addHeader("Authorization", "Bearer $token")
+                .build()
+            client.newCall(request).execute().use { resp ->
+                parse(resp, SegmentSummaryDto.serializer(), notFound = "recording not found")
+            }
+        }
+
+    /**
+     * `DELETE /segments/{id}` — cascades to transcript events, memory atoms,
+     * their vectors and the audio range.
+     *
+     * 409 means the segment is still recording: it is actively being written
+     * to, so the server refuses rather than racing the ingest path. The caller
+     * surfaces that as "still recording", not as a generic failure.
+     */
+    suspend fun deleteSegment(id: SegmentId): Unit = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(baseUrl.trimEnd('/') + "/segments/${enc(id.value)}")
+            .delete()
+            .addHeader("Authorization", "Bearer $token")
+            .build()
+        client.newCall(request).execute().use { resp ->
+            if (resp.code == 401 || resp.code == 403) throw SecurityException("unauthorized")
+            if (resp.code == 404) throw HttpStatusException(404, "recording not found")
+            if (resp.code == 409) throw HttpStatusException(409, "still recording")
+            if (resp.code !in 200..299) throw HttpStatusException(resp.code)
+            // 204 No Content — nothing to parse.
+        }
+    }
+
+    /**
+     * The URL the media player streams from. Not fetched here: playback is the
+     * platform [android.media.MediaPlayer]'s job, and it needs the URL plus the
+     * bearer header rather than bytes. The server serves this with
+     * `FileResponse`, so Range requests and `206` work and scrubbing does not
+     * require downloading the whole recording.
+     */
+    fun segmentAudioUrl(id: SegmentId): String =
+        baseUrl.trimEnd('/') + "/segments/${enc(id.value)}/audio"
+
+    // ---- Settings and device status (spec §4.1, §5.1) -----------------------
+
+    /** `GET /settings` — the relay's durable desired state. */
+    suspend fun getSettings(): SettingsDocumentDto = withContext(Dispatchers.IO) {
+        client.newCall(req("/settings")).execute().use { resp ->
+            parse(resp, SettingsDocumentDto.serializer())
+        }
+    }
+
+    /** `PUT /settings` — send the full merged document; the server returns the
+     *  result of merging it. A 400 means a key the server doesn't know, which
+     *  is a client bug rather than something to retry. */
+    suspend fun putSettings(document: SettingsDocumentDto): SettingsDocumentDto =
+        withContext(Dispatchers.IO) {
+            val body = DtoJson.encodeToString(SettingsDocumentDto.serializer(), document)
+                .toRequestBody(JSON)
+            val request = Request.Builder()
+                .url(baseUrl.trimEnd('/') + "/settings")
+                .put(body)
+                .addHeader("Authorization", "Bearer $token")
+                .build()
+            client.newCall(request).execute().use { resp ->
+                parse(resp, SettingsDocumentDto.serializer())
+            }
+        }
+
+    /** `GET /device/status`. */
+    suspend fun getDeviceStatus(): DeviceStatusDto = withContext(Dispatchers.IO) {
+        client.newCall(req("/device/status")).execute().use { resp ->
+            parse(resp, DeviceStatusDto.serializer())
+        }
+    }
 
     /** `GET /speakers` — the registry minus biometrics. Empty list when disabled. */
     suspend fun getSpeakers(): List<SpeakerDto> =

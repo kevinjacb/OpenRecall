@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,6 +24,7 @@ import com.openrecall.relay.data.Command
 import com.openrecall.relay.data.CommandsViewModel
 import com.openrecall.relay.ui.design.EmptyState
 import com.openrecall.relay.ui.design.LoadingCard
+import com.openrecall.relay.ui.design.SecondaryButton
 import com.openrecall.relay.ui.design.RecallDetailHeader
 import com.openrecall.relay.ui.design.RecallGroupLabel
 import com.openrecall.relay.ui.design.RecallIcons
@@ -55,6 +57,8 @@ fun CommandsScreen(
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
     onBack: (() -> Unit)? = null,
+    onIssue: (type: String) -> Unit = {},
+    issueError: String? = null,
     modifier: Modifier = Modifier,
     now: Instant = Instant.now(),
 ) {
@@ -75,6 +79,7 @@ fun CommandsScreen(
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
             )
         }
+        IssueRow(onIssue = onIssue, error = issueError)
         // Pull-to-refresh wraps the content: a pull-down re-fetches the
         // active-command list via [CommandsViewModel.onRefresh].
         PullToRefreshBox(
@@ -96,6 +101,43 @@ fun CommandsScreen(
                 )
             }
         }
+    }
+}
+
+/**
+ * Manual one-shot controls for the wearable's microphone gate.
+ *
+ * These are the raw verbs, and they are deliberately here rather than on
+ * Settings: the Settings switch is *durable desired state* the relay
+ * reconciles the device against, while these are a single command sent now.
+ * A command reaches the device only while it is connected and does not
+ * survive a reconnect, so pausing capture from here is a temporary act — if
+ * you want it to stick, use the Settings toggle.
+ */
+@Composable
+private fun IssueRow(onIssue: (String) -> Unit, error: String?) {
+    val colors = RecallTheme.colors
+    Column(Modifier.padding(horizontal = 20.dp)) {
+        RecallGroupLabel("Send now", Modifier.padding(bottom = 10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            SecondaryButton(
+                label = "Pause mic",
+                onClick = { onIssue("stop_audio") },
+                modifier = Modifier.weight(1f),
+            )
+            SecondaryButton(
+                label = "Resume mic",
+                onClick = { onIssue("start_audio") },
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Text(
+            text = error ?: "One-shot, and only while the device is connected. " +
+                "The Settings toggle is the durable one.",
+            style = MaterialTheme.typography.bodySmall,
+            color = if (error != null) colors.danger else colors.grey,
+            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+        )
     }
 }
 

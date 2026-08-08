@@ -9,11 +9,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -37,24 +39,26 @@ import com.openrecall.relay.core.ui.toDisplayMessage
 import com.openrecall.relay.core.util.formatHmMs
 import com.openrecall.relay.core.util.formatRelative
 import com.openrecall.relay.data.RepositoryModule
-import com.openrecall.relay.domain.model.SessionId
-import com.openrecall.relay.domain.model.SessionSummary
+import com.openrecall.relay.domain.model.Segment
+import com.openrecall.relay.domain.model.SegmentId
+import com.openrecall.relay.ui.design.AccentChip
 import com.openrecall.relay.ui.design.EmptyState
 import com.openrecall.relay.ui.design.SecondaryButton
 import com.openrecall.relay.ui.design.RecallCard
 import com.openrecall.relay.ui.design.RecallGroupLabel
+import com.openrecall.relay.ui.design.RecallIcons
 import com.openrecall.relay.ui.design.RecallScreenHeader
 import com.openrecall.relay.ui.design.RecallSearchField
 
 /**
  * Recordings route. Builds the [RecordingsViewModel] from the process
- * singleton and forwards row taps to [onOpen] (nav to session detail).
+ * singleton and forwards row taps to [onOpen] (nav to recording detail).
  */
 @Composable
-fun RecordingsRoute(onOpen: (SessionId) -> Unit, modifier: Modifier = Modifier) {
+fun RecordingsRoute(onOpen: (SegmentId) -> Unit, modifier: Modifier = Modifier) {
     val vm: RecordingsViewModel = viewModel(
         factory = viewModelFactory {
-            initializer { RecordingsViewModel(RepositoryModule.repos.session) }
+            initializer { RecordingsViewModel(RepositoryModule.repos.segment) }
         },
     )
     // Auto-refresh while the tab is on screen: new recordings appear, and a
@@ -79,8 +83,12 @@ fun RecordingsRoute(onOpen: (SessionId) -> Unit, modifier: Modifier = Modifier) 
 
 /**
  * Stateless Recordings content — the comp's "Everything it heard": an
- * editorial header, a search field, then sessions grouped by recency
+ * editorial header, a search field, then recordings grouped by recency
  * (Today / Yesterday / Earlier).
+ *
+ * Search results are *not* grouped: they come back ranked by the server as a
+ * single unpaged result set, and bucketing them by day would imply a
+ * chronology the ordering doesn't have.
  *
  * The list is a single [LazyColumn] carrying the header and search field as
  * items, so the whole screen scrolls as one surface. Reaching the last row
@@ -94,7 +102,7 @@ fun RecordingsScreen(
     query: String = "",
     onQueryChange: (String) -> Unit = {},
     isRefreshing: Boolean = false,
-    onOpen: (SessionId) -> Unit,
+    onOpen: (SegmentId) -> Unit,
     onLoadMore: () -> Unit,
     onRefresh: () -> Unit = {},
     modifier: Modifier = Modifier,
@@ -114,9 +122,9 @@ fun RecordingsScreen(
                 EmptyState(
                     title = if (query.isBlank()) "No recordings yet" else "Nothing matches",
                     body = if (query.isBlank()) {
-                        "Sessions from your OpenRecall will appear here."
+                        "Recordings from your OpenRecall will appear here."
                     } else {
-                        "No session mentions “$query”."
+                        "No transcript mentions “$query”."
                     },
                     modifier = Modifier.padding(top = 48.dp),
                 )
@@ -148,12 +156,18 @@ private fun LoadedList(
     state: RecordingsUiState.Loaded,
     query: String,
     onQueryChange: (String) -> Unit,
-    onOpen: (SessionId) -> Unit,
+    onOpen: (SegmentId) -> Unit,
     onLoadMore: () -> Unit,
 ) {
     val listState = rememberLazyListState()
     val items = state.items
-    val groups = remember(items) { groupByRecency(items) }
+    val groups = remember(items, state.searching) {
+        if (state.searching) {
+            listOf(SegmentGroup("Matches", items))
+        } else {
+            groupByRecency(items)
+        }
+    }
 
     // Fire load-more when the last item scrolls into view and the list can
     // still grow. Suppressed while an inline loadError is showing — the
@@ -186,10 +200,10 @@ private fun LoadedList(
                 count = group.items.size,
                 key = { index -> group.items[index].id.value },
             ) { index ->
-                val session = group.items[index]
-                SessionCard(
-                    session = session,
-                    onClick = { onOpen(session.id) },
+                val segment = group.items[index]
+                SegmentCard(
+                    segment = segment,
+                    onClick = { onOpen(segment.id) },
                     modifier = Modifier.padding(bottom = 10.dp),
                 )
             }
@@ -236,9 +250,17 @@ private fun HeaderThen(
     }
 }
 
+/**
+ * One recording row: title, when it happened, the body line, and a metadata
+ * strip.
+ *
+ * The body is the matched transcript window on a search result and the
+ * preview otherwise — showing the preview for a search hit would leave the
+ * user staring at a row with no visible reason to have matched.
+ */
 @Composable
-private fun SessionCard(
-    session: SessionSummary,
+private fun SegmentCard(
+    segment: Segment,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -250,7 +272,7 @@ private fun SessionCard(
             verticalAlignment = Alignment.Top,
         ) {
             Text(
-                text = sessionTitle(session),
+                text = segment.displayTitle,
                 style = MaterialTheme.typography.titleSmall,
                 color = colors.ink,
                 maxLines = 1,
@@ -258,27 +280,55 @@ private fun SessionCard(
                 modifier = Modifier.weight(1f),
             )
             Text(
-                text = formatRelative(System.currentTimeMillis(), session.startedAt.toEpochMilli()),
+                text = formatRelative(System.currentTimeMillis(), segment.startedAt.toEpochMilli()),
                 style = MaterialTheme.typography.labelMedium,
                 color = colors.greyLight,
             )
         }
         Text(
-            text = session.preview.ifBlank { "No transcript yet." },
+            text = (segment.matchSnippet ?: segment.preview).ifBlank { "No transcript yet." },
             style = MaterialTheme.typography.bodyMedium,
             color = colors.inkMuted,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(top = 6.dp),
         )
-        Text(
-            text = "${formatHmMs(session.durationMs)} · ${session.transcriptCount} segments",
-            style = MaterialTheme.typography.bodySmall,
-            color = colors.greyLight,
-            modifier = Modifier.padding(top = 10.dp),
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = metaLine(segment),
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.greyLight,
+                modifier = Modifier.weight(1f),
+            )
+            if (segment.hasAudio) {
+                Icon(
+                    RecallIcons.Play,
+                    contentDescription = "Has audio",
+                    tint = colors.greyLight,
+                    modifier = Modifier.size(12.dp),
+                )
+            }
+            if (segment.memoryCount > 0) {
+                AccentChip(label = memoryBadge(segment.memoryCount))
+            }
+        }
     }
 }
+
+/** "01:04 · 37 lines", plus a live marker while the recording is still open. */
+private fun metaLine(segment: Segment): String = buildString {
+    append(formatHmMs(segment.durationMs))
+    append(" · ")
+    append("${segment.transcriptCount} lines")
+    if (!segment.closed) append(" · recording")
+}
+
+private fun memoryBadge(count: Int): String =
+    if (count == 1) "1 memory" else "$count memories"
 
 @Composable
 private fun InlineError(message: String, onRetry: () -> Unit) {
@@ -301,34 +351,34 @@ private fun Centered(content: @Composable () -> Unit) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { content() }
 }
 
-/** A recency bucket and its sessions, in the comp's Today/Yesterday/Earlier
+/** A recency bucket and its recordings, in the comp's Today/Yesterday/Earlier
  *  order. Empty buckets are dropped. */
-internal data class SessionGroup(val label: String, val items: List<SessionSummary>)
+internal data class SegmentGroup(val label: String, val items: List<Segment>)
 
 /**
- * Bucket sessions by start time relative to now. The server returns them
- * newest-first and carries no grouping of its own, so the split is done
- * here rather than adding a field to [SessionSummary].
+ * Bucket recordings by start time relative to now. The server returns them
+ * newest-first and carries no grouping of its own, so the split is done here
+ * rather than adding a field to [Segment].
  */
 internal fun groupByRecency(
-    sessions: List<SessionSummary>,
+    segments: List<Segment>,
     nowMs: Long = System.currentTimeMillis(),
-): List<SessionGroup> {
+): List<SegmentGroup> {
     val dayMs = 24 * 60 * 60 * 1000L
-    val today = mutableListOf<SessionSummary>()
-    val yesterday = mutableListOf<SessionSummary>()
-    val earlier = mutableListOf<SessionSummary>()
-    sessions.forEach { session ->
-        val age = nowMs - session.startedAt.toEpochMilli()
+    val today = mutableListOf<Segment>()
+    val yesterday = mutableListOf<Segment>()
+    val earlier = mutableListOf<Segment>()
+    segments.forEach { segment ->
+        val age = nowMs - segment.startedAt.toEpochMilli()
         when {
             age < dayMs -> today
             age < 2 * dayMs -> yesterday
             else -> earlier
-        }.add(session)
+        }.add(segment)
     }
     return listOf(
-        SessionGroup("Today", today),
-        SessionGroup("Yesterday", yesterday),
-        SessionGroup("Earlier", earlier),
+        SegmentGroup("Today", today),
+        SegmentGroup("Yesterday", yesterday),
+        SegmentGroup("Earlier", earlier),
     ).filter { it.items.isNotEmpty() }
 }

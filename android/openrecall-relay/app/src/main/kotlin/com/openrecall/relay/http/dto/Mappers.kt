@@ -2,11 +2,20 @@ package com.openrecall.relay.http.dto
 
 import com.openrecall.relay.domain.model.AudioSegment
 import com.openrecall.relay.domain.model.CaptureEvent
+import com.openrecall.relay.domain.model.CaptureSettings
+import com.openrecall.relay.domain.model.DeviceStatus
+import com.openrecall.relay.domain.model.MemoryStats
+import com.openrecall.relay.domain.model.RelaySettings
+import com.openrecall.relay.domain.model.RetentionSettings
+import com.openrecall.relay.domain.model.Segment
+import com.openrecall.relay.domain.model.SegmentDetails
+import com.openrecall.relay.domain.model.SegmentId
 import com.openrecall.relay.domain.model.SessionDetails
 import com.openrecall.relay.domain.model.SessionId
 import com.openrecall.relay.domain.model.SessionSummary
 import com.openrecall.relay.domain.model.ServerStatus
 import com.openrecall.relay.domain.model.TranscriptChunk
+import com.openrecall.relay.domain.model.Waveform
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
@@ -69,6 +78,79 @@ fun CaptureEventDto.toDomainOrNull(onUnknownKind: (String) -> Unit): CaptureEven
         null
     }
 }
+
+fun SegmentSummaryDto.toDomain(): Segment = Segment(
+    id = SegmentId(id),
+    sessionId = SessionId(sessionId),
+    title = title,
+    startedAt = parseInstant(startedAt),
+    endedAt = endedAt?.let(::parseInstant),
+    durationMs = durationMs,
+    transcriptCount = transcriptCount,
+    memoryCount = memoryCount,
+    preview = preview,
+    hasAudio = hasAudio,
+    closed = closed,
+    matchSnippet = matchSnippet,
+)
+
+fun SegmentDetailsDto.toDomain(onUnknownKind: (String) -> Unit): SegmentDetails = SegmentDetails(
+    summary = summary.toDomain(),
+    events = events.toDomain(onUnknownKind).sortedBy { it.seq },
+)
+
+fun WaveformDto.toDomain(): Waveform = Waveform(
+    // A zero bucket would make every playhead computation divide by zero, so
+    // an absent/garbage value falls back to the server's documented stride.
+    bucketMs = bucketMs.takeIf { it > 0 } ?: 500,
+    peaks = peaks.map { it.coerceIn(0f, 1f) },
+    durationMs = durationMs,
+)
+
+fun SettingsDocumentDto.toDomain(): RelaySettings = RelaySettings(
+    capture = CaptureSettings(
+        audioEnabled = capture.audio_enabled,
+        saveAudio = capture.save_audio,
+        visionEnabled = capture.vision_enabled,
+    ),
+    retention = RetentionSettings(audioDays = retention.audio_days),
+)
+
+fun RelaySettings.toDto(): SettingsDocumentDto = SettingsDocumentDto(
+    capture = CaptureSettingsDto(
+        audio_enabled = capture.audioEnabled,
+        save_audio = capture.saveAudio,
+        vision_enabled = capture.visionEnabled,
+    ),
+    retention = RetentionSettingsDto(audio_days = retention.audioDays),
+)
+
+/**
+ * `source` is the server's honesty flag: `"device"` means the hardware
+ * reported these numbers, anything else (today always `"static"`) means they
+ * are placeholders. Mapping it to a boolean here keeps the string out of the
+ * UI, which only ever needs to know whether to render the value as real.
+ */
+fun DeviceStatusDto.toDomain(): DeviceStatus = DeviceStatus(
+    measured = source == "device",
+    batteryPct = battery_pct,
+    storageFreeBytes = storage_free_bytes,
+    firmwareVersion = firmware_version,
+    recording = recording,
+    relayConnected = relay_connected,
+    microphoneAvailable = microphone_available,
+    cameraAvailable = camera_available,
+    lastPacketAt = last_packet_at?.let(::parseInstant),
+    lastPacketAgeS = last_packet_age_s,
+    lastTranscriptAt = last_transcript_at?.let(::parseInstant),
+    lastTranscriptAgeS = last_transcript_age_s,
+)
+
+fun MemoryStatsResponseDto.toDomain(): MemoryStats = MemoryStats(
+    total = total,
+    added24h = added_24h,
+    byKind = by_kind,
+)
 
 fun ServerStatusDto.toDomain(): ServerStatus = ServerStatus(
     reachable = reachable,

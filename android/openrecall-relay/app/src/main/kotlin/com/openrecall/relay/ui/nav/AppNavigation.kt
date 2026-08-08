@@ -25,15 +25,16 @@ import com.openrecall.relay.ui.device.DeviceRoute
 import com.openrecall.relay.ui.home.HomeRoute
 import com.openrecall.relay.ui.memory.MemoryRoute
 import com.openrecall.relay.ui.recordings.RecordingsRoute
-import com.openrecall.relay.ui.recordings.SessionDetailRoute
+import com.openrecall.relay.ui.recordings.SegmentDetailRoute
 import com.openrecall.relay.ui.settings.SettingsRoute
 
 /**
  * Single-Activity nav graph.
  *
  * Five destinations sit in the [BottomBar] — Home, Recordings, Memories,
- * Chat, Settings — matching the `design/` comp. Session detail, atom detail,
- * Device and Commands are push screens: they hide the bar and pop back.
+ * Chat, Settings — matching the `design/` comp. Recording detail, atom
+ * detail, Device and Commands are push screens: they hide the bar and pop
+ * back.
  *
  * [onReconfigure] launches the pairing wizard ([com.openrecall.relay.ui.SetupActivity])
  * through MainActivity's activity-result launcher. It is reachable from two
@@ -41,7 +42,7 @@ import com.openrecall.relay.ui.settings.SettingsRoute
  * Reconfigure.
  *
  * **Typed destinations note:** the string-route form is used rather than
- * `composable<Destination.SessionDetail>` because `SessionId` is a value
+ * `composable<Destination.SegmentDetail>` because `SegmentId` is a value
  * class and the typed API needs `@Serializable` on the route, which would
  * pull kotlinx-serialization into the navigation model.
  */
@@ -82,14 +83,14 @@ fun AppNavigation(
                     onSetUpDevice = onReconfigure,
                     onOpenSettings = { switchTab(Destination.Settings) },
                     onSeeAllRecordings = { switchTab(Destination.Recordings) },
-                    onOpenSession = { id ->
-                        navController.navigate(Destination.SessionDetail(id).route)
+                    onOpenSegment = { id ->
+                        navController.navigate(Destination.SegmentDetail(id).route)
                     },
                 )
             }
             composable(Destination.Recordings.route) {
                 RecordingsRoute(
-                    onOpen = { id -> navController.navigate(Destination.SessionDetail(id).route) },
+                    onOpen = { id -> navController.navigate(Destination.SegmentDetail(id).route) },
                 )
             }
             // Memories is a bar tab in the redesign. A chip tap deep-links to
@@ -138,17 +139,23 @@ fun AppNavigation(
                     AtomDetailRoute(atomId = atomId, onBack = { navController.popBackStack() })
                 }
             }
-            // SessionDetail carries the id as a path segment, parsed by
-            // [SessionIdNavType] so deep-links can address one session.
+            // SegmentDetail carries the id as a path segment, parsed by
+            // [SegmentIdNavType] so deep-links can address one recording.
             composable(
-                route = "session/{sessionId}",
-                arguments = listOf(navArgument("sessionId") { type = SessionIdNavType }),
+                route = Destination.SegmentDetail.ROUTE_TEMPLATE, // "segment/{segmentId}"
+                arguments = listOf(
+                    navArgument(Destination.SegmentDetail.ARG_SEGMENT_ID) {
+                        type = SegmentIdNavType
+                    },
+                ),
             ) { backStackEntry ->
-                val id = backStackEntry.arguments?.let { SessionIdNavType[it, "sessionId"] }
+                val id = backStackEntry.arguments?.let {
+                    SegmentIdNavType[it, Destination.SegmentDetail.ARG_SEGMENT_ID]
+                }
                 if (id == null) {
-                    NotFound("Session not found", "That recording is no longer available.")
+                    NotFound("Recording not found", "That recording is no longer available.")
                 } else {
-                    SessionDetailRoute(id = id, onBack = { navController.popBackStack() })
+                    SegmentDetailRoute(id = id, onBack = { navController.popBackStack() })
                 }
             }
         }

@@ -3,12 +3,18 @@ package com.openrecall.relay.data
 import android.app.Application
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.openrecall.relay.core.result.Outcome
+import com.openrecall.relay.domain.model.SegmentId
 import com.openrecall.relay.domain.model.ServerStatus
 import com.openrecall.relay.domain.model.SessionId
 import com.openrecall.relay.http.OpenRecallHttpClient
 import com.openrecall.relay.http.dto.CaptureEventDto
+import com.openrecall.relay.http.dto.SegmentDetailsDto
+import com.openrecall.relay.http.dto.SegmentMemoryDto
+import com.openrecall.relay.http.dto.SegmentSummaryDto
+import com.openrecall.relay.http.dto.SegmentsPageDto
 import com.openrecall.relay.http.dto.SessionDetailsDto
 import com.openrecall.relay.http.dto.SessionsPageDto
+import com.openrecall.relay.http.dto.WaveformDto
 import com.openrecall.relay.http.dto.toDomain
 import com.openrecall.relay.relay.RelayController
 import com.openrecall.relay.relay.IntentRelayStarter
@@ -47,7 +53,15 @@ object RepositoryModule {
      */
     data class Repositories(
         val configuration: ConfigurationRepository,
+        /**
+         * The `/sessions` surface. Kept wired as the plumbing/diagnostic
+         * view of the gateway; no user-facing screen reads it. A session is
+         * the foreground service's lifetime, spanning every reconnect, which
+         * is not what a user means by "a recording" — [segment] is.
+         */
         val session: SessionRepository,
+        /** Recordings list, detail, audio and titles. */
+        val segment: SegmentRepository,
         val device: DeviceRepository,
         val status: StatusRepository,
         val dashboard: DashboardRepository,
@@ -58,6 +72,9 @@ object RepositoryModule {
         val chatHistoryStore: ChatHistoryStore,
         // P1 memory-browse user-facing surface (MemoryScreen):
         val memoryRepository: MemoryRepository,
+        // Server-side capture/retention settings + device health. Read by the
+        // Settings screen's header and toggles.
+        val relaySettings: RelaySettingsRepository,
         // Speaker recognition: shared cache seeded from GET /speakers and
         // upserted by every transcript §E. Drives Recordings labels + the
         // reassign picker. v1 in-memory (rebuilt from GET /speakers after
@@ -95,6 +112,8 @@ object RepositoryModule {
         // client per (url, token) across the app.
         val clientProvider = clientProvider(configuration)
         val session = SessionRepositoryImpl(HttpSessionApi(clientProvider))
+        val segment = SegmentRepositoryImpl(HttpSegmentApi(clientProvider))
+        val relaySettings = HttpRelaySettingsRepository(clientProvider)
         val status = PollingStatusRepository(
             fetch = statusFetch(clientProvider),
             lifecycle = ProcessLifecycleOwner.get().lifecycle,
@@ -103,7 +122,7 @@ object RepositoryModule {
         val dashboard = DashboardRepositoryImpl(
             relayController = RelayController,
             statusRepo = status,
-            sessionRepo = session,
+            segmentRepo = segment,
             scope = scope,
         )
         // Command lifecycle: the API resolves the current (url, token)
@@ -160,6 +179,7 @@ object RepositoryModule {
         repos = Repositories(
             configuration = configuration,
             session = session,
+            segment = segment,
             device = device,
             status = status,
             dashboard = dashboard,
@@ -168,6 +188,7 @@ object RepositoryModule {
             agentRepository = agentRepository,
             chatHistoryStore = chatHistoryStore,
             memoryRepository = memoryRepository,
+            relaySettings = relaySettings,
             speakerCache = speakerCache,
             speakerActions = speakerActions,
             relayStarter = relayStarter,
@@ -235,6 +256,48 @@ private fun statusFetch(client: suspend () -> OpenRecallHttpClient): suspend () 
  * repository catches) and delegates. The repository owns DTO → domain
  * mapping and error classification.
  */
+/**
+ * Production [SegmentApi] over the shared [clientProvider], mirroring
+ * [HttpSessionApi]. Each method resolves the current client (or throws "not
+ * provisioned", which the repository catches) and delegates.
+ */
+private class HttpSegmentApi(
+    private val client: suspend () -> OpenRecallHttpClient,
+) : SegmentApi {
+    override suspend fun listSegments(
+        limit: Int,
+        cursor: String?,
+        query: String?,
+        sessionId: String?,
+    ): SegmentsPageDto = client().listSegments(limit, cursor, query, sessionId)
+
+    override suspend fun getSegment(id: SegmentId): SegmentDetailsDto = client().getSegment(id)
+
+    override suspend fun getSegmentMemory(id: SegmentId): SegmentMemoryDto =
+        client().getSegmentMemory(id)
+
+    override suspend fun getSegmentWaveform(id: SegmentId): WaveformDto =
+        client().getSegmentWaveform(id)
+
+    override suspend fun renameSegment(id: SegmentId, title: String): SegmentSummaryDto =
+        client().renameSegment(id, title)
+
+    override suspend fun deleteSegment(id: SegmentId) = client().deleteSegment(id)
+
+    /**
+     * Resolved through the same provider as every other call, so the token
+     * handed to the media player is the currently provisioned one rather
+     * than a value captured when the screen opened.
+     */
+    override suspend fun audioSource(id: SegmentId): AudioSource {
+        val c = client()
+        return AudioSource(
+            url = c.segmentAudioUrl(id),
+            headers = mapOf("Authorization" to "Bearer ${c.token}"),
+        )
+    }
+}
+
 private class HttpSessionApi(private val client: suspend () -> OpenRecallHttpClient) : SessionApi {
     override suspend fun listSessions(limit: Int, cursor: String?): SessionsPageDto =
         client().listSessions(limit, cursor)

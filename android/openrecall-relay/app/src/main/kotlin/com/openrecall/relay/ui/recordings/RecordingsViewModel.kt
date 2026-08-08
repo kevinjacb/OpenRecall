@@ -7,16 +7,16 @@ import com.openrecall.relay.core.model.PagedResult
 import com.openrecall.relay.core.ui.toDisplayMessage
 import com.openrecall.relay.core.util.AUTO_REFRESH_INTERVAL_MS
 import com.openrecall.relay.core.util.launchAutoRefresh
-import com.openrecall.relay.data.SessionRepository
-import com.openrecall.relay.domain.model.SessionSummary
+import com.openrecall.relay.data.SegmentRepository
+import com.openrecall.relay.domain.model.Segment
 import com.openrecall.relay.data.httpApiError
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -28,12 +28,15 @@ import kotlinx.coroutines.launch
 sealed interface RecordingsUiState {
     data object Loading : RecordingsUiState
     data class Loaded(
-        val items: List<SessionSummary>,
+        val items: List<Segment>,
         val canLoadMore: Boolean,
         /** A transient paging error (items already loaded) shown as an inline
          *  "Retry" row, not a full-screen error. `null` when the last load
          *  succeeded. */
         val loadError: ApiError?,
+        /** True when these rows are search hits rather than the browse list.
+         *  The empty state and the row layout both differ. */
+        val searching: Boolean,
     ) : RecordingsUiState
     data object Empty : RecordingsUiState
     /** Full-screen error — only the initial load (no items yet) failed. */
@@ -41,32 +44,56 @@ sealed interface RecordingsUiState {
 }
 
 /**
- * Recordings ViewModel. Observes the paged session list + the transient
- * load-errors flow, and kicks the first page on construction (the list
- * screen owns the initial load — the Home dashboard does not). [onLoadMore]
- * is safe to call repeatedly: it no-ops while a load is in flight or the
- * list can't grow, and the repository itself is idempotent once exhausted.
+ * Recordings ViewModel. Observes the paged segment list + the transient
+ * load-errors flow, and kicks the first page on construction (the list screen
+ * owns the initial load — the Home dashboard does not). [onLoadMore] is safe
+ * to call repeatedly: it no-ops while a load is in flight or the list can't
+ * grow, and the repository itself is idempotent once exhausted.
+ *
+ * **Search runs on the server.** The old screen filtered the pages already
+ * loaded, which meant a query silently missed every recording the user hadn't
+ * scrolled to — the failure mode where search appears to work and quietly
+ * doesn't. `GET /segments?q=` scans the transcripts instead, so a hit from
+ * three weeks ago surfaces without paging to it. That makes the query a
+ * network call, hence the debounce.
  */
 class RecordingsViewModel(
-    private val repo: SessionRepository,
+    private val repo: SegmentRepository,
 ) : ViewModel() {
 
     private val _query = MutableStateFlow("")
-    /** The search box's current text. Drives the filter in [state]. */
+    /** The search box's current text. */
     val query: StateFlow<String> = _query.asStateFlow()
 
+    /** The query the *list* currently reflects, which lags [_query] by the
+     *  debounce. Kept separate so the empty state names what was searched. */
+    private val appliedQuery = MutableStateFlow("")
+
     val state: StateFlow<RecordingsUiState> = combine(
-        repo.observeSessions(),
+        repo.observeSegments(),
         repo.observeLoadErrors(),
-        _query,
-    ) { paged, loadError, query ->
-        paged.toUiState(loadError, query)
+        appliedQuery,
+    ) { paged, loadError, applied ->
+        paged.toUiState(loadError, applied.isNotBlank())
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RecordingsUiState.Loading)
 
-    /** Update the search text. Filtering is local and immediate — no
-     *  debounce is needed because nothing is fetched. */
+    private var pendingQuery: Job? = null
+
+    /**
+     * Update the search text and schedule the fetch. Debounced so typing
+     * issues one request after the user pauses rather than one per keystroke;
+     * clearing the box is applied on the same path, which returns the list to
+     * browse mode.
+     */
     fun onQueryChange(value: String) {
         _query.value = value
+        pendingQuery?.cancel()
+        pendingQuery = viewModelScope.launch {
+            delay(SEARCH_DEBOUNCE_MS)
+            val q = value.trim()
+            appliedQuery.value = q
+            repo.setQuery(q)
+        }
     }
 
     // Read/written from viewModelScope (Main) and onLoadMore (Main). Main-
@@ -92,9 +119,9 @@ class RecordingsViewModel(
     }
 
     /**
-     * Pull-to-refresh / the "update" option on Recordings: reset to page 1 and
-     * re-fetch (the newest sessions land at the top). No-op if a load or a
-     * refresh is already in flight — the repository's own [Mutex] serializes
+     * Pull-to-refresh: reset to page 1 and re-fetch (the newest recordings
+     * land at the top), keeping any active query. No-op if a load or a
+     * refresh is already in flight — the repository's own mutex serializes
      * them, and the flag prevents overlapping spinners.
      */
     fun onRefresh() {
@@ -103,7 +130,7 @@ class RecordingsViewModel(
         loading = true
         viewModelScope.launch {
             try {
-                repo.refreshSessions()
+                repo.refresh()
             } finally {
                 loading = false
                 _isRefreshing.value = false
@@ -137,7 +164,7 @@ class RecordingsViewModel(
         if (loading || _isRefreshing.value) return
         loading = true
         try {
-            repo.refreshSessions(silent = true)
+            repo.refresh(silent = true)
         } finally {
             loading = false
         }
@@ -153,46 +180,35 @@ class RecordingsViewModel(
         loading = true
         viewModelScope.launch {
             try {
-                repo.loadMoreSessions()
+                repo.loadMore()
             } finally {
                 loading = false
             }
         }
     }
+
+    private companion object {
+        const val SEARCH_DEBOUNCE_MS = 250L
+    }
 }
 
-/**
- * Project a page into UI state, applying the [query] filter.
- *
- * The filter is client-side over the pages already loaded: the sessions API
- * takes only `limit` and `cursor`, with no search parameter, so there is
- * nothing to push down to the server. A query therefore searches what has
- * been paged in so far — scrolling further widens it. `canLoadMore` is left
- * as the page reports it, so paging keeps working while filtered.
- */
-private fun PagedResult<SessionSummary>.toUiState(
+/** Project a page into UI state. */
+private fun PagedResult<Segment>.toUiState(
     loadError: ApiError?,
-    query: String,
+    searching: Boolean,
 ): RecordingsUiState = when (this) {
     is PagedResult.Loading -> RecordingsUiState.Loading
     is PagedResult.Exhausted -> RecordingsUiState.Empty
     is PagedResult.Error -> RecordingsUiState.Error(httpApiError(cause).toDisplayMessage())
-    is PagedResult.Page -> {
-        val matches = items.filter { it.matches(query) }
-        if (matches.isEmpty()) {
+    is PagedResult.Page ->
+        if (items.isEmpty()) {
             RecordingsUiState.Empty
         } else {
             RecordingsUiState.Loaded(
-                items = matches,
+                items = items,
                 canLoadMore = nextCursor != null,
                 loadError = loadError,
+                searching = searching,
             )
         }
-    }
-}
-
-private fun SessionSummary.matches(query: String): Boolean {
-    val q = query.trim()
-    if (q.isEmpty()) return true
-    return preview.contains(q, ignoreCase = true) || id.value.contains(q, ignoreCase = true)
 }
