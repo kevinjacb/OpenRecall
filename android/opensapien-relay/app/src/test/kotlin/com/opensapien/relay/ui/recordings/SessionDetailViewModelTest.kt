@@ -377,4 +377,44 @@ class SessionDetailViewModelTest {
         testScheduler.advanceUntilIdle()
         assertEquals(YouConfirmationState.Idle, vm.youConfirmation.value)
     }
+
+    @Test fun cacheSeededFromLoadedEventsPreservesRealNames() = runTest(dispatcher) {
+        val cache = SpeakerCache()
+        cache.upsert("sp-1", "Sarah", isWearer = false)  // renamed earlier
+        val actions = RecordingSpeakerActions()
+        val summaryFlow = MutableStateFlow<Outcome<SessionDetails>>(
+            Outcome.Success(SessionDetails(summary("s1"), emptyList())),
+        )
+        // Two transcript hops: sp-1 (still unnamed on the wire — the server
+        // hasn't refreshed) and a brand-new sp-2 (unnamed). Seeding must
+        // populate sp-2 but NOT overwrite sp-1's renamed name.
+        val eventsFlow = MutableStateFlow<Outcome<List<CaptureEvent>>>(
+            Outcome.Success(listOf(
+                TranscriptChunk(
+                    id = "e1", sessionId = SessionId("s1"), seq = 1, startMs = 1000L,
+                    createdAt = Instant.EPOCH, text = "t1", durationMs = 500,
+                    speaker = "sp-1", speakerName = null, isWearer = false,
+                ),
+                TranscriptChunk(
+                    id = "e2", sessionId = SessionId("s1"), seq = 2, startMs = 2000L,
+                    createdAt = Instant.EPOCH, text = "t2", durationMs = 500,
+                    speaker = "sp-2", speakerName = null, isWearer = false,
+                ),
+            )),
+        )
+        val vm = SessionDetailViewModel(
+            id = SessionId("s1"),
+            repo = FakeDetailRepo(summaryFlow, eventsFlow),
+            speakerCache = cache,
+            speakerActions = actions,
+        )
+        backgroundScope.launch { vm.state.toList(mutableListOf()) }
+        testScheduler.advanceUntilIdle()
+
+        // sp-1 keeps the renamed name (not overwritten with null).
+        assertEquals("Sarah", cache.get("sp-1")?.name)
+        // sp-2 is seeded (null name) so the reassign picker is non-empty.
+        assertNotNull(cache.get("sp-2"))
+        assertNull(cache.get("sp-2")?.name)
+    }
 }

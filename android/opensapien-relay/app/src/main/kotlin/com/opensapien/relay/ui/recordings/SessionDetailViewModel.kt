@@ -126,7 +126,10 @@ class SessionDetailViewModel(
                 // Also scan the loaded events for a wearer needing confirmation.
                 .onEach { ui ->
                     if (_isRefreshing.value) _isRefreshing.value = false
-                    (ui as? SessionDetailUiState.Loaded)?.events?.let { maybePromptYouConfirmation(it) }
+                    (ui as? SessionDetailUiState.Loaded)?.events?.let {
+                        seedCacheFromSession(it)
+                        maybePromptYouConfirmation(it)
+                    }
                 }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SessionDetailUiState.Loading)
@@ -186,6 +189,23 @@ class SessionDetailViewModel(
     /** Clear the speaker error banner (dismissed by the user). */
     fun dismissSpeakerError() {
         _speakerError.value = null
+    }
+
+    /**
+     * Seed the speaker cache from a freshly loaded event batch so the
+     * reassign picker is populated for historical (recording) sessions,
+     * whose speakers are never seen on the live WS auth path. Idempotent:
+     * a speaker already holding a real (renamed) name is preserved; a
+     * null-named entry is upgraded if a later chunk carries a name. Never
+     * downgrades a real name to null.
+     */
+    private fun seedCacheFromSession(events: List<CaptureEvent>) {
+        for (chunk in events.filterIsInstance<TranscriptChunk>()) {
+            val sid = chunk.speaker ?: continue
+            val existing = speakerCache.get(sid)
+            if (existing != null && existing.name != null) continue
+            speakerCache.upsert(sid, chunk.speakerName, chunk.isWearer)
+        }
     }
 
     /**

@@ -28,6 +28,8 @@ import com.opensapien.relay.core.ui.Spacing
 import com.opensapien.relay.core.util.formatHmMs
 import com.opensapien.relay.data.RepositoryModule
 import com.opensapien.relay.data.SpeakerCache
+import com.opensapien.relay.data.SpeakerEntry
+import com.opensapien.relay.data.personLabels
 import com.opensapien.relay.domain.model.AudioSegment
 import com.opensapien.relay.domain.model.CaptureEvent
 import com.opensapien.relay.domain.model.SessionId
@@ -175,6 +177,26 @@ private fun Body(
     onConfirmYou: (name: String) -> Unit = {},
     onDismissYouConfirmation: () -> Unit = {},
 ) {
+    // "Person N" placeholder labels for unnamed non-wearer speakers, built
+    // from the first-appearance order of this session's transcript speakers.
+    // Computed here (a @Composable context) rather than inside the LazyColumn
+    // content lambda (a LazyListScope, not @Composable — `remember` is not
+    // callable there). Memoized per `events` change; cheap to recompute.
+    val orderedSpeakers = remember(events) {
+        events?.filterIsInstance<TranscriptChunk>()
+            ?.mapNotNull { chunk ->
+                val sid = chunk.speaker ?: return@mapNotNull null
+                SpeakerEntry(
+                    speakerId = sid,
+                    name = chunk.speakerName ?: speakerCache.get(sid)?.name,
+                    isWearer = chunk.isWearer,
+                )
+            }
+            ?.distinctBy { it.speakerId }
+            ?: emptyList()
+    }
+    val labels = remember(orderedSpeakers) { personLabels(orderedSpeakers) }
+
     // The timeline is keyed by the stable event id (NOT the design system's
     // `timeline()` helper, which keys by title and would crash a LazyColumn
     // on two transcripts with identical text).
@@ -213,13 +235,16 @@ private fun Body(
                         body = "This session has no transcript events yet.",
                     )
                 }
-                else -> items(events, key = { it.id }) { event ->
-                    EventRow(
-                        event = event,
-                        speakerCache = speakerCache,
-                        onRename = onRenameSpeaker,
-                        onReassign = onReassignSpeaker,
-                    )
+                else -> {
+                    items(events, key = { it.id }) { event ->
+                        EventRow(
+                            event = event,
+                            speakerCache = speakerCache,
+                            personLabels = labels,
+                            onRename = onRenameSpeaker,
+                            onReassign = onReassignSpeaker,
+                        )
+                    }
                 }
             }
         }
@@ -230,21 +255,25 @@ private fun Body(
 private fun EventRow(
     event: CaptureEvent,
     speakerCache: SpeakerCache = SpeakerCache(),
+    personLabels: Map<String, String> = emptyMap(),
     onRename: (speakerId: String, name: String) -> Unit = { _, _ -> },
     onReassign: (fromId: String, toId: String) -> Unit = { _, _ -> },
 ) {
     // Speaker label resolution. TranscriptChunks carry the server-resolved
-    // speakerName (or null when the hop had no speaker / speaker unknown).
+    // speakerName (real null when the hop had no speaker / speaker unknown).
     // We fall back to the cache (a prior hop may have named this speaker, or
-    // the local optimistic rename applied), then to "?".
+    // the local optimistic rename applied). If neither has a name we synthesize
+    // a stable "Person N" placeholder (client-only) from first-appearance
+    // order, so the user never sees a bare "null" or "?".
     val chunk = event as? TranscriptChunk
     val speakerId = chunk?.speaker
-    val speakerName = when {
+    val realName: String? = when {
         chunk == null || speakerId == null -> null
         chunk.speakerName != null -> chunk.speakerName
         speakerCache.get(speakerId)?.name != null -> speakerCache.get(speakerId)!!.name
-        else -> "?"
+        else -> null
     }
+    val displayName: String? = realName ?: personLabels[speakerId]
 
     // Rename dialog state.
     var showRename by remember { mutableStateOf(false) }
@@ -259,7 +288,7 @@ private fun EventRow(
         // Reassign menu). Non-transcript rows render no tag.
         if (chunk != null && speakerId != null) {
             Text(
-                text = speakerName ?: "?",
+                text = displayName ?: "?",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier
@@ -271,7 +300,7 @@ private fun EventRow(
                     text = { Text("Rename") },
                     onClick = {
                         showMenu = false
-                        renameText = speakerName?.takeUnless { it == "?" } ?: ""
+                        renameText = realName ?: ""
                         showRename = true
                     },
                 )
@@ -319,7 +348,7 @@ private fun EventRow(
                     } else {
                         others.forEach { entry ->
                             DropdownMenuItem(
-                                text = { Text(entry.name ?: "?") },
+                                text = { Text(entry.name ?: personLabels[entry.speakerId] ?: "?") },
                                 onClick = {
                                     showReassign = false
                                     onReassign(speakerId, entry.speakerId)
