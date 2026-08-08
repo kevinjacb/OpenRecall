@@ -11,11 +11,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from opensapien_server.memory.atom import MemoryAtom
-from opensapien_server.memory.embeddings import Embedder
-from opensapien_server.memory.index import InMemoryMemoryIndex
-from opensapien_server.memory.retrieval import IndexingPipeline
-from opensapien_server.memory.store import InMemoryAtomStore
+from openrecall_server.memory.atom import MemoryAtom
+from openrecall_server.memory.embeddings import Embedder
+from openrecall_server.memory.index import InMemoryMemoryIndex
+from openrecall_server.memory.retrieval import IndexingPipeline
+from openrecall_server.memory.store import InMemoryAtomStore
 
 
 def _atom(atom_id: str, session_id: str, text: str) -> MemoryAtom:

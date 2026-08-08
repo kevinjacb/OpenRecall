@@ -12,27 +12,27 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from opensapien_server.agent.capability import ConstantCapabilityProvider
-from opensapien_server.commands.dispatcher import CommandDispatcher
-from opensapien_server.commands.signing import CommandSigner
-from opensapien_server.commands.store import SqliteCommandStore
-from opensapien_server.contracts.clock import FakeClock
-from opensapien_server.contracts.id_generator import DeterministicIdGenerator
-from opensapien_server.contracts.types import DeviceResourceStatus
-from opensapien_server.events.model import CaptureEvent
-from opensapien_server.events.store import InMemoryEventStore
-from opensapien_server.gateway.liveness import DeviceLiveness
-from opensapien_server.http.app import build_app
-from opensapien_server.media.audio import AudioStore
-from opensapien_server.memory.atom import MemoryAtom
-from opensapien_server.memory.index import InMemoryMemoryIndex
-from opensapien_server.memory.store import InMemoryAtomStore
-from opensapien_server.sessions.index import SessionIndex
-from opensapien_server.sessions.lifecycle import SessionLifecycle
-from opensapien_server.sessions.segment_meta import InMemorySegmentMetaStore
-from opensapien_server.sessions.segments import SEGMENT_IDLE_MS, SegmentIndex
-from opensapien_server.settings.reconciler import DeviceReconciler
-from opensapien_server.settings.store import InMemorySettingsStore
+from openrecall_server.agent.capability import ConstantCapabilityProvider
+from openrecall_server.commands.dispatcher import CommandDispatcher
+from openrecall_server.commands.signing import CommandSigner
+from openrecall_server.commands.store import SqliteCommandStore
+from openrecall_server.contracts.clock import FakeClock
+from openrecall_server.contracts.id_generator import DeterministicIdGenerator
+from openrecall_server.contracts.types import DeviceResourceStatus
+from openrecall_server.events.model import CaptureEvent
+from openrecall_server.events.store import InMemoryEventStore
+from openrecall_server.gateway.liveness import DeviceLiveness
+from openrecall_server.http.app import build_app
+from openrecall_server.media.audio import AudioStore
+from openrecall_server.memory.atom import MemoryAtom
+from openrecall_server.memory.index import InMemoryMemoryIndex
+from openrecall_server.memory.store import InMemoryAtomStore
+from openrecall_server.sessions.index import SessionIndex
+from openrecall_server.sessions.lifecycle import SessionLifecycle
+from openrecall_server.sessions.segment_meta import InMemorySegmentMetaStore
+from openrecall_server.sessions.segments import SEGMENT_IDLE_MS, SegmentIndex
+from openrecall_server.settings.reconciler import DeviceReconciler
+from openrecall_server.settings.store import InMemorySettingsStore
 
 _T0 = datetime(2026, 8, 8, 9, 0, 0, tzinfo=timezone.utc)
 _AUTH = {"Authorization": "Bearer t"}

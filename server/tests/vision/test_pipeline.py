@@ -8,9 +8,9 @@ same image for a session again is a no-op (and does not re-call the costly model
 
 from datetime import datetime, timezone
 
-from opensapien_server.media.blob import InMemoryBlobStore, sha256_hex
-from opensapien_server.memory.store import InMemoryAtomStore
-from opensapien_server.vision.pipeline import VisionPipeline
+from openrecall_server.media.blob import InMemoryBlobStore, sha256_hex
+from openrecall_server.memory.store import InMemoryAtomStore
+from openrecall_server.vision.pipeline import VisionPipeline
 
 FIXED = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from opensapien_server.contracts.types import (
+from openrecall_server.contracts.types import (
     PlannerContext,
     Proactive,
     Trigger,

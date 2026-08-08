@@ -12,11 +12,11 @@ import struct
 import pytest
 import websockets
 
-from opensapien_server.events.store import InMemoryEventStore
-from opensapien_server.gateway.adapter import serve
-from opensapien_server.ingest.audio_packet import PacketType, VadState
-from opensapien_server.ingest.pipeline import AudioIngestPipeline
-from opensapien_server.ingest.reassembler import SessionReassembler
+from openrecall_server.events.store import InMemoryEventStore
+from openrecall_server.gateway.adapter import serve
+from openrecall_server.ingest.audio_packet import PacketType, VadState
+from openrecall_server.ingest.pipeline import AudioIngestPipeline
+from openrecall_server.ingest.reassembler import SessionReassembler
 
 pytestmark = pytest.mark.asyncio
 

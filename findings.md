@@ -1,8 +1,8 @@
 # Findings — design vs. server endpoint gap analysis
 
 **Date:** 2026-08-08
-**Design source:** Claude Design project `OpenSapien` (`c9d85fba-6033-48a3-ba50-3571bdbad26f`), file `Sense Relay.dc.html`
-**Server source:** `server/src/opensapien_server/http/` at commit `d9d39ab`
+**Design source:** Claude Design project `OpenRecall` (`c9d85fba-6033-48a3-ba50-3571bdbad26f`), file `Sense Relay.dc.html`
+**Server source:** `server/src/openrecall_server/http/` at commit `d9d39ab`
 
 The design is a single interactive Android prototype rendering **7 pages**:
 Pairing, Home, Recordings, Recording Detail, Memories, Chat, Settings.

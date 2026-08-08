@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import struct
 
-from opensapien_server.media.ogg import (
+from openrecall_server.media.ogg import (
     GRANULES_PER_FRAME,
     SILENT_FRAME,
     _crc32,

@@ -10,10 +10,10 @@ import os
 
 import pytest
 
-from opensapien_server.media.audio import AudioStore
-from opensapien_server.media.retention import RetentionSweeper
-from opensapien_server.settings.model import SettingsDocument
-from opensapien_server.settings.store import InMemorySettingsStore
+from openrecall_server.media.audio import AudioStore
+from openrecall_server.media.retention import RetentionSweeper
+from openrecall_server.settings.model import SettingsDocument
+from openrecall_server.settings.store import InMemorySettingsStore
 
 _NOW = 1_800_000_000.0
 _DAY = 86_400.0

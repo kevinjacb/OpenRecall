@@ -1,4 +1,4 @@
-# OpenSapien Firmware — Phase 0 Bench Spikes
+# OpenRecall Firmware — Phase 0 Bench Spikes
 
 These are **throwaway measurement sketches**, not product firmware. Their only job
 is to turn three estimated numbers into measured facts on your actual

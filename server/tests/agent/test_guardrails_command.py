@@ -20,12 +20,12 @@ from __future__ import annotations
 
 import pytest
 
-from opensapien_server.contracts.types import (
+from openrecall_server.contracts.types import (
     CapabilitySet,
     DeviceResourceStatus,
 )
-from opensapien_server.agent.validator_command import ValidatedCommand
-from opensapien_server.agent.guardrails_command import (
+from openrecall_server.agent.validator_command import ValidatedCommand
+from openrecall_server.agent.guardrails_command import (
     CommandGuardrails,
     CommandGuardrailsResult,
     RejectionReason,

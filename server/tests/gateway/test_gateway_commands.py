@@ -9,13 +9,13 @@ survives the gateway intact).
 
 from datetime import datetime, timedelta, timezone
 
-from opensapien_server.commands.dispatcher import CommandDispatcher
-from opensapien_server.commands.model import Command
-from opensapien_server.commands.signing import CommandSigner, SignedCommand, verify_command
-from opensapien_server.gateway.core import GatewayCore
-from opensapien_server.ingest.pipeline import AudioIngestPipeline
-from opensapien_server.ingest.reassembler import SessionReassembler
-from opensapien_server.protocol.messages import Ack, CommandAck, CommandMessage, Hello
+from openrecall_server.commands.dispatcher import CommandDispatcher
+from openrecall_server.commands.model import Command
+from openrecall_server.commands.signing import CommandSigner, SignedCommand, verify_command
+from openrecall_server.gateway.core import GatewayCore
+from openrecall_server.ingest.pipeline import AudioIngestPipeline
+from openrecall_server.ingest.reassembler import SessionReassembler
+from openrecall_server.protocol.messages import Ack, CommandAck, CommandMessage, Hello
 
 NOW = datetime.now(timezone.utc)
 

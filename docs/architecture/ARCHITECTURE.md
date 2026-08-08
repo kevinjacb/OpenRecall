@@ -1,4 +1,4 @@
-# OpenSapien — System Architecture
+# OpenRecall — System Architecture
 
 > How all of it comes together: firmware, Android relay, and server — every
 > protocol, every algorithm, every wire format, every state machine.
@@ -11,10 +11,10 @@
 
 ## 0. The thirty-second version
 
-OpenSapien is a **wearable AI memory platform** with three tiers:
+OpenRecall is a **wearable AI memory platform** with three tiers:
 
 ```
-   OpenSapien Sensor              OpenSapien Relay              OpenSapien Server
+   OpenRecall Sensor              OpenRecall Relay              OpenRecall Server
    (firmware, ESP-IDF)            (Android, Kotlin)             (Python, aiohttp)
    ───────────────────            ──────────────────            ──────────────────
    XIAO ESP32S3 Sense            Android phone                 Mac / box
@@ -29,7 +29,7 @@ The wearable is deliberately dumb: it captures audio, gates it with VAD, Opus-en
 it, buffers it in a 60s PSRAM ring, and streams it as **§C.6** binary frames over
 BLE. It receives **§D** Ed25519-signed commands, verifies them against a
 provisioned server key, executes them, and acks. It does **not** do §E session
-framing — that is the phone relay's job (`firmware/opensapien_sensor/main/opensapien_sensor.c:4-7`).
+framing — that is the phone relay's job (`firmware/openrecall_sensor/main/openrecall_sensor.c:4-7`).
 
 The Android relay is a thin bridge: it forwards §C.6 audio **verbatim** (raw BLE
 notification bytes → WebSocket binary frame), re-wraps signed §D commands from the
@@ -65,7 +65,7 @@ that byte-matches a server-generated golden vector.
 
 **Canonical definitions:**
 
-Firmware — `firmware/opensapien_sensor/main/config.h:75-80`:
+Firmware — `firmware/openrecall_sensor/main/config.h:75-80`:
 ```c
 #define C6_VERSION 1
 #define C6_HEADER_LEN 12
@@ -76,7 +76,7 @@ enum c6_packet_type { C6_LIVE = 0, C6_MEMORY_CHUNK = 1, C6_HISTORICAL = 2 };
 enum c6_vad_state    { C6_GAP_MARKER = 0, C6_SPEECH = 1, C6_PREROLL = 2, C6_HANGOVER = 3 };
 ```
 
-Server — `server/src/opensapien_server/ingest/audio_packet.py:28-38`:
+Server — `server/src/openrecall_server/ingest/audio_packet.py:28-38`:
 ```python
 class PacketType(IntEnum):  LIVE = 0; MEMORY_CHUNK = 1; HISTORICAL = 2
 class VadState(IntEnum):    GAP_MARKER = 0; SPEECH = 1; PREROLL = 2; HANGOVER = 3
@@ -86,8 +86,8 @@ All numeric values match across both ends. Flag bits are inline masks, not a
 named enum (`audio_packet.py:61-63`): `is_last_of_request → bool(self.flags & 0b10)`.
 
 **Byte-level header** (12 bytes, little-endian), documented identically in
-`firmware/opensapien_sensor/main/c6_packet.h:8-15` and
-`server/src/opensapien_server/ingest/audio_packet.py:2-16`:
+`firmware/openrecall_sensor/main/c6_packet.h:8-15` and
+`server/src/openrecall_server/ingest/audio_packet.py:2-16`:
 
 ```
 byte 0       (version << 4) | ptype     version nibble hi, ptype nibble lo
@@ -101,7 +101,7 @@ byte 12..    repeated [u8 len][opus bytes] × frame_count
 
 Server decoder: `_HEADER = struct.Struct("<BIIBBB")` (`audio_packet.py:24`).
 Firmware encoder: writes byte 0 as `((C6_VERSION & 0x0F) << 4) | (ptype & 0x0F)`,
-then `memcpy`s the two uint32s (`firmware/opensapien_sensor/main/c6_packet.c:24-30`).
+then `memcpy`s the two uint32s (`firmware/openrecall_sensor/main/c6_packet.c:24-30`).
 
 **Opus payload:** each frame is `[u8 len][len bytes of Opus]`. Frame length capped
 at 255 (u8 field); `MAX_OPUS_BYTES = 256` (`config.h:24`). Audio is Opus 16 kHz
@@ -109,7 +109,7 @@ mono, 20 ms frames (`FRAME_MS=20`), 24 kbps (`OPUS_BITRATE=24000`), complexity 1
 (`config.h:22-23`). 50 frames per chunk = 1 second (`config.h:80`).
 
 **chunk_seq numbering:** a boot-relative monotonic uint32 that never resets
-(`firmware/opensapien_sensor/main/ble_drain.c:166` `uint32_t chunk_seq = 0;`,
+(`firmware/openrecall_sensor/main/ble_drain.c:166` `uint32_t chunk_seq = 0;`,
 incremented per emitted packet). The server's `SessionReassembler` orders packets
 by this seq:
 - `start_seq=0` (live) → reassembler latches at the **first packet it sees** and
@@ -143,7 +143,7 @@ against this (`ble_drain.c:296-306` drops a frame larger than budget).
 
 ### 1.2 §D — signed commands (Ed25519)
 
-**Server signing** (`server/src/opensapien_server/commands/signing.py:56-78`):
+**Server signing** (`server/src/openrecall_server/commands/signing.py:56-78`):
 `CommandSigner.sign(command)` signs `command.canonical_bytes()` with a raw
 64-byte detached Ed25519 signature (`cryptography...Ed25519PrivateKey.sign()`).
 The private key is loaded/created by `load_or_create_signer(path)` (`signing.py:91-108`)
@@ -163,7 +163,7 @@ Deterministic: `sort_keys=True` + compact separators. Insertion-order independen
 `idempotency_key`. All fields are signed. No separate nonce — `command_id`
 (uniqueness) + `issued_at`/`expires_at` (freshness) serve that role. `expires_at`
 is NOT checked on-device; the relay enforces expiry upstream
-(`firmware/opensapien_sensor/main/commands.h:9-11`).
+(`firmware/openrecall_sensor/main/commands.h:9-11`).
 
 **Two-layer wire structure:**
 - Layer A — signed envelope (`signing.py:39-53` `to_wire()`):
@@ -185,7 +185,7 @@ is NOT checked on-device; the relay enforces expiry upstream
   `request_buffer` = `seconds` ∈ [1,60]; others no params.
 
 **Firmware verify path (libsodium, NOT mbedTLS):** mbedTLS on this IDF has no
-Ed25519, so the device uses libsodium (`firmware/opensapien_sensor/main/commands.c`):
+Ed25519, so the device uses libsodium (`firmware/openrecall_sensor/main/commands.c`):
 ```c
 #include "sodium.h"
 #define ED25519_SIG_LEN 64
@@ -222,7 +222,7 @@ Server `CommandAck` (`protocol/messages.py:41-46`): `{"type":"command_ack",
 "session_id":...,"command_id":...}`. Both ends key on `command_id`; the relay adds
 `session_id` + `type`.
 
-**Test vectors** (`firmware/opensapien_sensor/test/command_vector.md`): two 213-byte
+**Test vectors** (`firmware/openrecall_sensor/test/command_vector.md`): two 213-byte
 golden frames — VALID (verify, execute `capture_photo`, ack `demo:0`) and FORGED
 (first sig byte flipped one bit; device drops, no ack). Provisioning key:
 `03a2a60b...`. These are manual bench vectors; `test_executors.c` tests
@@ -231,7 +231,7 @@ parse/validate/dispatch logic (not the libsodium verify).
 ### 1.3 §E — session framing (text-JSON control plane, relay-owned)
 
 There is no single enum — each side uses discriminated unions on a `type` string.
-Server models in `server/src/opensapien_server/protocol/messages.py` all extend
+Server models in `server/src/openrecall_server/protocol/messages.py` all extend
 `_Strict` → `ConfigDict(extra="forbid")` (`messages.py:19-20`).
 
 | Kind literal | Direction | Server def | Relay def |
@@ -291,17 +291,17 @@ event_ids instead of colliding/dropping (`gateway/core.py:248-276`).
 
 ---
 
-## 2. Tier 1 — Firmware (`firmware/opensapien_sensor`)
+## 2. Tier 1 — Firmware (`firmware/openrecall_sensor`)
 
 ESP-IDF v5.1.6 / NimBLE 1.6 (pinned — Seeed XIAO ESP32S3 Sense, dual-core Xtensa LX7,
 8 MB Octal PSRAM, dual IENMP441 I2S mic array). The wearable is "deliberately dumb"
-(`opensapien_sensor.c:4-7`).
+(`openrecall_sensor.c:4-7`).
 
 ### 2.1 Module inventory (18 files in `main/`)
 
 | File | Role |
 |------|------|
-| `opensapien_sensor.c` | App entry: `app_main`, `audio_task`, core/priority layout |
+| `openrecall_sensor.c` | App entry: `app_main`, `audio_task`, core/priority layout |
 | `config.h` | Every `#define`: audio, VAD, DSP, C6, BLE UUIDs, GPIO, executor |
 | `audio_capture.c/.h` | I2S stereo RX via DMA |
 | `audio_gate.c/.h` | `stop_audio` gate (volatile bool) |
@@ -324,7 +324,7 @@ Host tests (`test/`): `test_c6_packet.c` (golden bytes), `test_vad.c`,
 
 ### 2.2 Boot / init sequence
 
-`app_main` (`opensapien_sensor.c`): `nvs_flash_init` → `provisioning_init()`
+`app_main` (`openrecall_sensor.c`): `nvs_flash_init` → `provisioning_init()`
 (loads NVS key, calls `commands_set_pubkey` if provisioned) → init `ring_buffer`,
 `audio_capture`, `opus_stream`, `ble_link` (registers GATT services) →
 `commands_init(provisioned_pubkey, ble_link_notify_ack)` → spawn tasks:
@@ -333,36 +333,36 @@ Host tests (`test/`): `test_c6_packet.c` (golden bytes), `test_vad.c`,
 - `executor` task on **core 0** (queue depth 8, `EXECUTOR_TASK_STACK=4096`,
   `EXECUTOR_TASK_PRIO=5`, `config.h:143-146`).
 
-Core/priority layout (`opensapien_sensor.c:9-11`): core 1 = audio (encode in
+Core/priority layout (`openrecall_sensor.c:9-11`): core 1 = audio (encode in
 isolation from radio); core 0 = BLE drain + executor + NimBLE, all prio 5.
 Splitting encode (core 1) from radio (core 0) is why Spike 1 measured the encoder
 in isolation. NimBLE runs on core 0 by default.
 
 ### 2.3 Audio signal path
 
-`audio_task` (`opensapien_sensor.c:51-200`):
-1. `audio_capture_read_stereo(pri, ref)` (`opensapien_sensor.c:72`) — I2S stereo
+`audio_task` (`openrecall_sensor.c:51-200`):
+1. `audio_capture_read_stereo(pri, ref)` (`openrecall_sensor.c:72`) — I2S stereo
    RX via DMA. Two INMP441 mics share the I2S bus: `I2S_BCK_GPIO=5`, `I2S_WS_GPIO=6`,
    `I2S_DATA_GPIO=4` (`config.h:126-128`). 32-bit slot / 16-bit data workaround
    (the INMP441 puts 24-bit data left-aligned in a 32-bit slot; the driver reads the
    upper 16 bits). `PRIMARY_CHANNEL=0` = left = voice mic, faces the mouth
    (`config.h:135`).
-2. `audio_gate_paused()` (`opensapien_sensor.c:76`) — if `stop_audio` is in effect,
+2. `audio_gate_paused()` (`openrecall_sensor.c:76`) — if `stop_audio` is in effect,
    drain DMA but push only a GAP_MARKER so the ring stays contiguous; skip
    energy/VAD/encode.
 3. Single-mic energy VAD: `vad_process_single(&vad, pri, FRAME_SAMPLES)`
-   (`opensapien_sensor.c:102`). The dual-channel ratio gate + NLMS canceller are
-   intentionally NOT used (`opensapien_sensor.c:95-101`): two omnidirectional
+   (`openrecall_sensor.c:102`). The dual-channel ratio gate + NLMS canceller are
+   intentionally NOT used (`openrecall_sensor.c:95-101`): two omnidirectional
    INMP441s with insufficient acoustic shadowing both hear the wearer's voice at
    ~equal level (ratio ~1), so the ratio gate would reject the voice and the
    canceller would adapt to subtract it. The reference channel is still captured
    for the per-second calibration log.
 4. On `C6_SPEECH`/`C6_HANGOVER`: `opus_stream_encode(pri, opus_buf, ...)`
-   (`opensapien_sensor.c:108`); if `n > 0 && n <= UINT8_MAX`, `ring_buffer_push`.
+   (`openrecall_sensor.c:108`); if `n > 0 && n <= UINT8_MAX`, `ring_buffer_push`.
    On silence: push a zero-length GAP_MARKER so the ring keeps a contiguous record.
 5. `rel_ts_ms` is a monotonic per-device ms counter (not wall clock — the device may
    not have synced time), starting at 0 at boot, advancing by `FRAME_MS` per frame
-   (`opensapien_sensor.c:46-50`). The server uses it to lay out transcript windows.
+   (`openrecall_sensor.c:46-50`). The server uses it to lay out transcript windows.
 
 ### 2.4 Algorithms implemented in firmware
 
@@ -476,14 +476,14 @@ Executor (`config.h:143-153`): `EXECUTOR_TASK_STACK=4096`, `EXECUTOR_TASK_PRIO=5
 ### 2.6 Memory budget
 
 ~852 KB app, ~19% free at steady state. Audio task stack 32768; high-water mark
-logged every 3000 frames (60 s) (`opensapien_sensor.c:127-134`). Ring 773 KB in
+logged every 3000 frames (60 s) (`openrecall_sensor.c:127-134`). Ring 773 KB in
 PSRAM. Dual-core split keeps the encoder off the radio core.
 
 ---
 
-## 3. Tier 2 — Android Relay (`android/opensapien-relay`)
+## 3. Tier 2 — Android Relay (`android/openrecall-relay`)
 
-Single-module Compose app, package `com.opensapien.relay`, `applicationId` same,
+Single-module Compose app, package `com.openrecall.relay`, `applicationId` same,
 `minSdk=26` (BLE 2M PHY + java.util.Base64 + modern GATT), `compileSdk=34`,
 Kotlin 2.0.20, AGP 8.5.2. No Hilt/Koin/Room/Retrofit/WorkManager — manual DI by
 design (`RepositoryModule.kt:31-35`). All UI is Jetpack Compose; source in
@@ -497,7 +497,7 @@ design (`RepositoryModule.kt:31-35`). All UI is Jetpack Compose; source in
 - `protocol/Messages.kt` — §E (de)serialization, the relay brain's vocabulary.
 - `RelaySession.kt` — pure I/O-free relay brain (audio forwarding, command re-wrap).
 - `relay/` — `RelayController` state hub, `Backoff`, state sealed interfaces.
-- `http/OpenSapienHttpClient.kt` + `http/dto/` — HTTP control API + DTOs/mappers.
+- `http/OpenRecallHttpClient.kt` + `http/dto/` — HTTP control API + DTOs/mappers.
 - `data/` — repositories, `SpeakerCache`, `SpeakerActions`, `SpeakerLabels`.
 - `setup/ProvisioningClient.kt`, `SetupViewModel.kt` — BLE provisioning wizard.
 - `ui/` — Compose screens (chat, recordings, home, device, memory, commands,
@@ -515,7 +515,7 @@ design (`RepositoryModule.kt:31-35`). All UI is Jetpack Compose; source in
 - `SERVICE 6e9d0001-...-0a10`, `AUDIO 6e9d0002`, `COMMAND 6e9d0003`, `ACK 6e9d0004`,
   `CCCD 00002902-...`.
 
-**Scan** (`:67-73`): `ScanFilter` by SERVICE UUID (no device-name "OpenSapien"
+**Scan** (`:67-73`): `ScanFilter` by SERVICE UUID (no device-name "OpenRecall"
 filter), `SCAN_MODE_LOW_LATENCY`, no explicit scan timeout. **Connect** (`:104-105`):
 `connectGatt(context, false, gattCallback, TRANSPORT_LE)` — `autoConnect=false`
 (direct connect), `TRANSPORT_LE` (GATT profile id is silently dropped on many
@@ -591,8 +591,8 @@ empty `AtomChip`s. Both → `ForwardToChatHistory(chatMessage)`.
 
 ### 3.5 RelayService — the foreground service
 
-`RelayService.kt:59`. Notification channel `opensapien_relay` (`:63`), name
-"OpenSapien Relay", `IMPORTANCE_LOW`; notification "Bridging wearable ↔ server",
+`RelayService.kt:59`. Notification channel `openrecall_relay` (`:63`), name
+"OpenRecall Relay", `IMPORTANCE_LOW`; notification "Bridging wearable ↔ server",
 `setOngoing(true)`, id 1 (`:310-323`). `START_STICKY` (`:151`).
 
 `onStartCommand` (`:101-152`): reads `server_url`/`token`/`gateway_port` extras;
@@ -672,7 +672,7 @@ interface SpeakerActions {
     suspend fun reassignSpeaker(sessionId: String, fromId: String, toId: String, scope: String = "all")
 }
 ```
-`HttpSpeakerActions` delegates to `SpeakerRepository` → `OpenSapienHttpClient.renameSpeaker`
+`HttpSpeakerActions` delegates to `SpeakerRepository` → `OpenRecallHttpClient.renameSpeaker`
 (POST `/speakers/{id}/rename`) / `reassignSpeaker` (POST `/speakers/reassign`).
 `sessionId` accepted for interface parity but ignored (v1 reassign is global, `:18-19`).
 
@@ -690,10 +690,10 @@ finds first `isWearer` TranscriptChunk, skips if already named or cache has real
 
 ### 3.8 HTTP client
 
-`http/OpenSapienHttpClient.kt`: `class OpenSapienHttpClient(baseUrl, token, caPem?)`.
+`http/OpenRecallHttpClient.kt`: `class OpenRecallHttpClient(baseUrl, token, caPem?)`.
 Bearer auth on every request. **Certificate pinning** via custom TrustManager (NOT
 `CertificatePinner`): `pinnedTrustManager(caPem)` parses PEM, in-memory KeyStore,
-alias `"opensapien-ca"`, `TrustManagerFactory` with that keystore (`:55-69`). Endpoints:
+alias `"openrecall-ca"`, `TrustManagerFactory` with that keystore (`:55-69`). Endpoints:
 `/health`, `/provisioning/pubkey`, `/sessions`, `/sessions/{id}`, `/sessions/{id}/events`,
 `/speakers`, `/speakers/{id}/rename`, `/speakers/reassign`, `/status`, `/agent`, `/memory`,
 `/commands`. `HttpStatusException` (extends IOException) for non-2xx; agent/memory/command
@@ -704,8 +704,8 @@ stored **plaintext** (`:31`). Process singleton via `StoreHolder`.
 
 ### 3.9 Compose UI
 
-Theme (`core/ui/`): `OpenSapienTheme` — monochrome by design, dynamic color OFF
-(`OpenSapienTheme.kt:8-19`); warm graphite-on-ink accent reserved for live/recording
+Theme (`core/ui/`): `OpenRecallTheme` — monochrome by design, dynamic color OFF
+(`OpenRecallTheme.kt:8-19`); warm graphite-on-ink accent reserved for live/recording
 state. M3 `Typography()`, `Shape` (4/8/12/20/28 dp), `Dimens` (xs=4...xl=32, touch=48).
 `ErrorMapper` (`core/ui/ErrorMapper.kt:18-28`): `ApiError.toDisplayMessage`.
 
@@ -742,7 +742,7 @@ dashboard fan-in), Device (`ui/device/` — diagnostic), Memory (`ui/memory/` �
 ### 3.11 Architectural invariant
 
 `arch/ArchitecturalInvariantsTest.kt` — enforces ONE invariant (INV-11): `ui/` must
-not import `com.opensapien.relay.http` or `.http.dto`. Allow-list: `SetupActivity.kt`
+not import `com.openrecall.relay.http` or `.http.dto`. Allow-list: `SetupActivity.kt`
 (tracked tech debt). Pure file-tree scan, runs in ms.
 
 ### 3.12 Tests
@@ -756,10 +756,10 @@ You-confirmation, cache seeding), `ChatViewModelTest` (nameSpeaker live-session-
 
 ## 4. Tier 3 — Server (`server`)
 
-Python aiohttp. Package `opensapien_server` (env vars `OPENSAPIEN_*`, internal app
+Python aiohttp. Package `openrecall_server` (env vars `OPENRECALL_*`, internal app
 keys `sense_*`). ~12k LOC, **801 tests across 106 files**.
 
-### 4.1 Package layout (`src/opensapien_server/`)
+### 4.1 Package layout (`src/openrecall_server/`)
 
 - **`agent/`** (2,440 LOC) — cognitive read path: `context.py` (LLM persona),
   `planner.py`, `proactive.py`, `intent.py` (OpenAI-compatible LLM),
@@ -931,7 +931,7 @@ bug.
 worker. Confirm nudge (implicit "You" crosses `confirm_turns=10`) and Name nudge
 (unnamed unknown crosses `name_nudge_turns=8` with `propose={"kind":"name_speaker",
 "speaker_id":...}` and up to 3 sample transcript lines, `:85-102`). Dedupes per
-speaker_id, respects `OPENSAPIEN_RATE_LIMIT_PER_MIN`. `set_ws_sender` rebinds per-
+speaker_id, respects `OPENRECALL_RATE_LIMIT_PER_MIN`. `set_ws_sender` rebinds per-
 connection.
 
 ### 4.5 Memory extraction
@@ -999,7 +999,7 @@ return_when=FIRST_COMPLETED)`; on get → `await asyncio.to_thread(self._safe_pr
 Python (`:170-198`). `check_same_thread=False` + Lock.
 
 **`EmbeddingStage`** (`stages.py:286-303`): `run(atoms)` single batch, all-or-nothing.
-`OpenAICompatibleEmbedder.from_env` (`embeddings.py:39-48`): `OPENSAPIEN_EMBED_MODEL`
+`OpenAICompatibleEmbedder.from_env` (`embeddings.py:39-48`): `OPENRECALL_EMBED_MODEL`
 required, restores input order via `item["index"]`.
 
 **`IndexingStage`** (`stages.py:306-324`): `index.add(atom, vector)` idempotent on
@@ -1020,7 +1020,7 @@ age=half_life → 0.5.
 ### 4.7 The agent / proactive engine
 
 **`ContextBuilder` persona** (`agent/context.py`): opens (`:21-25`): "You are
-OpenSapien, the user's ambient memory agent. You answer questions about what the
+OpenRecall, the user's ambient memory agent. You answer questions about what the
 user has said, heard, and done, using only the retrieved memory atoms provided
 below. You do not invent or assume beyond what those atoms say." The full
 `_V2_SYSTEM_PROMPT` (`:21-72`) defines behavior rules, the 5 valid command types,
@@ -1048,7 +1048,7 @@ self._planner.plan(ctx), timeout=self._plan_timeout_s)`; on RETURN →
 **`proactive_plan_timeout` 2s→8s** (`proactive.py:33`): `DEFAULT_PLAN_TIMEOUT_S = 8.0`.
 The old hard-coded 2.0 s was an SLA, not model-grounded: a cold local 7B loads in
 ~2.1 s, so every cold proactive call timed out. `plan_timeout_from_env` reads
-`OPENSAPIEN_PROACTIVE_PLAN_TIMEOUT_S`, validates `> 0` (`:37-60`).
+`OPENRECALL_PROACTIVE_PLAN_TIMEOUT_S`, validates `> 0` (`:37-60`).
 
 **`ProactiveOutbox` + hot-spin fix** (`gateway/core.py:63-145`): per-session bucket of
 `ProactiveMessage`. `enqueue` sets `self._event`. `drain_all()` (`:114-138`) **clears
@@ -1175,31 +1175,31 @@ a clean bye left it held forever. Fix: `_on_bye` calls `enqueue_finalize`; the
 adapter's `finally` calls `core.finalize_pending_session()` (no-op if already bye'd
 or never hello'd).
 
-### 4.12 Config — every `OPENSAPIEN_*` env var group
+### 4.12 Config — every `OPENRECALL_*` env var group
 
-**LLM** (`memory/llm.py:35-46`): `OPENSAPIEN_LLM_MODEL` (required), `_BASE_URL`
+**LLM** (`memory/llm.py:35-46`): `OPENRECALL_LLM_MODEL` (required), `_BASE_URL`
 (default `http://localhost:11434/v1`), `_API_KEY`, `_TEMPERATURE` (default 0.2).
 
-**EMBED** (`memory/embeddings.py:39-48`): `OPENSAPIEN_EMBED_MODEL` (required),
+**EMBED** (`memory/embeddings.py:39-48`): `OPENRECALL_EMBED_MODEL` (required),
 `_BASE_URL` (default `http://localhost:11434/v1`), `_API_KEY`.
 
-**VLM** (`vision/model.py:47-56`): `OPENSAPIEN_VLM_MODEL` (required), `_BASE_URL`,
+**VLM** (`vision/model.py:47-56`): `OPENRECALL_VLM_MODEL` (required), `_BASE_URL`,
 `_API_KEY`.
 
-**SPEAKER** (`ingest/speaker_config.py`): `OPENSAPIEN_SPEAKER_ENABLED` (bool, default
+**SPEAKER** (`ingest/speaker_config.py`): `OPENRECALL_SPEAKER_ENABLED` (bool, default
 false), `_EMBED_MODEL/BASE_URL/API_KEY`; floats `_{CONFIRM_THRESHOLD=0.78,
 TENTATIVE_THRESHOLD=0.70, CLUSTER_THRESHOLD=0.65, EMA_ALPHA=0.05,
 OUTLIER_TRIM_PCT=0.1, MIN_CONFIDENCE=0.5}`; ints `_{MIN_SPEECH_MS=500, CORROBORATE_N=3,
 CORROBORATE_WINDOW_S=30, PENDING_TTL_S=60, RING_BUFFER_N=100, COLDSTART_WINDOW_S=120,
 CONFIRM_TURNS=10, NAME_NUDGE_TURNS=8}`.
 
-**Agent** (`agent/config.py`): `OPENSAPIEN_CONFIDENCE_AUTONOMOUS` (default 0.85),
-`_CONFIRM` (default 0.60), `OPENSAPIEN_RATE_LIMIT_PER_MIN` (default 20),
-`OPENSAPIEN_WHISPER_NO_SPEECH_THRESHOLD` (default 0.6), `_LOGPROB_THRESHOLD`
-(default -1.0), `OPENSAPIEN_PROACTIVE_PLAN_TIMEOUT_S` (default 8.0). All validated at
+**Agent** (`agent/config.py`): `OPENRECALL_CONFIDENCE_AUTONOMOUS` (default 0.85),
+`_CONFIRM` (default 0.60), `OPENRECALL_RATE_LIMIT_PER_MIN` (default 20),
+`OPENRECALL_WHISPER_NO_SPEECH_THRESHOLD` (default 0.6), `_LOGPROB_THRESHOLD`
+(default -1.0), `OPENRECALL_PROACTIVE_PLAN_TIMEOUT_S` (default 8.0). All validated at
 startup — a bad value aborts with a clear error.
 
-**LOG**: `OPENSAPIEN_LOG_LEVEL` (default INFO). **TOKEN_FILE**: default
+**LOG**: `OPENRECALL_LOG_LEVEL` (default INFO). **TOKEN_FILE**: default
 `data/server_token` (`secrets.token_hex(32)`, 0600). **KEY_FILE**: default
 `data/server_ed25519.key`.
 
@@ -1313,7 +1313,7 @@ relay-owned (relay adds `session_id`/`type` tags, translates device acks to
    `runCatching { speakerActions.nameSpeaker(...) }` → on failure revert cache +
    "Couldn't rename on the server"; on success clear error.
 3. `HttpSpeakerActions.nameSpeaker` → `SpeakerRepository.renameSpeaker` →
-   `OpenSapienHttpClient.renameSpeaker` → `POST /speakers/{id}/rename`.
+   `OpenRecallHttpClient.renameSpeaker` → `POST /speakers/{id}/rename`.
 4. Server `rename_speaker` (`speakers.py:66-83`): `reg.get(id) is None` → 404;
    `reg.name(id, dto.name)` → `{"speaker": _speaker_to_wire(reg.get(id))}` (no
    biometrics).
@@ -1366,7 +1366,7 @@ relay-owned (relay adds `session_id`/`type` tags, translates device acks to
 - You-confirmation state machine
 - Paging (failure doesn't advance cursor)
 - Lifecycle-gated status polling
-- Certificate pinning (custom TrustManager, alias `opensapien-ca`)
+- Certificate pinning (custom TrustManager, alias `openrecall-ca`)
 
 ### 6.3 Server algorithms
 - §C.6 packet parse/encode + opcodes/VadState
@@ -1422,7 +1422,7 @@ Python encoder (`audio_packet.py`) are dual implementations kept in lockstep by:
 5. The `executor_core.c` param validation mirroring the server's `_TYPE_SCHEMAS`
    (defense-in-depth, both bound-check `seconds∈[1,60]` and `duration_s∈[1,30]`).
 
-Host tests (`firmware/opensapien_sensor/test/Makefile`): `make` → c6, vad, dsp,
+Host tests (`firmware/openrecall_sensor/test/Makefile`): `make` → c6, vad, dsp,
 provisioning, exec — ALL PASS.
 
 ---
@@ -1442,7 +1442,7 @@ before the next so "a failure points at one layer, not three."
   BLE GAP connect is the landmine the IDF 5.1.6 pin dodges; pass = speak →
   transcripts in gateway log → `capture_events` accumulates, **no
   `xQueueSemaphoreTake uxItemSize == 0` assert**.
-- **Tier 3 — Speaker recognition on real audio**: `OPENSAPIEN_SPEAKER_ENABLED=true`;
+- **Tier 3 — Speaker recognition on real audio**: `OPENRECALL_SPEAKER_ENABLED=true`;
   watch one voice → cold-start "You" → confirm nudge; second voice → corroboration →
   name nudge; mis-attribution → Reassign relabels.
 - **Tier 4 — Command executors (P4a)**: `stop_audio` (opus_bytes/s=0, voiced holds
@@ -1453,10 +1453,13 @@ before the next so "a failure points at one layer, not three."
 
 ---
 
-## 9. The rebrand (2026-08-08)
+## 9. The rebrands
 
-The project was renamed from "Sense"/"AiSense" to "OpenSapien" as one commit (615
-files, +1639/-1639, `d9d39ab`):
+### 9.1 Sense → OpenSapien (2026-08-08)
+
+Historical record — the names below are the ones that existed at the time, and are
+**not** live identifiers. The project was renamed from "Sense"/"AiSense" to
+"OpenSapien" as one commit (615 files, +1639/-1639, `d9d39ab`):
 - Server pkg `sense_server` → `opensapien_server`; pyproject `opensapien-server`.
 - Android module `sense-relay` → `opensapien-relay`; package `com.sense.relay` →
   `com.opensapien.relay`; `SenseTheme`→`OpenSapienTheme`,
@@ -1473,48 +1476,70 @@ History was rewritten locally (every commit → `kevinjacb
 <kevingeniard2002@gmail.com>`, all `Co-Authored-By: Claude` trailers stripped — no
 AI authorship visible on GitHub). Force-push to GitHub is the user's responsibility.
 
+### 9.2 OpenSapien → OpenRecall
+
+The current name. Every `OpenSapien`/`opensapien`/`OPENSAPIEN` token became
+`OpenRecall`/`openrecall`/`OPENRECALL`, and the `Sense*` identifier prefix that
+§9.1 had left behind was folded in as `Recall*`:
+- Server pkg `opensapien_server` → `openrecall_server`; pyproject `openrecall-server`.
+- Android module `opensapien-relay` → `openrecall-relay`; package
+  `com.opensapien.relay` → `com.openrecall.relay`;
+  `OpenSapienTheme`→`OpenRecallTheme`, `OpenSapienHttpClient`→`OpenRecallHttpClient`;
+  cert alias `opensapien-ca`→`openrecall-ca`; notification channel
+  `opensapien_relay`→`openrecall_relay`.
+- Design system / logging prefix `Sense*` → `Recall*` (`SenseTheme`→`RecallTheme`,
+  `SenseCard`→`RecallCard`, `SenseIcons`→`RecallIcons`, `SenseLog`→`RecallLog`,
+  `SenseApplication`→`RecallApplication`, and the rest).
+- Firmware dir `opensapien_sensor` → `openrecall_sensor`; `opensapien_sensor.c`→
+  `openrecall_sensor.c`; BLE device name "OpenSapien"→"OpenRecall".
+- Env vars `OPENSAPIEN_*` → `OPENRECALL_*`.
+- **Preserved**: hardware board name "XIAO ESP32S3 Sense" (Seeed), `esp32s3-sense`
+  sdkconfig board refs, internal `sense_*` app keys, `sense_prov` NVS namespace, and
+  the frozen design comp under `android/openrecall-relay/design/`
+  (`Sense Relay.dc.html`, `sense-device.js`) which is the original artifact.
+
 ---
 
 ## 10. Key files index (absolute)
 
 **Firmware:**
-- `firmware/opensapien_sensor/main/opensapien_sensor.c` — app entry, audio_task, core layout
-- `firmware/opensapien_sensor/main/config.h` — every define
-- `firmware/opensapien_sensor/main/c6_packet.c/.h` — §C.6 encoder
-- `firmware/opensapien_sensor/main/ble_drain.c/.h` — drain task, drain_replay
-- `firmware/opensapien_sensor/main/ble_link.c/.h` — NimBLE GATT
-- `firmware/opensapien_sensor/main/commands.c/.h` — §D verify (libsodium) + dispatch
-- `firmware/opensapien_sensor/main/executor.c/.h` + `executor_core.c/.h` — executor
-- `firmware/opensapien_sensor/main/provisioning.c/.h` + `provisioning_core.c/.h` — BLE provisioning
-- `firmware/opensapien_sensor/main/ring_buffer.c/.h` — 60s PSRAM history
-- `firmware/opensapien_sensor/test/test_c6_packet.c` — golden-bytes contract test
+- `firmware/openrecall_sensor/main/openrecall_sensor.c` — app entry, audio_task, core layout
+- `firmware/openrecall_sensor/main/config.h` — every define
+- `firmware/openrecall_sensor/main/c6_packet.c/.h` — §C.6 encoder
+- `firmware/openrecall_sensor/main/ble_drain.c/.h` — drain task, drain_replay
+- `firmware/openrecall_sensor/main/ble_link.c/.h` — NimBLE GATT
+- `firmware/openrecall_sensor/main/commands.c/.h` — §D verify (libsodium) + dispatch
+- `firmware/openrecall_sensor/main/executor.c/.h` + `executor_core.c/.h` — executor
+- `firmware/openrecall_sensor/main/provisioning.c/.h` + `provisioning_core.c/.h` — BLE provisioning
+- `firmware/openrecall_sensor/main/ring_buffer.c/.h` — 60s PSRAM history
+- `firmware/openrecall_sensor/test/test_c6_packet.c` — golden-bytes contract test
 
 **Android relay:**
-- `android/opensapien-relay/app/src/main/kotlin/com/opensapien/relay/ble/SensorLink.kt` — BLE
-- `android/opensapien-relay/app/src/main/kotlin/com/opensapien/relay/net/ServerSocket.kt` — WS
-- `android/opensapien-relay/app/src/main/kotlin/com/opensapien/relay/protocol/Messages.kt` — §E
-- `android/opensapien-relay/app/src/main/kotlin/com/opensapien/relay/RelaySession.kt` — relay brain
-- `android/opensapien-relay/app/src/main/kotlin/com/opensapien/relay/RelayService.kt` — foreground service
-- `android/opensapien-relay/app/src/main/kotlin/com/opensapien/relay/data/SpeakerActions.kt` — rename seam
-- `android/opensapien-relay/app/src/main/kotlin/com/opensapien/relay/http/OpenSapienHttpClient.kt` — HTTP
+- `android/openrecall-relay/app/src/main/kotlin/com/openrecall/relay/ble/SensorLink.kt` — BLE
+- `android/openrecall-relay/app/src/main/kotlin/com/openrecall/relay/net/ServerSocket.kt` — WS
+- `android/openrecall-relay/app/src/main/kotlin/com/openrecall/relay/protocol/Messages.kt` — §E
+- `android/openrecall-relay/app/src/main/kotlin/com/openrecall/relay/RelaySession.kt` — relay brain
+- `android/openrecall-relay/app/src/main/kotlin/com/openrecall/relay/RelayService.kt` — foreground service
+- `android/openrecall-relay/app/src/main/kotlin/com/openrecall/relay/data/SpeakerActions.kt` — rename seam
+- `android/openrecall-relay/app/src/main/kotlin/com/openrecall/relay/http/OpenRecallHttpClient.kt` — HTTP
 
 **Server:**
 - `server/scripts/run_gateway.py` — entry point
-- `server/src/opensapien_server/gateway/core.py` — GatewayCore state machine
-- `server/src/opensapien_server/gateway/adapter.py` — WS transport
-- `server/src/opensapien_server/ingest/audio_packet.py` — §C.6 decode/encode
-- `server/src/opensapien_server/ingest/reassembler.py` — reassembly + Bug A
-- `server/src/opensapien_server/ingest/pipeline.py` — ingest pipeline
-- `server/src/opensapien_server/ingest/speaker_identifier.py` — speaker ID
-- `server/src/opensapien_server/memory/extraction_worker.py` — extraction worker
-- `server/src/opensapien_server/memory/stages.py` — pipeline stages
-- `server/src/opensapien_server/agent/planner.py` — Planner
-- `server/src/opensapien_server/agent/proactive.py` — ProactiveTriggerEngine
-- `server/src/opensapien_server/commands/signing.py` — Ed25519
-- `server/src/opensapien_server/commands/dispatcher.py` — issue/ack/pending
-- `server/src/opensapien_server/protocol/messages.py` — §E
-- `server/src/opensapien_server/http/routes/speakers.py` — rename/reassign
-- `server/src/opensapien_server/http/app.py` — build_app
+- `server/src/openrecall_server/gateway/core.py` — GatewayCore state machine
+- `server/src/openrecall_server/gateway/adapter.py` — WS transport
+- `server/src/openrecall_server/ingest/audio_packet.py` — §C.6 decode/encode
+- `server/src/openrecall_server/ingest/reassembler.py` — reassembly + Bug A
+- `server/src/openrecall_server/ingest/pipeline.py` — ingest pipeline
+- `server/src/openrecall_server/ingest/speaker_identifier.py` — speaker ID
+- `server/src/openrecall_server/memory/extraction_worker.py` — extraction worker
+- `server/src/openrecall_server/memory/stages.py` — pipeline stages
+- `server/src/openrecall_server/agent/planner.py` — Planner
+- `server/src/openrecall_server/agent/proactive.py` — ProactiveTriggerEngine
+- `server/src/openrecall_server/commands/signing.py` — Ed25519
+- `server/src/openrecall_server/commands/dispatcher.py` — issue/ack/pending
+- `server/src/openrecall_server/protocol/messages.py` — §E
+- `server/src/openrecall_server/http/routes/speakers.py` — rename/reassign
+- `server/src/openrecall_server/http/app.py` — build_app
 
 **Docs:**
 - `docs/bring-up/2026-07-27-real-device-bringup.md` — tiered runbook

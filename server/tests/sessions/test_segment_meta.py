@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from opensapien_server.sessions.segment_meta import (
+from openrecall_server.sessions.segment_meta import (
     InMemorySegmentMetaStore,
     SqliteSegmentMetaStore,
 )

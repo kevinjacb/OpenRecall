@@ -1,8 +1,8 @@
-# Spec — server endpoints for the OpenSapien app design
+# Spec — server endpoints for the OpenRecall app design
 
 **Date:** 2026-08-08
 **Input:** `findings.md` (design vs. server gap analysis, 5 blocking + 7 significant gaps)
-**Target:** `server/src/opensapien_server/` at `d9d39ab`
+**Target:** `server/src/openrecall_server/` at `d9d39ab`
 **Status:** decisions below are settled; one open question remains (§Open questions).
 
 ---
@@ -185,7 +185,7 @@ than the idle threshold, and fires the titling job. This is what makes segment
 close survive a lost `bye` (§0.3).
 
 **Firmware VAD interacts favourably here:** the device already suppresses
-silence and emits gap markers (`vad.h:8`, `opensapien_sensor.c:82`), so
+silence and emits gap markers (`vad.h:8`, `openrecall_sensor.c:82`), so
 "transcript silence" and "no audio transmitted" broadly coincide. The segmenter
 still keys off transcript events, which are robust to VAD tuning.
 
@@ -287,7 +287,7 @@ per gap instead of ~5 bytes per 20 ms slot. Gaps are written for all three
 causes: VAD suppression (`VadState.GAP_MARKER`), packets the reassembler
 dropped (`missing_range()`), and a `stop_audio` pause — firmware already emits
 gap markers while paused specifically to keep `chunk_seq`/`rel_ts` contiguous
-(`opensapien_sensor.c:76-85`).
+(`openrecall_sensor.c:76-85`).
 
 **Invariant (D5):** slot index `i` covers `[i*20, (i+1)*20)` ms of session time,
 always. This is what makes the playhead line up with transcript `start_ms`, and
@@ -474,7 +474,7 @@ the Settings header should lead with it and treat battery as secondary.
 
 **Why `last_packet_at` is a real heartbeat, not a speech detector.** Firmware
 keeps emitting `C6_GAP_MARKER` packets while VAD suppresses silence
-(`opensapien_sensor.c:82`, `ble_drain.c:88`), so packets arrive continuously
+(`openrecall_sensor.c:82`, `ble_drain.c:88`), so packets arrive continuously
 whether or not anyone is talking — the bring-up log records exactly this case,
 gap-marker packets flowing with no transcripts
 (`docs/bring-up/2026-07-27-real-device-bringup.md:221`). A stale

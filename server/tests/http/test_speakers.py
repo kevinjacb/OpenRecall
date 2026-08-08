@@ -5,16 +5,16 @@ from datetime import datetime, timezone
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from opensapien_server.auth import load_or_create_token
-from opensapien_server.events.model import CaptureEvent
-from opensapien_server.events.store import InMemoryEventStore
-from opensapien_server.http.app import build_app
-from opensapien_server.ingest.speaker_config import SpeakerConfig
-from opensapien_server.memory.atom import MemoryAtom
-from opensapien_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
-from opensapien_server.memory.store import InMemoryAtomStore
-from opensapien_server.sessions.index import SessionIndex
-from opensapien_server.sessions.lifecycle import SessionLifecycle
+from openrecall_server.auth import load_or_create_token
+from openrecall_server.events.model import CaptureEvent
+from openrecall_server.events.store import InMemoryEventStore
+from openrecall_server.http.app import build_app
+from openrecall_server.ingest.speaker_config import SpeakerConfig
+from openrecall_server.memory.atom import MemoryAtom
+from openrecall_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
+from openrecall_server.memory.store import InMemoryAtomStore
+from openrecall_server.sessions.index import SessionIndex
+from openrecall_server.sessions.lifecycle import SessionLifecycle
 
 
 def _speaker(speaker_id, display_name, is_wearer=False):
@@ -152,7 +152,7 @@ async def test_rename_404_unknown_speaker_sqlite(tmp_path):
     # used to rely on reg.name() raising KeyError for the 404, so on the Sqlite
     # backend an unknown speaker reached _speaker_to_wire(None) -> 500. The
     # InMemory-only test above can't catch this; cover the real backend here.
-    from opensapien_server.memory.speaker_registry import SqliteSpeakerRegistry
+    from openrecall_server.memory.speaker_registry import SqliteSpeakerRegistry
 
     reg = SqliteSpeakerRegistry(str(tmp_path / "speakers.db"), SpeakerConfig())
     reg.add_speaker(_speaker("sp-1", "Sarah"))
@@ -172,7 +172,7 @@ async def test_rename_404_unknown_speaker_sqlite(tmp_path):
 
 
 async def test_rename_sqlite_updates_and_returns_without_biometrics(tmp_path):
-    from opensapien_server.memory.speaker_registry import SqliteSpeakerRegistry
+    from openrecall_server.memory.speaker_registry import SqliteSpeakerRegistry
 
     reg = SqliteSpeakerRegistry(str(tmp_path / "speakers.db"), SpeakerConfig())
     reg.add_speaker(_speaker("sp-1", None))

@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import pytest
 
-from opensapien_server.ingest.streaming_transcriber import Token
-from opensapien_server.ingest.whisper_streaming import (
+from openrecall_server.ingest.streaming_transcriber import Token
+from openrecall_server.ingest.whisper_streaming import (
     WhisperStreamingBackend,
     _mlx_segments_to_tokens,
 )

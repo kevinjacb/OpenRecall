@@ -23,9 +23,9 @@ from __future__ import annotations
 
 import pytest
 
-from opensapien_server.commands.dispatcher import CommandDispatcher
-from opensapien_server.commands.model import Command
-from opensapien_server.commands.signing import CommandSigner
+from openrecall_server.commands.dispatcher import CommandDispatcher
+from openrecall_server.commands.model import Command
+from openrecall_server.commands.signing import CommandSigner
 
 
 T0 = __import__("datetime").datetime(2026, 6, 30, 12, 0, 0, tzinfo=__import__("datetime").timezone.utc)

@@ -20,7 +20,7 @@ not the legacy per-event extractor, so it forms the same memories a live
 session would. The atom store and index are idempotent on ``atom_id``, so
 re-running is safe — already-stored atoms are not duplicated.
 
-The LLM + embedder are configured via the same ``OPENSAPIEN_LLM_*`` / ``OPENSAPIEN_EMBED_*``
+The LLM + embedder are configured via the same ``OPENRECALL_LLM_*`` / ``OPENRECALL_EMBED_*``
 env vars as ``run_gateway.py`` (no model is hardcoded). Export them first —
 e.g. ``set -a; source .env; set +a`` — the same way you launch the gateway.
 
@@ -36,21 +36,21 @@ import sqlite3
 import time
 from pathlib import Path
 
-from opensapien_server.agent.metrics import InMemoryMetricsRecorder
-from opensapien_server.events.store import SqliteEventStore
-from opensapien_server.memory.embeddings import OpenAICompatibleEmbedder
-from opensapien_server.memory.extraction_worker import ExtractionWorker
-from opensapien_server.memory.extract import LLMExtractor, LLMParseError
-from opensapien_server.memory.index import SqliteMemoryIndex
-from opensapien_server.memory.llm import OpenAICompatibleChatModel
-from opensapien_server.memory.stages import (
+from openrecall_server.agent.metrics import InMemoryMetricsRecorder
+from openrecall_server.events.store import SqliteEventStore
+from openrecall_server.memory.embeddings import OpenAICompatibleEmbedder
+from openrecall_server.memory.extraction_worker import ExtractionWorker
+from openrecall_server.memory.extract import LLMExtractor, LLMParseError
+from openrecall_server.memory.index import SqliteMemoryIndex
+from openrecall_server.memory.llm import OpenAICompatibleChatModel
+from openrecall_server.memory.stages import (
     EmbeddingStage,
     ExtractionStage,
     IndexingStage,
     Pipeline,
     VersionStampStage,
 )
-from opensapien_server.memory.store import SqliteAtomStore
+from openrecall_server.memory.store import SqliteAtomStore
 
 # Must match EXTRACTOR_VERSION in run_gateway.py so cursors this script stamps
 # are honoured by the live worker (and vice versa).

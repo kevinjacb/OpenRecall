@@ -11,13 +11,13 @@ involved here; it is reserved for end-of-day video retrieval.
 
 import struct
 
-from opensapien_server.events.store import InMemoryEventStore
-from opensapien_server.gateway.core import GatewayCore
-from opensapien_server.ingest.audio_packet import PacketType, VadState
-from opensapien_server.ingest.pipeline import AudioIngestPipeline
-from opensapien_server.ingest.reassembler import SessionReassembler
-from opensapien_server.memory.extraction_worker import ExtractionEnqueuer
-from opensapien_server.protocol.messages import Ack, Bye, Hello, RequestChunks, TranscriptMsg
+from openrecall_server.events.store import InMemoryEventStore
+from openrecall_server.gateway.core import GatewayCore
+from openrecall_server.ingest.audio_packet import PacketType, VadState
+from openrecall_server.ingest.pipeline import AudioIngestPipeline
+from openrecall_server.ingest.reassembler import SessionReassembler
+from openrecall_server.memory.extraction_worker import ExtractionEnqueuer
+from openrecall_server.protocol.messages import Ack, Bye, Hello, RequestChunks, TranscriptMsg
 
 
 class FakeDecoder:
@@ -313,9 +313,9 @@ def make_core_with_store_and_speaker(window_ms: int = 100):
     confirms against a pre-seeded "you" centroid."""
     import math
 
-    from opensapien_server.ingest.speaker_config import SpeakerConfig
-    from opensapien_server.ingest.speaker_identifier import SpeakerIdentifier
-    from opensapien_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
+    from openrecall_server.ingest.speaker_config import SpeakerConfig
+    from openrecall_server.ingest.speaker_identifier import SpeakerIdentifier
+    from openrecall_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
 
     store = InMemoryEventStore()
     v = [0.5] * 8

@@ -7,13 +7,13 @@ when the link is worst.
 """
 from __future__ import annotations
 
-from opensapien_server.commands.dispatcher import CommandDispatcher
-from opensapien_server.commands.signing import CommandSigner
-from opensapien_server.contracts.clock import FakeClock
-from opensapien_server.contracts.id_generator import DeterministicIdGenerator
-from opensapien_server.settings.model import SettingsDocument
-from opensapien_server.settings.reconciler import DeviceReconciler
-from opensapien_server.settings.store import InMemorySettingsStore
+from openrecall_server.commands.dispatcher import CommandDispatcher
+from openrecall_server.commands.signing import CommandSigner
+from openrecall_server.contracts.clock import FakeClock
+from openrecall_server.contracts.id_generator import DeterministicIdGenerator
+from openrecall_server.settings.model import SettingsDocument
+from openrecall_server.settings.reconciler import DeviceReconciler
+from openrecall_server.settings.store import InMemorySettingsStore
 
 
 def _reconciler(*, audio_enabled=True, device_state=None):

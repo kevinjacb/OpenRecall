@@ -9,7 +9,7 @@ these JSON messages are only the control/signalling plane.
 import pytest
 from pydantic import ValidationError
 
-from opensapien_server.protocol.messages import (
+from openrecall_server.protocol.messages import (
     Ack,
     Bye,
     Hello,

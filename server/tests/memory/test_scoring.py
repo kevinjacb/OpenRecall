@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 
-from opensapien_server.memory.scoring import FixedScorer, Scorer, SimRecencyScorer
+from openrecall_server.memory.scoring import FixedScorer, Scorer, SimRecencyScorer
 
 
 def test_scorer_protocol_satisfied_by_reference_impls():

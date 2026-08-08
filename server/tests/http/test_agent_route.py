@@ -7,17 +7,17 @@ from typing import Iterable
 
 import pytest
 
-from opensapien_server.agent.audit import InMemoryAuditLogger
-from opensapien_server.agent.capability import ConstantCapabilityProvider
-from opensapien_server.agent.context import ContextBuilder
-from opensapien_server.agent.guardrails import ConfidenceGateGuardrails
-from opensapien_server.agent.intent import AgentLLM
-from opensapien_server.agent.metrics import InMemoryMetricsRecorder
-from opensapien_server.agent.planner import Planner
-from opensapien_server.agent.validator import StrictJSONValidator
-from opensapien_server.contracts.clock import FakeClock
-from opensapien_server.contracts.id_generator import DeterministicIdGenerator
-from opensapien_server.contracts.types import (
+from openrecall_server.agent.audit import InMemoryAuditLogger
+from openrecall_server.agent.capability import ConstantCapabilityProvider
+from openrecall_server.agent.context import ContextBuilder
+from openrecall_server.agent.guardrails import ConfidenceGateGuardrails
+from openrecall_server.agent.intent import AgentLLM
+from openrecall_server.agent.metrics import InMemoryMetricsRecorder
+from openrecall_server.agent.planner import Planner
+from openrecall_server.agent.validator import StrictJSONValidator
+from openrecall_server.contracts.clock import FakeClock
+from openrecall_server.contracts.id_generator import DeterministicIdGenerator
+from openrecall_server.contracts.types import (
     AgentAction,
     AgentActionKind,
     LLMResult,
@@ -26,11 +26,11 @@ from opensapien_server.contracts.types import (
     RetrievedContext,
     ScoredAtom,
 )
-from opensapien_server.http.app import build_app
-from opensapien_server.memory.index import InMemoryMemoryIndex
-from opensapien_server.memory.retrieval import Retriever
-from opensapien_server.memory.scoring import SimRecencyScorer
-from opensapien_server.memory.store import InMemoryAtomStore
+from openrecall_server.http.app import build_app
+from openrecall_server.memory.index import InMemoryMemoryIndex
+from openrecall_server.memory.retrieval import Retriever
+from openrecall_server.memory.scoring import SimRecencyScorer
+from openrecall_server.memory.store import InMemoryAtomStore
 
 
 def _atom(atom_id: str, text: str, score: float = 0.9) -> ScoredAtom:

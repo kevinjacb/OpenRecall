@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from opensapien_server.http.app import build_app
-from opensapien_server.settings.model import SettingsDocument
-from opensapien_server.settings.store import InMemorySettingsStore
+from openrecall_server.http.app import build_app
+from openrecall_server.settings.model import SettingsDocument
+from openrecall_server.settings.store import InMemorySettingsStore
 
 _AUTH = {"Authorization": "Bearer t"}
 

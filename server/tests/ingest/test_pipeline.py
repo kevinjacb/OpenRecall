@@ -13,9 +13,9 @@ measurement script, not by this unit test.
 
 import struct
 
-from opensapien_server.ingest.audio_packet import AudioPacket, PacketType, VadState
-from opensapien_server.ingest.pipeline import AudioIngestPipeline
-from opensapien_server.ingest.reassembler import SessionReassembler
+from openrecall_server.ingest.audio_packet import AudioPacket, PacketType, VadState
+from openrecall_server.ingest.pipeline import AudioIngestPipeline
+from openrecall_server.ingest.reassembler import SessionReassembler
 
 
 def pkt(chunk_seq: int, n_frames: int, vad: int = VadState.SPEECH) -> AudioPacket:
@@ -184,9 +184,9 @@ def test_out_of_order_packets_contribute_no_audio_until_the_gap_fills():
 def test_pipeline_threads_speaker_assignment_onto_transcripts():
     import math
 
-    from opensapien_server.ingest.speaker_config import SpeakerConfig
-    from opensapien_server.ingest.speaker_identifier import SpeakerIdentifier
-    from opensapien_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
+    from openrecall_server.ingest.speaker_config import SpeakerConfig
+    from openrecall_server.ingest.speaker_identifier import SpeakerIdentifier
+    from openrecall_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
 
     v = [0.5] * 8
     n = math.sqrt(sum(x * x for x in v))
@@ -241,9 +241,9 @@ def test_rolling_speaker_window_decouples_embedder_from_hop():
     """
     import math
 
-    from opensapien_server.ingest.speaker_config import SpeakerConfig
-    from opensapien_server.ingest.speaker_identifier import SpeakerIdentifier
-    from opensapien_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
+    from openrecall_server.ingest.speaker_config import SpeakerConfig
+    from openrecall_server.ingest.speaker_identifier import SpeakerIdentifier
+    from openrecall_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
 
     v = [0.5] * 8
     n = math.sqrt(sum(x * x for x in v))

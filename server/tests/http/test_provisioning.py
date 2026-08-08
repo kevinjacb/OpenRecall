@@ -1,6 +1,6 @@
 from aiohttp.test_utils import TestClient, TestServer
-from opensapien_server.http.app import build_app
-from opensapien_server.auth import load_or_create_token
+from openrecall_server.http.app import build_app
+from openrecall_server.auth import load_or_create_token
 
 
 async def _client(tmp_path, get_pubkey):

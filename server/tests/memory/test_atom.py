@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from opensapien_server.memory.atom import MemoryAtom
+from openrecall_server.memory.atom import MemoryAtom
 
 
 def test_atom_default_version_fields():

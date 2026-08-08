@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from opensapien_server.http.routes.dto import (
+from openrecall_server.http.routes.dto import (
     SCHEMA_VERSION,
     AgentRequestDTO,
     AgentResponseDTO,

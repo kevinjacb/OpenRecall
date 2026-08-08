@@ -1,0 +1,347 @@
+package com.openrecall.relay.data
+
+import com.openrecall.relay.core.model.PagedResult
+import com.openrecall.relay.core.result.Outcome
+import com.openrecall.relay.domain.model.SessionId
+import com.openrecall.relay.domain.model.SessionSummary
+import com.openrecall.relay.domain.model.TranscriptChunk
+import com.openrecall.relay.http.dto.CaptureEventDto
+import com.openrecall.relay.http.dto.SessionDetailsDto
+import com.openrecall.relay.http.dto.SessionSummaryDto
+import com.openrecall.relay.http.dto.SessionsPageDto
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.runTest
+import java.io.IOException
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertTrue
+
+/**
+ * Pins [SessionRepositoryImpl] against a fake [SessionApi]: the cursor
+ * pagination semantics (which mirror [FakeSessionRepository] exactly), the
+ * failure→Error→recovery path, and the DTO→domain mapping (summary + events,
+ * sorted by seq, unknown kinds dropped).
+ */
+class SessionRepositoryImplTest {
+
+    private class FakeSessionApi : SessionApi {
+        val queued = ArrayDeque<SessionsPageDto>()
+        val listCalls = mutableListOf<Pair<Int, String?>>()
+        var listError: Throwable? = null
+        var detail: SessionDetailsDto? = null
+        var detailError: Throwable? = null
+        var events: List<CaptureEventDto> = emptyList()
+        var eventsError: Throwable? = null
+
+        override suspend fun listSessions(limit: Int, cursor: String?): SessionsPageDto {
+            listCalls.add(limit to cursor)
+            listError?.let { throw it }
+            return queued.removeFirst()
+        }
+
+        override suspend fun getSession(id: SessionId): SessionDetailsDto {
+            detailError?.let { throw it }
+            return detail!!
+        }
+
+        override suspend fun getSessionEvents(id: SessionId): List<CaptureEventDto> {
+            eventsError?.let { throw it }
+            return events
+        }
+    }
+
+    private fun summaryDto(id: String) = SessionSummaryDto(
+        id = id,
+        startedAt = "2026-07-05T00:00:00Z",
+        endedAt = null,
+        durationMs = 1000,
+        transcriptCount = 1,
+        preview = "p-$id",
+    )
+
+    private fun page(ids: List<String>, cursor: String?) =
+        SessionsPageDto(sessions = ids.map { summaryDto(it) }, nextCursor = cursor)
+
+    private fun eventDto(id: String, seq: Int, kind: String = "transcript") = CaptureEventDto(
+        id = id,
+        sessionId = "s1",
+        seq = seq,
+        startMs = seq * 1000L,
+        createdAt = "2026-07-05T00:00:0${seq}Z",
+        kind = kind,
+        text = "t-$id",
+    )
+
+    private suspend fun SessionRepository.current() = observeSessions().first()
+
+    @Test fun firstLoadFetchesPageOneWithNullCursor() = runTest {
+        val api = FakeSessionApi().apply { queued.add(page(listOf("a", "b"), "c1")) }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+        val page = assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+        assertEquals(2, page.items.size)
+        assertEquals("c1", page.nextCursor)
+        assertEquals(listOf<Pair<Int, String?>>(20 to null), api.listCalls)
+    }
+
+    @Test fun secondLoadAppendsUsingTheCursor() = runTest {
+        val api = FakeSessionApi().apply {
+            queued.add(page(listOf("a", "b"), "c1"))
+            queued.add(page(listOf("c", "d"), null))
+        }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+        repo.loadMoreSessions()
+        val page = assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+        assertEquals(4, page.items.size)
+        assertEquals(null, page.nextCursor)
+        assertEquals(listOf(20 to null, 20 to "c1"), api.listCalls)
+    }
+
+    @Test fun nullCursorPageMakesFurtherLoadsNoOps() = runTest {
+        val api = FakeSessionApi().apply { queued.add(page(listOf("a"), null)) }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+        repo.loadMoreSessions() // exhausted: must not fetch again
+        assertEquals(1, api.listCalls.size)
+        val page = assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+        assertEquals(1, page.items.size)
+    }
+
+    @Test fun emptyTerminalPageEmitsExhausted() = runTest {
+        val api = FakeSessionApi().apply { queued.add(page(emptyList(), null)) }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+        assertIs<PagedResult.Exhausted>(repo.current())
+    }
+
+    @Test fun emptyTerminalPageAfterDataKeepsPageWithNullCursor() = runTest {
+        // Edge case the cross-review surfaced: page 1 has items + a cursor,
+        // page 2 is the server's "nothing more" signal (empty + null). The
+        // Impl must NOT leave the previous Page's cursor dangling (the UI
+        // would show canLoadMore=true while loadMore is a no-op), and must
+        // NOT emit Exhausted (that would discard the loaded sessions via
+        // RecordingsUiState.Empty). It re-emits the accumulated Page with a
+        // null cursor.
+        val api = FakeSessionApi().apply {
+            queued.add(page(listOf("a", "b"), "c1"))
+            queued.add(page(emptyList(), null))
+        }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+        repo.loadMoreSessions()
+        val p = assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+        assertEquals(listOf("a", "b"), p.items.map { it.id.value })
+        assertEquals(null, p.nextCursor, "cursor must be cleared so the UI sees canLoadMore=false")
+
+        // A further load is a no-op (exhausted).
+        repo.loadMoreSessions()
+        assertEquals(2, api.listCalls.size)
+    }
+
+    @Test fun fetchFailureEmitsErrorThenRecovers() = runTest {
+        val api = FakeSessionApi().apply { listError = IOException("down") }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+        assertIs<PagedResult.Error>(repo.current())
+
+        // Recovery: clear the error, queue a page; the next load retries page 1
+        // (cursor still null because the failure didn't advance state).
+        api.listError = null
+        api.queued.add(page(listOf("a"), null))
+        repo.loadMoreSessions()
+        val page = assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+        assertEquals(1, page.items.size)
+        assertEquals(listOf<Pair<Int, String?>>(20 to null, 20 to null), api.listCalls)
+    }
+
+    @Test fun pagingFailureKeepsPageAndSurfacesInlineLoadError() = runTest {
+        // Items already loaded → a paging failure must NOT replace the list
+        // with a full-screen Error. The Page stays; the error is a side-channel
+        // via observeLoadErrors (inline "Retry" row, not full-screen).
+        val api = FakeSessionApi().apply {
+            queued.add(page(listOf("a", "b"), "c1"))
+        }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+        assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+
+        // Page 2 fetch fails (cursor "c1").
+        api.listError = IOException("down")
+        repo.loadMoreSessions()
+
+        val p = assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+        assertEquals(listOf("a", "b"), p.items.map { it.id.value }, "items stay")
+        assertEquals("c1", p.nextCursor, "cursor unchanged (failure didn't advance state)")
+        val err = assertIs<com.openrecall.relay.core.model.ApiError.Unreachable>(
+            repo.observeLoadErrors().first(),
+        )
+        assertEquals("down", err.reason)
+    }
+
+    @Test fun successfulRetryClearsTheLoadError() = runTest {
+        val api = FakeSessionApi().apply { queued.add(page(listOf("a"), "c1")) }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+
+        api.listError = IOException("down")
+        repo.loadMoreSessions()
+        assertIs<com.openrecall.relay.core.model.ApiError.Unreachable>(repo.observeLoadErrors().first())
+
+        // A successful load clears the inline error.
+        api.listError = null
+        api.queued.add(page(listOf("b"), null))
+        repo.loadMoreSessions()
+        assertEquals(null, repo.observeLoadErrors().first(), "success clears the error")
+    }
+
+    @Test fun emptyTerminalSuccessClearsPriorLoadError() = runTest {
+        // Regression for the cross-review's Critical: a paging failure sets
+        // the inline error; a retry that lands on an empty terminal page must
+        // STILL clear the error (the empty-terminal branch returns early,
+        // before the clear, if the clear isn't placed at the top of the
+        // success path). Otherwise the error sticks AND exhausted=true makes
+        // Retry a no-op → unrecoverable dead-end.
+        val api = FakeSessionApi().apply { queued.add(page(listOf("a", "b"), "c1")) }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+
+        api.listError = IOException("down")
+        repo.loadMoreSessions()
+        assertIs<com.openrecall.relay.core.model.ApiError.Unreachable>(repo.observeLoadErrors().first())
+
+        // Retry returns the empty terminal page for cursor "c1".
+        api.listError = null
+        api.queued.add(page(emptyList(), null))
+        repo.loadMoreSessions()
+
+        assertEquals(null, repo.observeLoadErrors().first(), "empty-terminal success clears the error")
+        val p = assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+        assertEquals(listOf("a", "b"), p.items.map { it.id.value }, "items stay")
+        assertEquals(null, p.nextCursor, "cursor cleared (exhausted)")
+    }
+
+    @Test fun httpStatusExceptionMapsToApiErrorHttp() = runTest {
+        // The classifier surfaces the HTTP code so the UI can distinguish a
+        // 503 ("Server is starting up") from a generic network failure. A
+        // paging failure with a HttpStatusException surfaces ApiError.Http,
+        // not Unreachable, via the load-errors side-channel.
+        val api = FakeSessionApi().apply { queued.add(page(listOf("a"), "c1")) }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+
+        api.listError = com.openrecall.relay.http.HttpStatusException(503)
+        repo.loadMoreSessions()
+        val err = assertIs<com.openrecall.relay.core.model.ApiError.Http>(repo.observeLoadErrors().first())
+        assertEquals(503, err.code)
+    }
+
+    @Test fun observeSessionMapsSummaryAndEventsSortedBySeq() = runTest {
+        val api = FakeSessionApi().apply {
+            detail = SessionDetailsDto(
+                summary = summaryDto("s1"),
+                events = listOf(eventDto("e2", seq = 2), eventDto("e1", seq = 1)),
+            )
+        }
+        val repo = SessionRepositoryImpl(api)
+        val out = assertIs<Outcome.Success<*>>(repo.observeSession(SessionId("s1")).first())
+        val details = out.value as com.openrecall.relay.domain.model.SessionDetails
+        assertEquals("s1", details.summary.id.value)
+        assertEquals(listOf(1, 2), details.events.map { it.seq })
+    }
+
+    @Test fun observeSessionFailureMapsToOutcomeFailure() = runTest {
+        val api = FakeSessionApi().apply { detailError = IOException("nope") }
+        val repo = SessionRepositoryImpl(api)
+        assertIs<Outcome.Failure>(repo.observeSession(SessionId("s1")).first())
+    }
+
+    @Test fun observeSessionEventsMapsSortsAndDropsUnknownKinds() = runTest {
+        var dropped = 0
+        val api = FakeSessionApi().apply {
+            events = listOf(
+                eventDto("e2", seq = 2),
+                eventDto("e1", seq = 1),
+                eventDto("e3", seq = 3, kind = "image"), // unknown → dropped
+            )
+        }
+        val repo = SessionRepositoryImpl(api, onUnknownKind = { dropped++ })
+        val out = assertIs<Outcome.Success<*>>(repo.observeSessionEvents(SessionId("s1")).first())
+        @Suppress("UNCHECKED_CAST")
+        val events = out.value as List<TranscriptChunk>
+        assertEquals(listOf(1, 2), events.map { it.seq })
+        assertEquals(1, dropped)
+    }
+
+    @Test fun observeSessionEventsFailureMapsToOutcomeFailure() = runTest {
+        val api = FakeSessionApi().apply { eventsError = IOException("nope") }
+        val repo = SessionRepositoryImpl(api)
+        assertIs<Outcome.Failure>(repo.observeSessionEvents(SessionId("s1")).first())
+    }
+
+    @Test fun refreshSessionsResetsToPageOne() = runTest {
+        // After loading two pages (a,b then c,d), a refresh resets to page 1:
+        // the accumulated list is cleared, the cursor returns to null, and the
+        // first fetch uses a null cursor (page 1), not the prior "c1".
+        val api = FakeSessionApi().apply {
+            queued.add(page(listOf("a", "b"), "c1"))
+            queued.add(page(listOf("c", "d"), null))
+        }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+        repo.loadMoreSessions()
+        assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+        assertEquals(2, api.listCalls.size, "two loads before refresh")
+
+        // Re-queue page 1 (the deque is consumed destructively).
+        api.queued.add(page(listOf("a2", "b2"), "c1"))
+        repo.refreshSessions()
+
+        val p = assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+        assertEquals(listOf("a2", "b2"), p.items.map { it.id.value }, "refresh re-served page 1")
+        assertEquals("c1", p.nextCursor)
+        // The refresh's fetch used a null cursor (page 1), not the prior "c1".
+        assertEquals(20 to null, api.listCalls.last(), "refresh fetches page 1 (null cursor)")
+    }
+
+    @Test fun refreshSessionsClearsPriorInlineLoadError() = runTest {
+        // A paging failure surfaces an inline error while the list is kept.
+        // A refresh must clear that error (and re-fetch from page 1), so a
+        // pull-to-refresh is the recovery path for an inline "Retry" row.
+        val api = FakeSessionApi().apply { queued.add(page(listOf("a", "b"), "c1")) }
+        val repo = SessionRepositoryImpl(api)
+        repo.loadMoreSessions()
+
+        api.listError = IOException("down")
+        repo.loadMoreSessions()
+        assertIs<com.openrecall.relay.core.model.ApiError.Unreachable>(repo.observeLoadErrors().first())
+
+        // Recovery: refresh re-fetches page 1 and clears the inline error.
+        api.listError = null
+        api.queued.add(page(listOf("a2"), null))
+        repo.refreshSessions()
+
+        assertEquals(null, repo.observeLoadErrors().first(), "refresh clears the inline error")
+        val p = assertIs<PagedResult.Page<SessionSummary>>(repo.current())
+        assertEquals(listOf("a2"), p.items.map { it.id.value })
+    }
+
+    @Test fun refreshSessionsOnEmptyApiEmitsErrorNotCrash() = runTest {
+        // A refresh with no queued page (the api's deque is empty → throws)
+        // and no accumulated data surfaces a full-screen Error, not a crash.
+        // The pre-fetch Loading state is transient and not observable after a
+        // synchronous runTest, so we assert the terminal Error outcome.
+        val api = FakeSessionApi() // no queued pages
+        val repo = SessionRepositoryImpl(api)
+        repo.refreshSessions()
+        assertIs<PagedResult.Error>(repo.current())
+    }
+
+    @Test fun securityExceptionMapsToUnauthorized() = runTest {
+        val api = FakeSessionApi().apply { detailError = SecurityException("401") }
+        val repo = SessionRepositoryImpl(api)
+        val failure = assertIs<Outcome.Failure>(repo.observeSession(SessionId("s1")).first())
+        assertTrue(failure.error is com.openrecall.relay.core.model.ApiError.Unauthorized)
+    }
+}

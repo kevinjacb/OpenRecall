@@ -5,11 +5,11 @@ from datetime import datetime, timezone
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from opensapien_server.agent.capability import ConstantCapabilityProvider
-from opensapien_server.contracts.types import CapabilitySet
-from opensapien_server.gateway.liveness import DeviceLiveness
-from opensapien_server.http.app import build_app
-from opensapien_server.sessions.lifecycle import SessionLifecycle
+from openrecall_server.agent.capability import ConstantCapabilityProvider
+from openrecall_server.contracts.types import CapabilitySet
+from openrecall_server.gateway.liveness import DeviceLiveness
+from openrecall_server.http.app import build_app
+from openrecall_server.sessions.lifecycle import SessionLifecycle
 
 _AUTH = {"Authorization": "Bearer t"}
 _WALL = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)

@@ -6,11 +6,11 @@ from datetime import datetime, timezone
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from opensapien_server.auth import load_or_create_token
-from opensapien_server.events.model import CaptureEvent
-from opensapien_server.http.app import build_app
-from opensapien_server.sessions.index import SessionIndex
-from opensapien_server.sessions.lifecycle import SessionLifecycle
+from openrecall_server.auth import load_or_create_token
+from openrecall_server.events.model import CaptureEvent
+from openrecall_server.http.app import build_app
+from openrecall_server.sessions.index import SessionIndex
+from openrecall_server.sessions.lifecycle import SessionLifecycle
 
 
 async def _client(tmp_path, *, index=None, lifecycle=None, store=None):

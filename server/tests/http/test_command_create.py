@@ -7,14 +7,14 @@ from __future__ import annotations
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from opensapien_server.agent.capability import ConstantCapabilityProvider
-from opensapien_server.commands.dispatcher import CommandDispatcher
-from opensapien_server.commands.signing import CommandSigner
-from opensapien_server.commands.store import SqliteCommandStore
-from opensapien_server.contracts.clock import FakeClock
-from opensapien_server.contracts.id_generator import DeterministicIdGenerator
-from opensapien_server.contracts.types import CapabilitySet, DeviceResourceStatus
-from opensapien_server.http.app import build_app
+from openrecall_server.agent.capability import ConstantCapabilityProvider
+from openrecall_server.commands.dispatcher import CommandDispatcher
+from openrecall_server.commands.signing import CommandSigner
+from openrecall_server.commands.store import SqliteCommandStore
+from openrecall_server.contracts.clock import FakeClock
+from openrecall_server.contracts.id_generator import DeterministicIdGenerator
+from openrecall_server.contracts.types import CapabilitySet, DeviceResourceStatus
+from openrecall_server.http.app import build_app
 
 _AUTH = {"Authorization": "Bearer t"}
 

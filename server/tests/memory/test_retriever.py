@@ -11,14 +11,14 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from opensapien_server.contracts.clock import FakeClock
-from opensapien_server.contracts.id_generator import DeterministicIdGenerator
-from opensapien_server.contracts.types import RetrieverContext
-from opensapien_server.memory.atom import MemoryAtom
-from opensapien_server.memory.embeddings import Embedder
-from opensapien_server.memory.index import InMemoryMemoryIndex
-from opensapien_server.memory.retrieval import MemoryRetriever, Retriever
-from opensapien_server.memory.scoring import FixedScorer, SimRecencyScorer
+from openrecall_server.contracts.clock import FakeClock
+from openrecall_server.contracts.id_generator import DeterministicIdGenerator
+from openrecall_server.contracts.types import RetrieverContext
+from openrecall_server.memory.atom import MemoryAtom
+from openrecall_server.memory.embeddings import Embedder
+from openrecall_server.memory.index import InMemoryMemoryIndex
+from openrecall_server.memory.retrieval import MemoryRetriever, Retriever
+from openrecall_server.memory.scoring import FixedScorer, SimRecencyScorer
 
 
 # --- test fakes --------------------------------------------------------------

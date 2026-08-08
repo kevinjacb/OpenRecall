@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-from opensapien_server.ingest.audio_packet import AudioPacket, PacketType, VadState
-from opensapien_server.ingest.pipeline import FRAME_MS, AudioIngestPipeline, _peak_of
-from opensapien_server.ingest.reassembler import SessionReassembler
-from opensapien_server.media.audio import AudioStore
+from openrecall_server.ingest.audio_packet import AudioPacket, PacketType, VadState
+from openrecall_server.ingest.pipeline import FRAME_MS, AudioIngestPipeline, _peak_of
+from openrecall_server.ingest.reassembler import SessionReassembler
+from openrecall_server.media.audio import AudioStore
 
 
 class FakeDecoder:

@@ -12,27 +12,27 @@ from datetime import datetime, timezone
 
 import pytest
 
-from opensapien_server.agent.metrics import InMemoryMetricsRecorder
-from opensapien_server.events.model import CaptureEvent
-from opensapien_server.events.store import InMemoryEventStore
-from opensapien_server.gateway.core import GatewayCore
-from opensapien_server.ingest.pipeline import Transcript
-from opensapien_server.memory.atom import MemoryAtom
-from opensapien_server.memory.embeddings import Embedder
-from opensapien_server.memory.extract import ExtractedMemory, Extractor
-from opensapien_server.memory.index import InMemoryMemoryIndex
-from opensapien_server.memory.extraction_worker import (
+from openrecall_server.agent.metrics import InMemoryMetricsRecorder
+from openrecall_server.events.model import CaptureEvent
+from openrecall_server.events.store import InMemoryEventStore
+from openrecall_server.gateway.core import GatewayCore
+from openrecall_server.ingest.pipeline import Transcript
+from openrecall_server.memory.atom import MemoryAtom
+from openrecall_server.memory.embeddings import Embedder
+from openrecall_server.memory.extract import ExtractedMemory, Extractor
+from openrecall_server.memory.index import InMemoryMemoryIndex
+from openrecall_server.memory.extraction_worker import (
     ExtractionEnqueuer,
     ExtractionWorker,
 )
-from opensapien_server.memory.stages import (
+from openrecall_server.memory.stages import (
     EmbeddingStage,
     ExtractionStage,
     IndexingStage,
     Pipeline,
     VersionStampStage,
 )
-from opensapien_server.memory.store import InMemoryAtomStore
+from openrecall_server.memory.store import InMemoryAtomStore
 
 
 def _event(seq: int, session_id: str = "s1", text: str = "hello") -> CaptureEvent:
@@ -105,7 +105,7 @@ async def test_enqueuer_overflow_with_small_capacity():
     enq.enqueue("a")
     enq.enqueue("a")
     enq.enqueue("a")
-    assert metrics.counter(Metrics_or := __import__("opensapien_server.contracts.metrics", fromlist=["Metrics"]).Metrics.EXTRACTION_QUEUE_OVERFLOW_TOTAL) == 2
+    assert metrics.counter(Metrics_or := __import__("openrecall_server.contracts.metrics", fromlist=["Metrics"]).Metrics.EXTRACTION_QUEUE_OVERFLOW_TOTAL) == 2
 
 
 @pytest.mark.asyncio

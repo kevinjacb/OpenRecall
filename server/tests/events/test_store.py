@@ -14,8 +14,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from opensapien_server.events.model import CaptureEvent
-from opensapien_server.events.store import InMemoryEventStore, SqliteEventStore
+from openrecall_server.events.model import CaptureEvent
+from openrecall_server.events.store import InMemoryEventStore, SqliteEventStore
 
 
 def ev(session_id: str, seq: int, text: str = "x") -> CaptureEvent:

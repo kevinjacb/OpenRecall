@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from opensapien_server.memory.atom import MemoryAtom
-from opensapien_server.memory.index import InMemoryMemoryIndex, SqliteMemoryIndex
-from opensapien_server.memory.store import InMemoryAtomStore, SqliteAtomStore
+from openrecall_server.memory.atom import MemoryAtom
+from openrecall_server.memory.index import InMemoryMemoryIndex, SqliteMemoryIndex
+from openrecall_server.memory.store import InMemoryAtomStore, SqliteAtomStore
 
 _NOW = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
 

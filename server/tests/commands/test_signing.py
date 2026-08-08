@@ -8,8 +8,8 @@ signed *payload* bytes and parses the command from them.
 
 from datetime import datetime, timedelta, timezone
 
-from opensapien_server.commands.model import Command
-from opensapien_server.commands.signing import (
+from openrecall_server.commands.model import Command
+from openrecall_server.commands.signing import (
     CommandSigner,
     SignedCommand,
     load_or_create_signer,

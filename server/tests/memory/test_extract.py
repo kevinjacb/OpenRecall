@@ -21,7 +21,7 @@ the LLM's positional-form output was being treated as "nothing to remember."
 
 import pytest
 
-from opensapien_server.memory.extract import (
+from openrecall_server.memory.extract import (
     ExtractedMemory,
     LLMExtractor,
     LLMExtractError,
@@ -49,7 +49,7 @@ def test_default_prompt_pins_object_schema_against_positional_arrays():
     the cursor sticks (the 459-events-behind storm). This pins the fix against
     a regression that silently re-weakens the prompt.
     """
-    from opensapien_server.memory.extract import DEFAULT_PROMPT
+    from openrecall_server.memory.extract import DEFAULT_PROMPT
 
     assert '"kind"' in DEFAULT_PROMPT
     assert '"text"' in DEFAULT_PROMPT

@@ -33,8 +33,8 @@ def _load_pcm(path: str) -> bytes:
     reason="resemblyzer extra or speaker fixtures not present",
 )
 def test_resemblyzer_separates_two_speakers():
-    from opensapien_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
-    from opensapien_server.ingest.speaker_identifier import _cosine
+    from openrecall_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
+    from openrecall_server.ingest.speaker_identifier import _cosine
 
     emb = ResemblyzerSpeakerEmbedder(min_speech_ms=500)
     emb.warmup()
@@ -62,7 +62,7 @@ def test_resemblyzer_separates_two_speakers():
 )
 def test_resemblyzer_dim_matches_across_clips():
     # dim is discovered from the model and must be consistent across hops.
-    from opensapien_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
+    from openrecall_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
 
     emb = ResemblyzerSpeakerEmbedder()
     emb.warmup()

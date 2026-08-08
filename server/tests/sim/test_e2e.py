@@ -14,15 +14,15 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from opensapien_server.commands.dispatcher import CommandDispatcher
-from opensapien_server.commands.model import Command
-from opensapien_server.commands.signing import CommandSigner
-from opensapien_server.events.store import InMemoryEventStore
-from opensapien_server.gateway.adapter import serve
-from opensapien_server.ingest.pipeline import AudioIngestPipeline
-from opensapien_server.ingest.reassembler import SessionReassembler
-from opensapien_server.sim.device import DeviceClient
-from opensapien_server.sim.runner import run_session
+from openrecall_server.commands.dispatcher import CommandDispatcher
+from openrecall_server.commands.model import Command
+from openrecall_server.commands.signing import CommandSigner
+from openrecall_server.events.store import InMemoryEventStore
+from openrecall_server.gateway.adapter import serve
+from openrecall_server.ingest.pipeline import AudioIngestPipeline
+from openrecall_server.ingest.reassembler import SessionReassembler
+from openrecall_server.sim.device import DeviceClient
+from openrecall_server.sim.runner import run_session
 
 pytestmark = pytest.mark.asyncio
 

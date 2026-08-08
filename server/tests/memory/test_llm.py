@@ -9,7 +9,7 @@ env, so pointing at local Gemma/Qwen (Ollama, mlx_lm.server) or a cloud model
 
 import pytest
 
-from opensapien_server.memory.llm import OpenAICompatibleChatModel
+from openrecall_server.memory.llm import OpenAICompatibleChatModel
 
 
 def test_payload_carries_model_and_chat_messages():
@@ -40,9 +40,9 @@ def test_base_url_trailing_slash_is_normalised():
 
 def test_from_env_reads_model_base_url_and_key():
     env = {
-        "OPENSAPIEN_LLM_BASE_URL": "http://localhost:11434/v1",
-        "OPENSAPIEN_LLM_MODEL": "gemma2",
-        "OPENSAPIEN_LLM_API_KEY": "secret",
+        "OPENRECALL_LLM_BASE_URL": "http://localhost:11434/v1",
+        "OPENRECALL_LLM_MODEL": "gemma2",
+        "OPENRECALL_LLM_API_KEY": "secret",
     }
 
     m = OpenAICompatibleChatModel.from_env(env)
@@ -54,4 +54,4 @@ def test_from_env_reads_model_base_url_and_key():
 
 def test_from_env_requires_a_model():
     with pytest.raises(ValueError):
-        OpenAICompatibleChatModel.from_env({"OPENSAPIEN_LLM_BASE_URL": "http://x/v1"})
+        OpenAICompatibleChatModel.from_env({"OPENRECALL_LLM_BASE_URL": "http://x/v1"})

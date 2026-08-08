@@ -3,8 +3,8 @@ import asyncio
 import pytest
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosedError
-from opensapien_server.gateway.adapter import serve
-from opensapien_server.auth import load_or_create_token
+from openrecall_server.gateway.adapter import serve
+from openrecall_server.auth import load_or_create_token
 
 
 @pytest.mark.asyncio

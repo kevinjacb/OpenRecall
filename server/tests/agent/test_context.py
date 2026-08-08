@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from opensapien_server.agent.context import ContextBuilder
-from opensapien_server.contracts.types import (
+from openrecall_server.agent.context import ContextBuilder
+from openrecall_server.contracts.types import (
     CapabilitySet,
     Prompt,
     RetrievedContext,

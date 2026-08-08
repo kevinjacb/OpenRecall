@@ -10,10 +10,10 @@ import math
 
 import pytest
 
-from opensapien_server.ingest.speaker_config import SpeakerConfig
-from opensapien_server.ingest.speaker_embedder import FakeSpeakerEmbedder
-from opensapien_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
-from opensapien_server.ingest.speaker_identifier import (
+from openrecall_server.ingest.speaker_config import SpeakerConfig
+from openrecall_server.ingest.speaker_embedder import FakeSpeakerEmbedder
+from openrecall_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
+from openrecall_server.ingest.speaker_identifier import (
     SpeakerAssignment,
     SpeakerIdentifier,
 )
