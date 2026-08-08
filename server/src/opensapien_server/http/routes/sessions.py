@@ -70,6 +70,11 @@ def _speaker_registry(app: web.Application):
     return app.get("sense_speaker_registry")
 
 
+def _audio_store(app: web.Application):
+    """The AudioStore wired into build_app, or None when audio is off."""
+    return app.get("sense_audio_store")
+
+
 def _summary_to_wire(s: SessionSummary, *, now: datetime | None = None) -> dict:
     """Map a SessionSummary to the wire shape matching the Android DTO."""
     return {
@@ -82,7 +87,7 @@ def _summary_to_wire(s: SessionSummary, *, now: datetime | None = None) -> dict:
     }
 
 
-def _event_to_wire(e, registry=None) -> dict:
+def _event_to_wire(e, registry=None, audio=None) -> dict:
     """Map a CaptureEvent to the wire shape matching the Android DTO.
 
     Speaker display fields (``speakerName``/``isWearer``) are resolved at
@@ -90,8 +95,15 @@ def _event_to_wire(e, registry=None) -> dict:
     without a backfill. The stored event row keeps only the stable
     ``speaker_id`` UUID. ``None``/``False`` when the hop has no speaker or
     the registry has no row (e.g. speaker recognition disabled).
+
+    ``audio`` is the :class:`AudioStore`, used only to fill the codec fields
+    honestly: they were hardcoded to ``""``/``0`` while the audio plane did
+    not exist. Now that it does, a client can tell "no audio for this
+    session" from "audio in an unknown format" — before, both looked the
+    same.
     """
     sp = registry.get(e.speaker) if (e.speaker and registry is not None) else None
+    has_audio = audio is not None and audio.has(e.session_id)
     return {
         "id": e.event_id,
         "sessionId": e.session_id,
@@ -99,14 +111,16 @@ def _event_to_wire(e, registry=None) -> dict:
         "startMs": e.start_ms,
         "createdAt": e.created_at.isoformat(),
         "kind": e.kind,
-        # The body fields are open-ended per kind; today's only kind is
-        # "transcript" and only text/durationMs are populated. The audio
-        # plane (Phase 5+) will populate codec/sampleRateHz/byteCount.
         "text": e.text or "",
         "durationMs": e.duration_ms,
-        "codec": "",
-        "sampleRateHz": 0,
-        "byteCount": 0,
+        # Populated once the session has a frame log (spec §3.2). Empty/zero
+        # means "this session has no retrievable audio", which is now a real
+        # distinction rather than a placeholder.
+        "codec": "opus" if has_audio else "",
+        "sampleRateHz": 16000 if has_audio else 0,
+        "byteCount": (
+            audio.stat(e.session_id).byte_count if has_audio else 0
+        ),
         "speaker": e.speaker,
         "speakerName": sp.display_name if sp is not None else None,
         "isWearer": sp.is_wearer if sp is not None else False,
@@ -160,10 +174,11 @@ async def get_session(request: web.Request) -> web.Response:
         return web.json_response({"error": "not_found"}, status=404)
     events = _store(request.app).events(session_id)
     registry = _speaker_registry(request.app)
+    audio = _audio_store(request.app)
     return web.json_response(
         {
             "summary": _summary_to_wire(summary),
-            "events": [_event_to_wire(e, registry) for e in events],
+            "events": [_event_to_wire(e, registry, audio) for e in events],
         }
     )
 
@@ -176,4 +191,5 @@ async def get_session_events(request: web.Request) -> web.Response:
         return web.json_response({"error": "not_found"}, status=404)
     events = _store(request.app).events(session_id)
     registry = _speaker_registry(request.app)
-    return web.json_response({"events": [_event_to_wire(e, registry) for e in events]})
+    audio = _audio_store(request.app)
+    return web.json_response({"events": [_event_to_wire(e, registry, audio) for e in events]})

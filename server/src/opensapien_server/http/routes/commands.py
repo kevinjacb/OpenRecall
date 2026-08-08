@@ -102,6 +102,26 @@ class CommandRecordDto(BaseModel):
         )
 
 
+def _wire_without_store(signed) -> dict:
+    """The command wire shape when no command store is configured.
+
+    ``list_active``/``get`` are the normal source, but the store is an
+    optional dependency, and a command that was genuinely issued should not
+    fail to serialise just because nothing is persisting records.
+    """
+    command = signed.command
+    return {
+        "command_id": command.command_id,
+        "session_id": command.session_id,
+        "type": command.type,
+        "params": dict(command.params),
+        "issued_at": command.issued_at.isoformat(),
+        "expires_at": command.expires_at.isoformat(),
+        "status": CommandStatus.PENDING.value,
+        "history": [],
+    }
+
+
 # --- HTTP handlers ----------------------------------------------------------
 
 
@@ -171,6 +191,112 @@ def add_routes(app) -> None:
             CommandRecordDto.from_record(new_rec).model_dump(mode="json")
         )
 
+    async def post_command(request: web.Request) -> web.Response:
+        """Create a command (spec §4.3, blocking gap #5).
+
+        Until now commands could only be created by the agent's internal
+        ``issue_command`` path, so the Settings toggles had nothing to call.
+        This goes through the same validate → guardrails → sign chain
+        (:func:`commands.issue.validate_and_issue`) rather than a parallel
+        one — a second copy of the safety chain is a copy that drifts.
+
+        ``session_id`` is accepted but should be omitted: an HTTP caller has
+        no truthful value for it (spec D3), and an empty value means "the
+        device, whenever it is next connected".
+        """
+        from ...commands.issue import validate_and_issue
+
+        dispatcher = app["sense_command_dispatcher"]
+        ids = app["sense_id_generator"]
+        clock = app["sense_clock"]
+        if dispatcher is None or ids is None or clock is None:
+            return web.json_response(
+                {"code": "not_found", "message": "command dispatch is not configured"},
+                status=404,
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(
+                {"code": "bad_request", "message": "body must be JSON"}, status=400,
+            )
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"code": "bad_request", "message": "body must be an object"}, status=400,
+            )
+        command_type = body.get("type")
+        idempotency_key = body.get("idempotency_key")
+        if not isinstance(command_type, str) or not command_type:
+            return web.json_response(
+                {"code": "bad_request", "message": "type is required"}, status=400,
+            )
+        if not isinstance(idempotency_key, str) or not idempotency_key:
+            # Required, not generated: a caller that retries a failed request
+            # without a stable key would issue the command twice, and only
+            # the caller knows which retries are the "same" request.
+            return web.json_response(
+                {"code": "bad_request", "message": "idempotency_key is required"},
+                status=400,
+            )
+        params = body.get("params") or {}
+        if not isinstance(params, dict):
+            return web.json_response(
+                {"code": "bad_request", "message": "params must be an object"},
+                status=400,
+            )
+
+        store = app["sense_command_store"]
+        # Asked *before* issuing: afterwards the dispatcher has absorbed the
+        # duplicate and both cases look identical from here.
+        replayed = dispatcher.find_by_idempotency_key(idempotency_key)
+
+        result = validate_and_issue(
+            command_type=command_type,
+            params=params,
+            idempotency_key=idempotency_key,
+            dispatcher=dispatcher,
+            ids=ids,
+            clock=clock,
+            capability_provider=app.get("sense_capability_provider"),
+            session_id=body.get("session_id") or "",
+        )
+        if not result.ok:
+            # A validation failure means the request was malformed (400); a
+            # guardrail refusal means the device can't do it right now (403).
+            # Collapsing them would leave a client unable to tell "fix your
+            # request" from "try again later".
+            status = 403 if result.stage == "guardrails" else 400
+            if result.stage == "dispatch":
+                status = 500
+            return web.json_response(
+                {
+                    "code": (
+                        "forbidden" if status == 403
+                        else "internal_error" if status == 500
+                        else "bad_request"
+                    ),
+                    "message": result.message or "command rejected",
+                    "reason": result.rejection.value if result.rejection else None,
+                },
+                status=status,
+            )
+
+        rec = store.get(result.signed.command.command_id) if store is not None else None
+        payload = (
+            CommandRecordDto.from_record(rec).model_dump(mode="json")
+            if rec is not None
+            else _wire_without_store(result.signed)
+        )
+        # An idempotent replay returns the original command at 200; a genuinely
+        # new command is 201. The distinction lets a client tell "your retry
+        # was absorbed" from "a second command is now in flight".
+        is_replay = (
+            replayed is not None
+            and replayed == result.signed.command.command_id
+        )
+        return web.json_response(payload, status=200 if is_replay else 201)
+
+    app.router.add_post("/commands", post_command)
     app.router.add_get("/commands", list_commands)
     app.router.add_get("/commands/{command_id}", get_command)
     app.router.add_post("/commands/{command_id}/ack", post_command_ack)
