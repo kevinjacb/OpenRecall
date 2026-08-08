@@ -18,13 +18,13 @@ build/
 dist/
 
 # --- ESP-IDF / firmware ---
-firmware/sense_sensor/build/
-firmware/sense_sensor/managed_components/
-firmware/sense_sensor/.cache/
-firmware/sense_sensor/sdkconfig
-firmware/sense_sensor/sdkconfig.old
+firmware/opensapien_sensor/build/
+firmware/opensapien_sensor/managed_components/
+firmware/opensapien_sensor/.cache/
+firmware/opensapien_sensor/sdkconfig
+firmware/opensapien_sensor/sdkconfig.old
 **/dependencies.lock
-!firmware/sense_sensor/dependencies.lock
+!firmware/opensapien_sensor/dependencies.lock
 
 # --- Android / Gradle ---
 android/**/.gradle/

@@ -11,14 +11,14 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from sense_server.contracts.clock import FakeClock
-from sense_server.contracts.id_generator import DeterministicIdGenerator
-from sense_server.contracts.types import RetrieverContext
-from sense_server.memory.atom import MemoryAtom
-from sense_server.memory.embeddings import Embedder
-from sense_server.memory.index import InMemoryMemoryIndex
-from sense_server.memory.retrieval import MemoryRetriever, Retriever
-from sense_server.memory.scoring import FixedScorer, SimRecencyScorer
+from opensapien_server.contracts.clock import FakeClock
+from opensapien_server.contracts.id_generator import DeterministicIdGenerator
+from opensapien_server.contracts.types import RetrieverContext
+from opensapien_server.memory.atom import MemoryAtom
+from opensapien_server.memory.embeddings import Embedder
+from opensapien_server.memory.index import InMemoryMemoryIndex
+from opensapien_server.memory.retrieval import MemoryRetriever, Retriever
+from opensapien_server.memory.scoring import FixedScorer, SimRecencyScorer
 
 
 # --- test fakes --------------------------------------------------------------

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from sense_server.agent.config import (
+from opensapien_server.agent.config import (
     AgentConfig,
     GuardrailsConfig,
     WhisperConfig,
@@ -20,9 +20,9 @@ def test_defaults_when_env_empty():
 
 def test_overrides_from_env():
     env = {
-        "SENSE_CONFIDENCE_AUTONOMOUS": "0.9",
-        "SENSE_CONFIDENCE_CONFIRM": "0.5",
-        "SENSE_RATE_LIMIT_PER_MIN": "100",
+        "OPENSAPIEN_CONFIDENCE_AUTONOMOUS": "0.9",
+        "OPENSAPIEN_CONFIDENCE_CONFIRM": "0.5",
+        "OPENSAPIEN_RATE_LIMIT_PER_MIN": "100",
     }
     cfg = load_agent_config(env)
     assert cfg.guardrails.confidence_autonomous == 0.9
@@ -31,31 +31,31 @@ def test_overrides_from_env():
 
 
 def test_invalid_confidence_value_raises():
-    with pytest.raises(ValueError, match="SENSE_CONFIDENCE_AUTONOMOUS"):
-        load_agent_config({"SENSE_CONFIDENCE_AUTONOMOUS": "not-a-number"})
+    with pytest.raises(ValueError, match="OPENSAPIEN_CONFIDENCE_AUTONOMOUS"):
+        load_agent_config({"OPENSAPIEN_CONFIDENCE_AUTONOMOUS": "not-a-number"})
 
 
 def test_out_of_range_confidence_raises():
-    with pytest.raises(ValueError, match="SENSE_CONFIDENCE_AUTONOMOUS"):
-        load_agent_config({"SENSE_CONFIDENCE_AUTONOMOUS": "1.5"})
+    with pytest.raises(ValueError, match="OPENSAPIEN_CONFIDENCE_AUTONOMOUS"):
+        load_agent_config({"OPENSAPIEN_CONFIDENCE_AUTONOMOUS": "1.5"})
 
 
 def test_negative_rate_limit_raises():
-    with pytest.raises(ValueError, match="SENSE_RATE_LIMIT_PER_MIN"):
-        load_agent_config({"SENSE_RATE_LIMIT_PER_MIN": "0"})
+    with pytest.raises(ValueError, match="OPENSAPIEN_RATE_LIMIT_PER_MIN"):
+        load_agent_config({"OPENSAPIEN_RATE_LIMIT_PER_MIN": "0"})
 
 
 def test_non_integer_rate_limit_raises():
-    with pytest.raises(ValueError, match="SENSE_RATE_LIMIT_PER_MIN"):
-        load_agent_config({"SENSE_RATE_LIMIT_PER_MIN": "twenty"})
+    with pytest.raises(ValueError, match="OPENSAPIEN_RATE_LIMIT_PER_MIN"):
+        load_agent_config({"OPENSAPIEN_RATE_LIMIT_PER_MIN": "twenty"})
 
 
 def test_threshold_ordering_validated():
     """autonomous must be > confirm; otherwise the gate is meaningless."""
     with pytest.raises(ValueError, match="must be >"):
         load_agent_config({
-            "SENSE_CONFIDENCE_AUTONOMOUS": "0.5",
-            "SENSE_CONFIDENCE_CONFIRM": "0.7",
+            "OPENSAPIEN_CONFIDENCE_AUTONOMOUS": "0.5",
+            "OPENSAPIEN_CONFIDENCE_CONFIRM": "0.7",
         })
 
 
@@ -83,8 +83,8 @@ def test_whisper_defaults_match_mlx():
 
 def test_whisper_overrides_from_env():
     env = {
-        "SENSE_WHISPER_NO_SPEECH_THRESHOLD": "0.8",
-        "SENSE_WHISPER_LOGPROB_THRESHOLD": "-0.5",
+        "OPENSAPIEN_WHISPER_NO_SPEECH_THRESHOLD": "0.8",
+        "OPENSAPIEN_WHISPER_LOGPROB_THRESHOLD": "-0.5",
     }
     cfg = load_agent_config(env)
     assert cfg.whisper.no_speech_threshold == 0.8
@@ -92,14 +92,14 @@ def test_whisper_overrides_from_env():
 
 
 def test_whisper_no_speech_out_of_range_raises():
-    with pytest.raises(ValueError, match="SENSE_WHISPER_NO_SPEECH_THRESHOLD"):
+    with pytest.raises(ValueError, match="OPENSAPIEN_WHISPER_NO_SPEECH_THRESHOLD"):
         WhisperConfig(no_speech_threshold=1.5)
-    with pytest.raises(ValueError, match="SENSE_WHISPER_NO_SPEECH_THRESHOLD"):
+    with pytest.raises(ValueError, match="OPENSAPIEN_WHISPER_NO_SPEECH_THRESHOLD"):
         WhisperConfig(no_speech_threshold=-0.1)
 
 
 def test_whisper_logprob_above_zero_raises():
-    with pytest.raises(ValueError, match="SENSE_WHISPER_LOGPROB_THRESHOLD"):
+    with pytest.raises(ValueError, match="OPENSAPIEN_WHISPER_LOGPROB_THRESHOLD"):
         WhisperConfig(logprob_threshold=0.1)
 
 
@@ -112,8 +112,8 @@ def test_whisper_logprob_zero_is_allowed():
 
 
 def test_whisper_logprob_invalid_value_raises_at_loader():
-    with pytest.raises(ValueError, match="SENSE_WHISPER_LOGPROB_THRESHOLD"):
-        load_agent_config({"SENSE_WHISPER_LOGPROB_THRESHOLD": "not-a-number"})
+    with pytest.raises(ValueError, match="OPENSAPIEN_WHISPER_LOGPROB_THRESHOLD"):
+        load_agent_config({"OPENSAPIEN_WHISPER_LOGPROB_THRESHOLD": "not-a-number"})
 
 
 def test_whisper_logprob_at_threshold_is_kept():

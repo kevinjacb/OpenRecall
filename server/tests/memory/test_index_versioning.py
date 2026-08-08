@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from sense_server.memory.atom import MemoryAtom
-from sense_server.memory.index import InMemoryMemoryIndex, MemoryIndex, SqliteMemoryIndex
+from opensapien_server.memory.atom import MemoryAtom
+from opensapien_server.memory.index import InMemoryMemoryIndex, MemoryIndex, SqliteMemoryIndex
 
 
 def test_in_memory_index_name_version():

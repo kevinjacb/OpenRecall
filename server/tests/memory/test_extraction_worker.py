@@ -16,28 +16,28 @@ from typing import Iterable
 
 import pytest
 
-from sense_server.agent.metrics import InMemoryMetricsRecorder
-from sense_server.contracts.clock import FakeClock
-from sense_server.contracts.id_generator import DeterministicIdGenerator
-from sense_server.contracts.metrics import Metrics
-from sense_server.events.model import CaptureEvent
-from sense_server.events.store import InMemoryEventStore, SqliteEventStore
-from sense_server.memory.atom import MemoryAtom
-from sense_server.memory.embeddings import Embedder
-from sense_server.memory.extract import ExtractedMemory, Extractor, LLMParseError
-from sense_server.memory.index import InMemoryMemoryIndex
-from sense_server.memory.extraction_worker import (
+from opensapien_server.agent.metrics import InMemoryMetricsRecorder
+from opensapien_server.contracts.clock import FakeClock
+from opensapien_server.contracts.id_generator import DeterministicIdGenerator
+from opensapien_server.contracts.metrics import Metrics
+from opensapien_server.events.model import CaptureEvent
+from opensapien_server.events.store import InMemoryEventStore, SqliteEventStore
+from opensapien_server.memory.atom import MemoryAtom
+from opensapien_server.memory.embeddings import Embedder
+from opensapien_server.memory.extract import ExtractedMemory, Extractor, LLMParseError
+from opensapien_server.memory.index import InMemoryMemoryIndex
+from opensapien_server.memory.extraction_worker import (
     ExtractionEnqueuer,
     ExtractionWorker,
 )
-from sense_server.memory.stages import (
+from opensapien_server.memory.stages import (
     EmbeddingStage,
     ExtractionStage,
     IndexingStage,
     Pipeline,
     VersionStampStage,
 )
-from sense_server.memory.store import InMemoryAtomStore, SqliteAtomStore
+from opensapien_server.memory.store import InMemoryAtomStore, SqliteAtomStore
 
 
 # --- fakes ------------------------------------------------------------------
@@ -636,7 +636,7 @@ def test_worker_logs_parse_error_detail_on_parse_failure(caplog):
         store=atoms,
     )
     w = ExtractionWorker(events=events, atoms=atoms, pipeline=pipeline, metrics=metrics)
-    with caplog.at_level(logging.WARNING, logger="sense_server.memory.extraction_worker"):
+    with caplog.at_level(logging.WARNING, logger="opensapien_server.memory.extraction_worker"):
         with pytest.raises(LLMParseError):
             w.process_session("s1")
     records = [r for r in caplog.records if "extraction_parse_failed" in r.message]

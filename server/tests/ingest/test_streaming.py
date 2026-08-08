@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from sense_server.ingest.streaming_transcriber import (
+from opensapien_server.ingest.streaming_transcriber import (
     Segment,
     streaming_from_tokens,
     Token,

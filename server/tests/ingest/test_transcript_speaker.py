@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sense_server.ingest.transcriber import Transcript
-from sense_server.events.model import CaptureEvent
-from sense_server.memory.atom import MemoryAtom
+from opensapien_server.ingest.transcriber import Transcript
+from opensapien_server.events.model import CaptureEvent
+from opensapien_server.memory.atom import MemoryAtom
 
 
 def test_transcript_defaults_speaker_to_none():

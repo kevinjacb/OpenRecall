@@ -7,17 +7,17 @@ from typing import Iterable
 
 import pytest
 
-from sense_server.agent.audit import InMemoryAuditLogger
-from sense_server.agent.capability import ConstantCapabilityProvider
-from sense_server.agent.context import ContextBuilder
-from sense_server.agent.guardrails import ConfidenceGateGuardrails
-from sense_server.agent.intent import AgentLLM
-from sense_server.agent.metrics import InMemoryMetricsRecorder
-from sense_server.agent.planner import Planner
-from sense_server.agent.validator import StrictJSONValidator
-from sense_server.contracts.clock import FakeClock
-from sense_server.contracts.id_generator import DeterministicIdGenerator
-from sense_server.contracts.types import (
+from opensapien_server.agent.audit import InMemoryAuditLogger
+from opensapien_server.agent.capability import ConstantCapabilityProvider
+from opensapien_server.agent.context import ContextBuilder
+from opensapien_server.agent.guardrails import ConfidenceGateGuardrails
+from opensapien_server.agent.intent import AgentLLM
+from opensapien_server.agent.metrics import InMemoryMetricsRecorder
+from opensapien_server.agent.planner import Planner
+from opensapien_server.agent.validator import StrictJSONValidator
+from opensapien_server.contracts.clock import FakeClock
+from opensapien_server.contracts.id_generator import DeterministicIdGenerator
+from opensapien_server.contracts.types import (
     AgentAction,
     AgentActionKind,
     LLMResult,
@@ -26,11 +26,11 @@ from sense_server.contracts.types import (
     RetrievedContext,
     ScoredAtom,
 )
-from sense_server.http.app import build_app
-from sense_server.memory.index import InMemoryMemoryIndex
-from sense_server.memory.retrieval import Retriever
-from sense_server.memory.scoring import SimRecencyScorer
-from sense_server.memory.store import InMemoryAtomStore
+from opensapien_server.http.app import build_app
+from opensapien_server.memory.index import InMemoryMemoryIndex
+from opensapien_server.memory.retrieval import Retriever
+from opensapien_server.memory.scoring import SimRecencyScorer
+from opensapien_server.memory.store import InMemoryAtomStore
 
 
 def _atom(atom_id: str, text: str, score: float = 0.9) -> ScoredAtom:

@@ -19,15 +19,15 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from sense_server.commands.model import Command
-from sense_server.commands.record import CommandRecord, StatusTransition
-from sense_server.commands.signing import CommandSigner
-from sense_server.commands.status import CommandStatus
-from sense_server.commands.store import SqliteCommandStore
+from opensapien_server.commands.model import Command
+from opensapien_server.commands.record import CommandRecord, StatusTransition
+from opensapien_server.commands.signing import CommandSigner
+from opensapien_server.commands.status import CommandStatus
+from opensapien_server.commands.store import SqliteCommandStore
 
 
 # Reuse the response shape from the routes module for round-trip checks.
-from sense_server.http.routes.commands import (
+from opensapien_server.http.routes.commands import (
     CommandHistoryEntryDto,
     CommandRecordDto,
 )
@@ -48,7 +48,7 @@ def _build_rec(command_id: str = "c1", status: CommandStatus = CommandStatus.PEN
     rec = CommandRecord.at_issue(cmd)
     if status == CommandStatus.PENDING:
         return rec
-    from sense_server.commands.status import STATUS_ORDER
+    from opensapien_server.commands.status import STATUS_ORDER
     for s in list(STATUS_ORDER)[1:]:
         rec = rec.with_transition(s, T0 + timedelta(seconds=1))
         if s == status:

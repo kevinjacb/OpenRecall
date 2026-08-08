@@ -19,7 +19,7 @@ def _pcm(ms: int, sr: int = 16000) -> bytes:
 
 
 def test_fake_embedder_returns_a_unit_vector_of_configured_dim():
-    from sense_server.ingest.speaker_embedder import FakeSpeakerEmbedder
+    from opensapien_server.ingest.speaker_embedder import FakeSpeakerEmbedder
 
     emb = FakeSpeakerEmbedder(dim=8)
     vec = emb.embed(_pcm(1000), 16000)
@@ -29,14 +29,14 @@ def test_fake_embedder_returns_a_unit_vector_of_configured_dim():
 
 
 def test_fake_embedder_returns_none_on_window_shorter_than_min_speech_ms():
-    from sense_server.ingest.speaker_embedder import FakeSpeakerEmbedder
+    from opensapien_server.ingest.speaker_embedder import FakeSpeakerEmbedder
 
     emb = FakeSpeakerEmbedder(dim=8, min_speech_ms=500)
     assert emb.embed(_pcm(100), 16000) is None  # 100 ms < 500 ms
 
 
 def test_fake_embedder_different_pcm_yields_different_vector():
-    from sense_server.ingest.speaker_embedder import FakeSpeakerEmbedder
+    from opensapien_server.ingest.speaker_embedder import FakeSpeakerEmbedder
 
     emb = FakeSpeakerEmbedder(dim=8)
     a = emb.embed(_pcm(1000), 16000)
@@ -55,7 +55,7 @@ def test_speaker_embedder_module_imports_lazily():
     src = str(Path(__file__).resolve().parents[2] / "src")
     code = (
         "import sys; "
-        "import sense_server.ingest.speaker_embedder; "
+        "import opensapien_server.ingest.speaker_embedder; "
         "assert 'numpy' not in sys.modules, sys.modules; "
         "assert 'mlx_whisper' not in sys.modules, sys.modules; "
         "print('ok')"
@@ -72,7 +72,7 @@ def test_speaker_embedder_module_imports_lazily():
 def test_pcm_to_float32_normalizes_int16_to_unit_float():
     import numpy as np
 
-    from sense_server.ingest.speaker_embedder import _pcm_to_float32
+    from opensapien_server.ingest.speaker_embedder import _pcm_to_float32
 
     # int16 16384 -> 0.5 ; -16384 -> -0.5
     pcm = (16384).to_bytes(2, "little", signed=True) + (-16384).to_bytes(
@@ -88,7 +88,7 @@ def test_pcm_to_float32_normalizes_int16_to_unit_float():
 
 @pytest.mark.skipif(not _np_available, reason="numpy not installed")
 def test_pcm_to_float32_wrong_sample_rate_returns_none():
-    from sense_server.ingest.speaker_embedder import _pcm_to_float32
+    from opensapien_server.ingest.speaker_embedder import _pcm_to_float32
 
     assert _pcm_to_float32(b"\x00\x00", 48000) is None
 
@@ -97,7 +97,7 @@ def test_resemblyzer_embedder_constructs_without_loading_model():
     # Construction must be cheap: no resemblyzer/numpy import, encoder not
     # loaded. This lets the adapter-selection unit test (T3) assert isinstance
     # dep-free.
-    from sense_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
+    from opensapien_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
 
     e = ResemblyzerSpeakerEmbedder(min_speech_ms=500, model_name="resemblyzer")
     assert e.model_name == "resemblyzer"
@@ -109,6 +109,6 @@ def test_resemblyzer_embedder_constructs_without_loading_model():
 def test_resemblyzer_embedder_dim_is_a_lazy_property():
     # dim is a @property that triggers _ensure_ready on first access; we do NOT
     # call it here (would load the model). Assert it's a property descriptor.
-    from sense_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
+    from opensapien_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
 
     assert isinstance(ResemblyzerSpeakerEmbedder.__dict__["dim"], property)

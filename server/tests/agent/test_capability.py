@@ -1,8 +1,8 @@
 """Tests for CapabilityProvider."""
 from __future__ import annotations
 
-from sense_server.agent.capability import ConstantCapabilityProvider
-from sense_server.contracts.types import (
+from opensapien_server.agent.capability import ConstantCapabilityProvider
+from opensapien_server.contracts.types import (
     CapabilityProvider,
     CapabilitySet,
     DeviceResourceStatus,
@@ -31,5 +31,5 @@ def test_constant_provider_returns_default_resources():
 
 
 def test_provider_satisfies_protocol():
-    from sense_server.contracts.types import CapabilityProvider
+    from opensapien_server.contracts.types import CapabilityProvider
     assert isinstance(ConstantCapabilityProvider(), CapabilityProvider)

@@ -9,11 +9,11 @@ async socket loop around it does nothing but move bytes.
 import json
 import struct
 
-from sense_server.gateway.adapter import handle_message
-from sense_server.gateway.core import GatewayCore
-from sense_server.ingest.audio_packet import PacketType, VadState
-from sense_server.ingest.pipeline import AudioIngestPipeline
-from sense_server.ingest.reassembler import SessionReassembler
+from opensapien_server.gateway.adapter import handle_message
+from opensapien_server.gateway.core import GatewayCore
+from opensapien_server.ingest.audio_packet import PacketType, VadState
+from opensapien_server.ingest.pipeline import AudioIngestPipeline
+from opensapien_server.ingest.reassembler import SessionReassembler
 
 
 class FakeDecoder:

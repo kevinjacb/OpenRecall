@@ -17,11 +17,11 @@ from typing import Any
 
 import pytest
 
-from sense_server.agent.metrics import InMemoryMetricsRecorder
-from sense_server.contracts.clock import FakeClock
-from sense_server.contracts.id_generator import DeterministicIdGenerator
-from sense_server.contracts.metrics import Metrics
-from sense_server.contracts.types import (
+from opensapien_server.agent.metrics import InMemoryMetricsRecorder
+from opensapien_server.contracts.clock import FakeClock
+from opensapien_server.contracts.id_generator import DeterministicIdGenerator
+from opensapien_server.contracts.metrics import Metrics
+from opensapien_server.contracts.types import (
     CapabilitySet,
     DeviceResourceStatus,
     PlannerContext,
@@ -31,8 +31,8 @@ from sense_server.contracts.types import (
     RetrievedContext,
     ScoredAtom,
 )
-from sense_server.agent.proactive import ProactiveTriggerEngine, WsSender
-from sense_server.memory.extraction_worker import SessionCompletion
+from opensapien_server.agent.proactive import ProactiveTriggerEngine, WsSender
+from opensapien_server.memory.extraction_worker import SessionCompletion
 
 
 def _retrieved():
@@ -240,7 +240,7 @@ async def test_engine_set_ws_sender_swaps_target():
 
 
 def test_plan_timeout_from_env_defaults_to_8s():
-    from sense_server.agent.proactive import (
+    from opensapien_server.agent.proactive import (
         plan_timeout_from_env, DEFAULT_PLAN_TIMEOUT_S,
     )
     assert DEFAULT_PLAN_TIMEOUT_S == 8.0
@@ -248,15 +248,15 @@ def test_plan_timeout_from_env_defaults_to_8s():
 
 
 def test_plan_timeout_from_env_reads_override():
-    from sense_server.agent.proactive import plan_timeout_from_env
-    assert plan_timeout_from_env({"SENSE_PROACTIVE_PLAN_TIMEOUT_S": "5.0"}) == 5.0
+    from opensapien_server.agent.proactive import plan_timeout_from_env
+    assert plan_timeout_from_env({"OPENSAPIEN_PROACTIVE_PLAN_TIMEOUT_S": "5.0"}) == 5.0
 
 
 def test_plan_timeout_from_env_rejects_nonpositive_and_nonnumeric():
-    from sense_server.agent.proactive import plan_timeout_from_env
+    from opensapien_server.agent.proactive import plan_timeout_from_env
     with pytest.raises(ValueError):
-        plan_timeout_from_env({"SENSE_PROACTIVE_PLAN_TIMEOUT_S": "0"})
+        plan_timeout_from_env({"OPENSAPIEN_PROACTIVE_PLAN_TIMEOUT_S": "0"})
     with pytest.raises(ValueError):
-        plan_timeout_from_env({"SENSE_PROACTIVE_PLAN_TIMEOUT_S": "-1"})
+        plan_timeout_from_env({"OPENSAPIEN_PROACTIVE_PLAN_TIMEOUT_S": "-1"})
     with pytest.raises(ValueError):
-        plan_timeout_from_env({"SENSE_PROACTIVE_PLAN_TIMEOUT_S": "notanum"})
+        plan_timeout_from_env({"OPENSAPIEN_PROACTIVE_PLAN_TIMEOUT_S": "notanum"})

@@ -8,8 +8,8 @@ signed *payload* bytes and parses the command from them.
 
 from datetime import datetime, timedelta, timezone
 
-from sense_server.commands.model import Command
-from sense_server.commands.signing import (
+from opensapien_server.commands.model import Command
+from opensapien_server.commands.signing import (
     CommandSigner,
     SignedCommand,
     load_or_create_signer,

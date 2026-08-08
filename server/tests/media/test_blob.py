@@ -9,7 +9,7 @@ import hashlib
 
 import pytest
 
-from sense_server.media.blob import FilesystemBlobStore, InMemoryBlobStore
+from opensapien_server.media.blob import FilesystemBlobStore, InMemoryBlobStore
 
 
 @pytest.fixture(params=["memory", "fs"])

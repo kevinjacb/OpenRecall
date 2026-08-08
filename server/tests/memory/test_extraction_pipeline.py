@@ -9,11 +9,11 @@ advances the cursor so it is never re-extracted.
 
 from datetime import datetime, timezone
 
-from sense_server.events.model import CaptureEvent
-from sense_server.events.store import InMemoryEventStore
-from sense_server.memory.extract import ExtractedMemory
-from sense_server.memory.pipeline import ExtractionPipeline
-from sense_server.memory.store import InMemoryAtomStore
+from opensapien_server.events.model import CaptureEvent
+from opensapien_server.events.store import InMemoryEventStore
+from opensapien_server.memory.extract import ExtractedMemory
+from opensapien_server.memory.pipeline import ExtractionPipeline
+from opensapien_server.memory.store import InMemoryAtomStore
 
 FIXED = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
 

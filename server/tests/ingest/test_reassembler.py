@@ -8,8 +8,8 @@ Responsibilities (Phase 0 slice):
   - surface a *real* missing range so the gateway can request backfill (§E)
 """
 
-from sense_server.ingest.audio_packet import AudioPacket, PacketType, VadState
-from sense_server.ingest.reassembler import SessionReassembler
+from opensapien_server.ingest.audio_packet import AudioPacket, PacketType, VadState
+from opensapien_server.ingest.reassembler import SessionReassembler
 
 import struct
 

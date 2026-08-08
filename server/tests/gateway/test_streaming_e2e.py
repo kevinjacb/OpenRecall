@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import pytest
 
-from sense_server.ingest.audio_packet import AudioPacket, PacketType, VadState
-from sense_server.ingest.opus_decoder import OpusStreamDecoder
-from sense_server.ingest.pipeline import AudioIngestPipeline
-from sense_server.ingest.reassembler import SessionReassembler
-from sense_server.ingest.streaming_transcriber import streaming_from_tokens
-from sense_server.ingest.transcriber import Transcript
-from sense_server.ingest.whisper_streaming import WhisperStreamingBackend
+from opensapien_server.ingest.audio_packet import AudioPacket, PacketType, VadState
+from opensapien_server.ingest.opus_decoder import OpusStreamDecoder
+from opensapien_server.ingest.pipeline import AudioIngestPipeline
+from opensapien_server.ingest.reassembler import SessionReassembler
+from opensapien_server.ingest.streaming_transcriber import streaming_from_tokens
+from opensapien_server.ingest.transcriber import Transcript
+from opensapien_server.ingest.whisper_streaming import WhisperStreamingBackend
 
 
 def _build_opus_packet(chunk_seq: int, n_frames: int = 1) -> bytes:
@@ -91,8 +91,8 @@ def test_factory_default_uses_streaming_backend():
     the pipeline is a :class:`StreamingTranscriber`, not a
     :class:`Transcriber`.
     """
-    from sense_server.ingest.streaming_transcriber import StreamingTranscriber
-    from sense_server.gateway.adapter import build_pipeline_factory
+    from opensapien_server.ingest.streaming_transcriber import StreamingTranscriber
+    from opensapien_server.gateway.adapter import build_pipeline_factory
 
     factory = build_pipeline_factory(window_ms=100, hop_ms=20)
     pipeline = factory(0)
@@ -105,7 +105,7 @@ def test_factory_legacy_path_still_works():
     This path is for tests that pre-date the streaming work and for
     one-off hard-cut transcription use cases.
     """
-    from sense_server.gateway.adapter import build_pipeline_factory
+    from opensapien_server.gateway.adapter import build_pipeline_factory
 
     factory = build_pipeline_factory(window_ms=100, hop_ms=20, use_streaming=False)
     pipeline = factory(0)
@@ -113,7 +113,7 @@ def test_factory_legacy_path_still_works():
     # StreamingTranscriber (via the text factory), so the pipeline's
     # streamer is still a StreamingTranscriber — but the backend
     # is the str adapter, not the WhisperStreamingBackend.
-    from sense_server.ingest.streaming_transcriber import (
+    from opensapien_server.ingest.streaming_transcriber import (
         StreamingTranscriber,
         _TranscriberAdapter,
     )

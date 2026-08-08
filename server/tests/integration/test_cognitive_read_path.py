@@ -38,45 +38,45 @@ from typing import Iterable
 
 import pytest
 
-from sense_server.agent.audit import InMemoryAuditLogger
-from sense_server.agent.capability import ConstantCapabilityProvider
-from sense_server.agent.context import ContextBuilder
-from sense_server.agent.guardrails import ConfidenceGateGuardrails
-from sense_server.agent.intent import AgentLLM, OpenAICompatibleAgentLLM
-from sense_server.agent.metrics import InMemoryMetricsRecorder
-from sense_server.agent.planner import Planner
-from sense_server.agent.validator import StrictJSONValidator
-from sense_server.contracts.clock import FakeClock, SystemClock
-from sense_server.contracts.id_generator import DeterministicIdGenerator, UuidIdGenerator
-from sense_server.contracts.metrics import Metrics
-from sense_server.contracts.types import (
+from opensapien_server.agent.audit import InMemoryAuditLogger
+from opensapien_server.agent.capability import ConstantCapabilityProvider
+from opensapien_server.agent.context import ContextBuilder
+from opensapien_server.agent.guardrails import ConfidenceGateGuardrails
+from opensapien_server.agent.intent import AgentLLM, OpenAICompatibleAgentLLM
+from opensapien_server.agent.metrics import InMemoryMetricsRecorder
+from opensapien_server.agent.planner import Planner
+from opensapien_server.agent.validator import StrictJSONValidator
+from opensapien_server.contracts.clock import FakeClock, SystemClock
+from opensapien_server.contracts.id_generator import DeterministicIdGenerator, UuidIdGenerator
+from opensapien_server.contracts.metrics import Metrics
+from opensapien_server.contracts.types import (
     AgentAction,
     AgentActionKind,
     LLMResult,
     Prompt,
     ScoredAtom,
 )
-from sense_server.events.model import CaptureEvent
-from sense_server.events.store import InMemoryEventStore
-from sense_server.http.app import build_app
-from sense_server.memory.atom import MemoryAtom
-from sense_server.memory.embeddings import Embedder
-from sense_server.memory.extract import ExtractedMemory, Extractor
-from sense_server.memory.extraction_worker import (
+from opensapien_server.events.model import CaptureEvent
+from opensapien_server.events.store import InMemoryEventStore
+from opensapien_server.http.app import build_app
+from opensapien_server.memory.atom import MemoryAtom
+from opensapien_server.memory.embeddings import Embedder
+from opensapien_server.memory.extract import ExtractedMemory, Extractor
+from opensapien_server.memory.extraction_worker import (
     ExtractionEnqueuer,
     ExtractionWorker,
 )
-from sense_server.memory.index import InMemoryMemoryIndex
-from sense_server.memory.retrieval import Retriever
-from sense_server.memory.scoring import SimRecencyScorer
-from sense_server.memory.stages import (
+from opensapien_server.memory.index import InMemoryMemoryIndex
+from opensapien_server.memory.retrieval import Retriever
+from opensapien_server.memory.scoring import SimRecencyScorer
+from opensapien_server.memory.stages import (
     EmbeddingStage,
     ExtractionStage,
     IndexingStage,
     Pipeline,
     VersionStampStage,
 )
-from sense_server.memory.store import InMemoryAtomStore
+from opensapien_server.memory.store import InMemoryAtomStore
 
 
 # --- helpers (H6: wait_for, no sleep) ---------------------------------------
@@ -131,7 +131,7 @@ class FakeChat:
         return self._response
 
 
-def _event(seq: int, text: str = "I love working on Sense every morning at 7am.", session_id: str = "s1") -> CaptureEvent:
+def _event(seq: int, text: str = "I love working on OpenSapien every morning at 7am.", session_id: str = "s1") -> CaptureEvent:
     return CaptureEvent(
         event_id=f"{session_id}:{seq}",
         session_id=session_id,
@@ -170,7 +170,7 @@ def stack():
     worker = ExtractionWorker(
         events=events, atoms=atoms, pipeline=pipeline, metrics=metrics,
     )
-    response_json = '{"kind":"answer","text":"You said you love Sense every morning.","atom_ids":["s1:0:0"],"confidence":0.9}'
+    response_json = '{"kind":"answer","text":"You said you love OpenSapien every morning.","atom_ids":["s1:0:0"],"confidence":0.9}'
     agent_llm = OpenAICompatibleAgentLLM(FakeChat(response_json))
     retriever = Retriever(
         embedder=embedder,
@@ -241,17 +241,17 @@ async def _get(stack, path, token="t"):
 @pytest.mark.asyncio
 async def test_G1_end_to_end_event_becomes_atom_answerable(stack):
     """G1: a transcript event becomes a memory atom answerable via /agent."""
-    stack["events"].append(_event(0, "I love working on Sense every morning at 7am."))
+    stack["events"].append(_event(0, "I love working on OpenSapien every morning at 7am."))
     stack["worker"].process_session("s1")
     status, body = await _post(stack, "/agent", {"session_id": "s1", "text": "what do I do in the morning?"})
     assert status == 200
     assert body["outcome"] == "return"
-    assert body["answer"] == "You said you love Sense every morning."
+    assert body["answer"] == "You said you love OpenSapien every morning."
 
 
 @pytest.mark.asyncio
 async def test_G2_provenance_atom_id_carried_through(stack):
-    stack["events"].append(_event(0, "I love Sense every morning at 7am."))
+    stack["events"].append(_event(0, "I love OpenSapien every morning at 7am."))
     stack["worker"].process_session("s1")
     _, body = await _post(stack, "/agent", {"session_id": "s1", "text": "morning routine?"})
     assert body["atoms"][0]["atom_id"].startswith("s1:0:")
@@ -260,7 +260,7 @@ async def test_G2_provenance_atom_id_carried_through(stack):
 
 @pytest.mark.asyncio
 async def test_G3_confidence_band_on_response(stack):
-    stack["events"].append(_event(0, "I love Sense every morning."))
+    stack["events"].append(_event(0, "I love OpenSapien every morning."))
     stack["worker"].process_session("s1")
     _, body = await _post(stack, "/agent", {"session_id": "s1", "text": "what?"})
     assert body["confidence_band"] in ("low", "medium", "high")
@@ -289,7 +289,7 @@ async def test_G4_empty_retrieval_refuses(stack):
 @pytest.mark.asyncio
 async def test_G5_audit_failure_does_not_lose_response(stack):
     """G5: a failing audit does not block the user response (H3)."""
-    stack["events"].append(_event(0, "I love Sense every morning."))
+    stack["events"].append(_event(0, "I love OpenSapien every morning."))
     stack["worker"].process_session("s1")
     # Swap the planner's audit to one that throws.
     class FailingAudit:
@@ -303,7 +303,7 @@ async def test_G5_audit_failure_does_not_lose_response(stack):
 @pytest.mark.asyncio
 async def test_G6_metrics_reflects_worker_activity(stack):
     """G6: /metrics shows the same counters the worker observed."""
-    stack["events"].append(_event(0, "I love Sense every morning."))
+    stack["events"].append(_event(0, "I love OpenSapien every morning."))
     stack["worker"].process_session("s1")
     # /metrics returns Prometheus text (not JSON), so use a separate call.
     from aiohttp.test_utils import TestClient, TestServer
@@ -315,7 +315,7 @@ async def test_G6_metrics_reflects_worker_activity(stack):
 
 @pytest.mark.asyncio
 async def test_G7_schema_version_v1_everywhere(stack):
-    stack["events"].append(_event(0, "I love Sense every morning."))
+    stack["events"].append(_event(0, "I love OpenSapien every morning."))
     stack["worker"].process_session("s1")
     _, body = await _post(stack, "/agent", {"session_id": "s1", "text": "what?"})
     assert body["schema_version"] == "v1"
@@ -325,7 +325,7 @@ async def test_G7_schema_version_v1_everywhere(stack):
 
 @pytest.mark.asyncio
 async def test_I1_planner_latency_recorded(stack):
-    stack["events"].append(_event(0, "I love Sense every morning."))
+    stack["events"].append(_event(0, "I love OpenSapien every morning."))
     stack["worker"].process_session("s1")
     await _post(stack, "/agent", {"session_id": "s1", "text": "what?"})
     hist = stack["metrics"].histogram(Metrics.PLANNER_LATENCY_MS)
@@ -334,7 +334,7 @@ async def test_I1_planner_latency_recorded(stack):
 
 @pytest.mark.asyncio
 async def test_I2_audit_id_unique_per_call(stack):
-    stack["events"].append(_event(0, "I love Sense every morning."))
+    stack["events"].append(_event(0, "I love OpenSapien every morning."))
     stack["worker"].process_session("s1")
     _, b1 = await _post(stack, "/agent", {"session_id": "s1", "text": "what?"})
     _, b2 = await _post(stack, "/agent", {"session_id": "s1", "text": "what?"})
@@ -351,7 +351,7 @@ async def test_I3_refuse_audited(stack):
 
 @pytest.mark.asyncio
 async def test_I4_retrieval_trace_id_unique(stack):
-    stack["events"].append(_event(0, "I love Sense every morning."))
+    stack["events"].append(_event(0, "I love OpenSapien every morning."))
     stack["worker"].process_session("s1")
     _, b1 = await _post(stack, "/agent", {"session_id": "s1", "text": "what?"})
     _, b2 = await _post(stack, "/agent", {"session_id": "s1", "text": "what?"})
@@ -361,7 +361,7 @@ async def test_I4_retrieval_trace_id_unique(stack):
 @pytest.mark.asyncio
 async def test_I5_concurrent_agent_requests(stack):
     """I5: 10 concurrent /agent requests don't serialize (H4)."""
-    stack["events"].append(_event(0, "I love Sense every morning."))
+    stack["events"].append(_event(0, "I love OpenSapien every morning."))
     stack["worker"].process_session("s1")
     from aiohttp.test_utils import TestClient, TestServer
     async with TestClient(TestServer(stack["app"])) as client:
@@ -382,7 +382,7 @@ async def test_I5_concurrent_agent_requests(stack):
 
 @pytest.mark.asyncio
 async def test_I6_memory_endpoints_work(stack):
-    stack["events"].append(_event(0, "I love Sense every morning."))
+    stack["events"].append(_event(0, "I love OpenSapien every morning."))
     stack["events"].append(_event(1, "I also like writing tests in the afternoon."))
     stack["worker"].process_session("s1")
     _, search = await _get(stack, "/memory?q=morning")

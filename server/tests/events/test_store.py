@@ -14,8 +14,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from sense_server.events.model import CaptureEvent
-from sense_server.events.store import InMemoryEventStore, SqliteEventStore
+from opensapien_server.events.model import CaptureEvent
+from opensapien_server.events.store import InMemoryEventStore, SqliteEventStore
 
 
 def ev(session_id: str, seq: int, text: str = "x") -> CaptureEvent:

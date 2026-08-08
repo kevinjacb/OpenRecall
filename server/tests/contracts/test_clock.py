@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sense_server.contracts.clock import FakeClock, SystemClock
+from opensapien_server.contracts.clock import FakeClock, SystemClock
 
 
 def test_system_clock_returns_utc_now():

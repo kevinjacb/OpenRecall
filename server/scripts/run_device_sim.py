@@ -24,8 +24,8 @@ import argparse
 import asyncio
 import math
 
-from sense_server.sim.device import DeviceClient
-from sense_server.sim.runner import run_session
+from opensapien_server.sim.device import DeviceClient
+from opensapien_server.sim.runner import run_session
 
 SAMPLE_RATE = 16000
 FRAME_SAMPLES = 320  # 20 ms
@@ -33,7 +33,7 @@ FRAME_SAMPLES = 320  # 20 ms
 
 def synth_opus_frames(seconds: int) -> list[bytes]:
     """Synthesise speech-ish PCM and Opus-encode it into 20 ms frames."""
-    from sense_server.sim.opus_encoder import OpusStreamEncoder
+    from opensapien_server.sim.opus_encoder import OpusStreamEncoder
 
     encoder = OpusStreamEncoder()
     frames: list[bytes] = []

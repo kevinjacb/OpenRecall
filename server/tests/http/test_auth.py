@@ -1,12 +1,12 @@
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from sense_server.http.app import build_app
+from opensapien_server.http.app import build_app
 
 
 @pytest.fixture
 async def client(tmp_path):
-    from sense_server.auth import load_or_create_token
+    from opensapien_server.auth import load_or_create_token
     token = load_or_create_token(tmp_path / "tok")
     app = build_app(token=token, get_pubkey=lambda: bytes(32))
     server = TestServer(app)
@@ -33,7 +33,7 @@ async def test_health_ok_with_token(client):
 
 
 async def test_health_advertises_gateway_port(tmp_path):
-    from sense_server.auth import load_or_create_token
+    from opensapien_server.auth import load_or_create_token
     token = load_or_create_token(tmp_path / "tok")
     app = build_app(token=token, get_pubkey=lambda: bytes(32), gateway_port=8765)
     server = TestServer(app)

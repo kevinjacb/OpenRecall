@@ -4,7 +4,7 @@ import struct
 
 import pytest
 
-from sense_server.ingest.audio_packet import (
+from opensapien_server.ingest.audio_packet import (
     AudioPacket,
     PacketType,
     VadState,

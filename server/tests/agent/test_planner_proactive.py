@@ -13,19 +13,19 @@ from datetime import datetime, timezone
 
 import pytest
 
-from sense_server.agent.audit import InMemoryAuditLogger
-from sense_server.agent.context import ContextBuilder
-from sense_server.agent.guardrails import ConfidenceGateGuardrails
-from sense_server.agent.guardrails_command import StrictCommandGuardrails
-from sense_server.agent.intent import AgentLLM
-from sense_server.agent.metrics import InMemoryMetricsRecorder
-from sense_server.agent.planner import Planner
-from sense_server.agent.validator import StrictJSONValidator
-from sense_server.agent.validator_command import StrictCommandValidator
-from sense_server.commands.dispatcher import CommandDispatcher
-from sense_server.commands.signing import CommandSigner
-from sense_server.contracts.clock import FakeClock as _BaseFakeClock
-from sense_server.contracts.id_generator import DeterministicIdGenerator
+from opensapien_server.agent.audit import InMemoryAuditLogger
+from opensapien_server.agent.context import ContextBuilder
+from opensapien_server.agent.guardrails import ConfidenceGateGuardrails
+from opensapien_server.agent.guardrails_command import StrictCommandGuardrails
+from opensapien_server.agent.intent import AgentLLM
+from opensapien_server.agent.metrics import InMemoryMetricsRecorder
+from opensapien_server.agent.planner import Planner
+from opensapien_server.agent.validator import StrictJSONValidator
+from opensapien_server.agent.validator_command import StrictCommandValidator
+from opensapien_server.commands.dispatcher import CommandDispatcher
+from opensapien_server.commands.signing import CommandSigner
+from opensapien_server.contracts.clock import FakeClock as _BaseFakeClock
+from opensapien_server.contracts.id_generator import DeterministicIdGenerator
 
 
 class _CallableClock(_BaseFakeClock):
@@ -34,7 +34,7 @@ class _CallableClock(_BaseFakeClock):
     supports both .now() and __call__()."""
     def __call__(self) -> datetime:
         return self.now()
-from sense_server.contracts.types import (
+from opensapien_server.contracts.types import (
     AgentAction,
     AgentActionKind,
     CapabilitySet,

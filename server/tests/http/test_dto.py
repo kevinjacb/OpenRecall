@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from sense_server.http.routes.dto import (
+from opensapien_server.http.routes.dto import (
     SCHEMA_VERSION,
     AgentRequestDTO,
     AgentResponseDTO,

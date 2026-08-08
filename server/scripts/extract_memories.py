@@ -8,7 +8,7 @@ session's extraction cursor, extracts/ embeds/ indexes them, and advances the
 cursor (H7: only after extraction + indexing both succeed).
 
 The model is whatever you configure — local or cloud — via env vars (no model
-is hardcoded), the same ``SENSE_LLM_*`` / ``SENSE_EMBED_*`` vars as
+is hardcoded), the same ``OPENSAPIEN_LLM_*`` / ``OPENSAPIEN_EMBED_*`` vars as
 ``run_gateway.py``. Export them first, e.g. ``set -a; source .env; set +a``.
 
     pip install -e '.[llm]'
@@ -23,21 +23,21 @@ import argparse
 import os
 from datetime import datetime, timezone
 
-from sense_server.agent.metrics import InMemoryMetricsRecorder
-from sense_server.events.store import SqliteEventStore
-from sense_server.memory.embeddings import OpenAICompatibleEmbedder
-from sense_server.memory.extraction_worker import ExtractionWorker
-from sense_server.memory.extract import LLMExtractor
-from sense_server.memory.index import SqliteMemoryIndex
-from sense_server.memory.llm import OpenAICompatibleChatModel
-from sense_server.memory.stages import (
+from opensapien_server.agent.metrics import InMemoryMetricsRecorder
+from opensapien_server.events.store import SqliteEventStore
+from opensapien_server.memory.embeddings import OpenAICompatibleEmbedder
+from opensapien_server.memory.extraction_worker import ExtractionWorker
+from opensapien_server.memory.extract import LLMExtractor
+from opensapien_server.memory.index import SqliteMemoryIndex
+from opensapien_server.memory.llm import OpenAICompatibleChatModel
+from opensapien_server.memory.stages import (
     EmbeddingStage,
     ExtractionStage,
     IndexingStage,
     Pipeline,
     VersionStampStage,
 )
-from sense_server.memory.store import SqliteAtomStore
+from opensapien_server.memory.store import SqliteAtomStore
 
 # Must match EXTRACTOR_VERSION in run_gateway.py.
 EXTRACTOR_VERSION = "v1"

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
-from sense_server.commands.model import Command
+from opensapien_server.commands.model import Command
 
 T0 = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
 

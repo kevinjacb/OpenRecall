@@ -20,12 +20,12 @@ from __future__ import annotations
 
 import pytest
 
-from sense_server.contracts.types import (
+from opensapien_server.contracts.types import (
     CapabilitySet,
     DeviceResourceStatus,
 )
-from sense_server.agent.validator_command import ValidatedCommand
-from sense_server.agent.guardrails_command import (
+from opensapien_server.agent.validator_command import ValidatedCommand
+from opensapien_server.agent.guardrails_command import (
     CommandGuardrails,
     CommandGuardrailsResult,
     RejectionReason,

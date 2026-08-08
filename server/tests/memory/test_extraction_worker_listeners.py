@@ -12,25 +12,25 @@ from datetime import datetime, timezone
 
 import pytest
 
-from sense_server.agent.metrics import InMemoryMetricsRecorder
-from sense_server.contracts.metrics import Metrics
-from sense_server.events.model import CaptureEvent
-from sense_server.events.store import InMemoryEventStore
-from sense_server.memory.extract import ExtractedMemory
-from sense_server.memory.extraction_worker import (
+from opensapien_server.agent.metrics import InMemoryMetricsRecorder
+from opensapien_server.contracts.metrics import Metrics
+from opensapien_server.events.model import CaptureEvent
+from opensapien_server.events.store import InMemoryEventStore
+from opensapien_server.memory.extract import ExtractedMemory
+from opensapien_server.memory.extraction_worker import (
     ExtractionEnqueuer,
     ExtractionWorker,
     SessionCompletion,
 )
-from sense_server.memory.index import InMemoryMemoryIndex
-from sense_server.memory.stages import (
+from opensapien_server.memory.index import InMemoryMemoryIndex
+from opensapien_server.memory.stages import (
     EmbeddingStage,
     ExtractionStage,
     IndexingStage,
     Pipeline,
     VersionStampStage,
 )
-from sense_server.memory.store import InMemoryAtomStore
+from opensapien_server.memory.store import InMemoryAtomStore
 
 
 class FixedExtractor:

@@ -7,10 +7,10 @@ from typing import Iterable
 
 import pytest
 
-from sense_server.contracts.clock import FakeClock
-from sense_server.contracts.id_generator import DeterministicIdGenerator
-from sense_server.contracts.metrics import Metrics
-from sense_server.contracts.types import (
+from opensapien_server.contracts.clock import FakeClock
+from opensapien_server.contracts.id_generator import DeterministicIdGenerator
+from opensapien_server.contracts.metrics import Metrics
+from opensapien_server.contracts.types import (
     AgentAction,
     AgentActionKind,
     GuardedAction,
@@ -27,12 +27,12 @@ from sense_server.contracts.types import (
     ValidatedAction,
     ValidatorContext,
 )
-from sense_server.agent.audit import InMemoryAuditLogger
-from sense_server.agent.guardrails import ConfidenceGateGuardrails
-from sense_server.agent.intent import AgentLLM
-from sense_server.agent.metrics import InMemoryMetricsRecorder
-from sense_server.agent.planner import Planner
-from sense_server.agent.validator import StrictJSONValidator
+from opensapien_server.agent.audit import InMemoryAuditLogger
+from opensapien_server.agent.guardrails import ConfidenceGateGuardrails
+from opensapien_server.agent.intent import AgentLLM
+from opensapien_server.agent.metrics import InMemoryMetricsRecorder
+from opensapien_server.agent.planner import Planner
+from opensapien_server.agent.validator import StrictJSONValidator
 
 
 # --- fakes ------------------------------------------------------------------
@@ -93,13 +93,13 @@ def _ctx(extra: dict | None = None) -> PlannerContext:
 def _planner(retriever, llm, validator=None, guardrails=None, audit=None, metrics=None) -> Planner:
     return Planner(
         retriever=retriever,
-        context_builder=__import__("sense_server.agent.context", fromlist=["ContextBuilder"]).ContextBuilder(),
+        context_builder=__import__("opensapien_server.agent.context", fromlist=["ContextBuilder"]).ContextBuilder(),
         llm=llm,
         validator=validator or StrictJSONValidator(),
         guardrails=guardrails or ConfidenceGateGuardrails(rate_limit_per_min=1000),
         audit=audit or InMemoryAuditLogger(),
         metrics=metrics or InMemoryMetricsRecorder(),
-        capability_provider=__import__("sense_server.agent.capability", fromlist=["ConstantCapabilityProvider"]).ConstantCapabilityProvider(),
+        capability_provider=__import__("opensapien_server.agent.capability", fromlist=["ConstantCapabilityProvider"]).ConstantCapabilityProvider(),
         clock=FakeClock(datetime(2026, 7, 7, tzinfo=timezone.utc)),
         ids=DeterministicIdGenerator(),
     )

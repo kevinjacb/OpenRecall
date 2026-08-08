@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from sense_server.memory.migrations import (
+from opensapien_server.memory.migrations import (
     migrate_capture_events_table,
     migrate_memory_atoms_table,
 )

@@ -23,10 +23,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from sense_server.commands.dispatcher import CommandDispatcher
-from sense_server.commands.model import Command
-from sense_server.commands.signing import CommandSigner
-from sense_server.commands.status import (
+from opensapien_server.commands.dispatcher import CommandDispatcher
+from opensapien_server.commands.model import Command
+from opensapien_server.commands.signing import CommandSigner
+from opensapien_server.commands.status import (
     CommandStatus,
     is_valid_transition,
 )

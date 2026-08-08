@@ -5,9 +5,9 @@ The captioned scene becomes a MemoryAtom in the same store as audio memories, so
 ``query_memory.py`` searches across both. The vision model is configurable — local
 or cloud — via env (nothing hardcoded):
 
-    export SENSE_VLM_MODEL=qwen2.5-vl                      # required
-    export SENSE_VLM_BASE_URL=http://localhost:11434/v1    # default: Ollama
-    export SENSE_VLM_API_KEY=...                           # optional (cloud)
+    export OPENSAPIEN_VLM_MODEL=qwen2.5-vl                      # required
+    export OPENSAPIEN_VLM_BASE_URL=http://localhost:11434/v1    # default: Ollama
+    export OPENSAPIEN_VLM_API_KEY=...                           # optional (cloud)
     pip install -e '.[llm]'
     python scripts/ingest_image.py --session <id> --image photo.jpg --at-ms 12000
 """
@@ -18,10 +18,10 @@ import argparse
 import os
 from pathlib import Path
 
-from sense_server.media.blob import FilesystemBlobStore
-from sense_server.memory.store import SqliteAtomStore
-from sense_server.vision.model import OpenAICompatibleVisionModel
-from sense_server.vision.pipeline import VisionPipeline
+from opensapien_server.media.blob import FilesystemBlobStore
+from opensapien_server.memory.store import SqliteAtomStore
+from opensapien_server.vision.model import OpenAICompatibleVisionModel
+from opensapien_server.vision.pipeline import VisionPipeline
 
 
 def main() -> None:

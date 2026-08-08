@@ -10,8 +10,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from sense_server.memory.atom import MemoryAtom
-from sense_server.memory.index import InMemoryMemoryIndex, SearchResult, SqliteMemoryIndex
+from opensapien_server.memory.atom import MemoryAtom
+from opensapien_server.memory.index import InMemoryMemoryIndex, SearchResult, SqliteMemoryIndex
 
 
 def _atom(atom_id: str, session_id: str, text: str = "x") -> MemoryAtom:

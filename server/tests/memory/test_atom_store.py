@@ -12,8 +12,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from sense_server.memory.atom import MemoryAtom
-from sense_server.memory.store import InMemoryAtomStore, SqliteAtomStore
+from opensapien_server.memory.atom import MemoryAtom
+from opensapien_server.memory.store import InMemoryAtomStore, SqliteAtomStore
 
 
 def atom(session_id: str, event_seq: int, idx: int, kind: str = "fact") -> MemoryAtom:

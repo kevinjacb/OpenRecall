@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from sense_server.contracts.id_generator import DeterministicIdGenerator, UuidIdGenerator
+from opensapien_server.contracts.id_generator import DeterministicIdGenerator, UuidIdGenerator
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 

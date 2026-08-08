@@ -17,8 +17,8 @@ failure points at one layer, not three.
 | Tier | Code | On-device verified? |
 |---|---|---|
 | **Server** (`server/`) | 773 tests green; `run_gateway.py` wired; speaker rec off by default | Mac-only; `run_device_sim.py` has exercised ingest+memory before (`server/data/*.db` exist) |
-| **Firmware** (`firmware/sense_sensor/`, ESP-IDF 5.1.6 / NimBLE 1.6) | host tests green, `idf.py build` clean | **No.** The NimBLE 1.7 `xQueueSemaphoreTake uxItemSize == 0` assert on first BLE connect was the reason for the 5.1.6 pin; the on-device result was never confirmed. README "build status" is the claim to verify, not a fact. |
-| **Android relay** (`android/sense-relay/`) | protocol brain (`RelaySession`+`Messages`) JVM-unit-tested | **No.** BLE GATT (`SensorLink`), WS transport (`ServerSocket`), foreground service (`RelayService`) all "needs on-device". `request_chunks` backfill NOT handled (audio best-effort). |
+| **Firmware** (`firmware/opensapien_sensor/`, ESP-IDF 5.1.6 / NimBLE 1.6) | host tests green, `idf.py build` clean | **No.** The NimBLE 1.7 `xQueueSemaphoreTake uxItemSize == 0` assert on first BLE connect was the reason for the 5.1.6 pin; the on-device result was never confirmed. README "build status" is the claim to verify, not a fact. |
+| **Android relay** (`android/opensapien-relay/`) | protocol brain (`RelaySession`+`Messages`) JVM-unit-tested | **No.** BLE GATT (`SensorLink`), WS transport (`ServerSocket`), foreground service (`RelayService`) all "needs on-device". `request_chunks` backfill NOT handled (audio best-effort). |
 
 ---
 
@@ -41,7 +41,7 @@ python scripts/run_gateway.py --port 8765 --http-port 8766
 - `gateway listening on ws://0.0.0.0:8765`
 - `bearer token (copy to phone): …`
 - `server command public key (provision on device): <hex>` ← **save this for Tier 1**
-- `speaker recognition DISABLED (set SENSE_SPEAKER_ENABLED=true to enable)`
+- `speaker recognition DISABLED (set OPENSAPIEN_SPEAKER_ENABLED=true to enable)`
 
 In another shell, smoke the back-end path the simulator stands in for:
 ```bash
@@ -71,7 +71,7 @@ exercised. This tier also validates the single-mic VAD calibration.
 
 # Provision: paste the Tier 0 server pubkey hex into main/config.h
 #   SERVER_ED25519_PUBKEY  (the device verifies command sigs against it)
-cd /Users/kevin/Projects/Sense/firmware/sense_sensor
+cd /Users/kevin/Projects/Sense/firmware/opensapien_sensor
 idf.py build
 idf.py -p /dev/cu.usbmodem* flash monitor
 ```
@@ -88,7 +88,7 @@ The `VAD_ENERGY_THRESHOLD` / `VAD_RATIO_THRESHOLD` / `DSP_NLMS_*` tunables in
 `main/config.h` are marked `TUNE ON HARDWARE` with safe defaults
 (`VAD_ENERGY_THRESHOLD 2000000`). Calibrate by adding this temporary log line
 inside the per-second `if (frames % (1000 / FRAME_MS) == 0)` block in
-`audio_task` (`main/sense_sensor.c`), flash, and watch in three conditions —
+`audio_task` (`main/opensapien_sensor.c`), flash, and watch in three conditions —
 **silence, ambient noise hitting both mics, speech toward the front mic at
 wearable distance (~10–15 cm)**:
 
@@ -127,7 +127,7 @@ Start the gateway on the Mac (Tier 0 command; note your Mac's LAN IP, e.g.
 `192.168.1.20`). Then:
 
 ```bash
-cd /Users/kevin/Projects/Sense/android/sense-relay
+cd /Users/kevin/Projects/Sense/android/opensapien-relay
 ./gradlew test                 # RelaySessionTest — the executable spec
 ./gradlew :app:assembleDebug   # builds the APK
 ```
@@ -140,7 +140,7 @@ startForegroundService(Intent(ctx, RelayService::class.java)
 Grant `BLUETOOTH_SCAN` / `BLUETOOTH_CONNECT` at runtime (Android 12+).
 
 **Watch — three places at once:**
-1. **Device monitor**: `ble_link` advertises "Sense", accepts the GAP connect.
+1. **Device monitor**: `ble_link` advertises "OpenSapien", accepts the GAP connect.
    The critical moment: **no `xQueueSemaphoreTake uxItemSize == 0` assert.** If
    it asserts here, the 5.1.6 pin didn't fix it — stop and capture the
    backtrace.
@@ -170,7 +170,7 @@ audio. Uses the **fake embedder** first — it proves the plumbing end-to-end
 without needing a real model.
 
 ```bash
-SENSE_SPEAKER_ENABLED=true python scripts/run_gateway.py --port 8765
+OPENSAPIEN_SPEAKER_ENABLED=true python scripts/run_gateway.py --port 8765
 # expect: "speaker recognition ENABLED (model=fake)"
 ```
 
@@ -192,7 +192,7 @@ Reconnect the relay and talk. **Watch the gateway log for:**
 > correction), **not** real speaker separation. Real separation is the next
 > architecture build — a local `SpeakerEmbedder` backend (SpeechBrain
 > ECAPA-TDNN / Resemblyzer, CPU-runnable, lazy-imported behind the
-> `SpeakerEmbedder` Protocol) so `SENSE_SPEAKER_ENABLED=true` does actual
+> `SpeakerEmbedder` Protocol) so `OPENSAPIEN_SPEAKER_ENABLED=true` does actual
 > recognition. Validate against two real voices.
 
 **Exit criteria:** confirm nudge + name nudge fire on the right voices;
@@ -269,15 +269,15 @@ P4a executors are verified on real hardware.
 # Server
 cd /Users/kevin/Projects/Sense/server && source .venv/bin/activate
 python scripts/run_gateway.py --port 8765 --http-port 8766
-SENSE_SPEAKER_ENABLED=true python scripts/run_gateway.py --port 8765   # Tier 3
+OPENSAPIEN_SPEAKER_ENABLED=true python scripts/run_gateway.py --port 8765   # Tier 3
 
 # Firmware
 . ~/esp/esp-idf-v5.1.6/export.sh
-cd /Users/kevin/Projects/Sense/firmware/sense_sensor
+cd /Users/kevin/Projects/Sense/firmware/opensapien_sensor
 idf.py build && idf.py -p /dev/cu.usbmodem* flash monitor
 
 # Android relay
-cd /Users/kevin/Projects/Sense/android/sense-relay
+cd /Users/kevin/Projects/Sense/android/opensapien-relay
 ./gradlew test && ./gradlew :app:assembleDebug
 
 # Server tests (regression guard)

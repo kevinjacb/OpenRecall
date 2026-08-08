@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from sense_server.agent.context import ContextBuilder
-from sense_server.contracts.types import (
+from opensapien_server.agent.context import ContextBuilder
+from opensapien_server.contracts.types import (
     CapabilitySet,
     Prompt,
     RetrievedContext,

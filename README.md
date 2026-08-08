@@ -1,4 +1,4 @@
-# Sense
+# OpenSapien
 
 A wearable AI memory device. A small ESP32S3 Sense board on the wearer streams
 audio over BLE to a phone, which relays it to a server that transcribes, extracts
@@ -24,8 +24,8 @@ framing (§E); the device speaks only §C.6 (audio) + §D (commands).
 | Path | What |
 |---|---|
 | `server/` | The brain — Python (aiohttp) WebSocket gateway + HTTP control API: ingest, transcription, memory extraction/retrieval, device command orchestration. |
-| `android/sense-relay/` | The middle tier — Kotlin app: BLE central → WebSocket bridge with session bookkeeping (§E). |
-| `firmware/sense_sensor/` | The wearable — ESP-IDF firmware for the XIAO ESP32S3 Sense (NimBLE, DMA I2S, Opus, Ed25519 command verify). |
+| `android/opensapien-relay/` | The middle tier — Kotlin app: BLE central → WebSocket bridge with session bookkeeping (§E). |
+| `firmware/opensapien_sensor/` | The wearable — ESP-IDF firmware for the XIAO ESP32S3 Sense (NimBLE, DMA I2S, Opus, Ed25519 command verify). |
 | `firmware/spike1_opus_encode/`, `firmware/spike2_sd_throughput/` | Throwaway measurement sketches that baked the real firmware's parameters. |
 | `docs/bring-up/` | Real-device bring-up runbook (tier-by-tier validation). |
 | `.env.example` | Server config reference (copy to `.env`). |
@@ -52,7 +52,7 @@ On startup the gateway prints:
 - `bearer token (copy to phone): …` — the relay authenticates with this.
 - `server command public key: <hex>` — **provision this on the device** (Tier 2).
 
-Speaker recognition is **off by default**; set `SENSE_SPEAKER_ENABLED=true` to enable.
+Speaker recognition is **off by default**; set `OPENSAPIEN_SPEAKER_ENABLED=true` to enable.
 Without a device you can still exercise the back-end with the simulator:
 
 ```bash
@@ -64,7 +64,7 @@ Confirm `server/data/events.db` accumulates `capture_events` rows.
 ### 2. Android relay (phone)
 
 ```bash
-cd android/sense-relay
+cd android/opensapien-relay
 ./gradlew test                    # JVM unit tests — the executable protocol spec
 ./gradlew :app:assembleDebug      # build the APK (or open in Android Studio)
 ```
@@ -77,12 +77,12 @@ startForegroundService(Intent(ctx, RelayService::class.java)
     .putExtra("server_url", "ws://192.168.1.20:8765"))
 ```
 
-See `android/sense-relay/README.md` for the architecture and current on-device gaps.
+See `android/opensapien-relay/README.md` for the architecture and current on-device gaps.
 
 ### 3. Firmware (XIAO ESP32S3 Sense)
 
 ```bash
-cd firmware/sense_sensor
+cd firmware/opensapien_sensor
 ./scripts/install_idf_5.1.6.sh     # one-shot: ESP-IDF v5.1.6 + S3 toolchain (side-by-side)
 . ~/esp/esp-idf-v5.1.6/export.sh  # in every new shell
 
@@ -93,7 +93,7 @@ idf.py build
 idf.py -p /dev/cu.usbmodem* flash monitor
 ```
 
-We pin to **ESP-IDF v5.1.6** (NimBLE 1.6). See `firmware/sense_sensor/README.md` for
+We pin to **ESP-IDF v5.1.6** (NimBLE 1.6). See `firmware/opensapien_sensor/README.md` for
 the full module roadmap, core layout, signal path, and on-hardware tuning guide.
 
 ### Wiring essentials
@@ -124,12 +124,12 @@ variable is optional; the server falls back to safe defaults. Models are
 **provider-agnostic** (OpenAI-compatible) — local (Ollama at `:11434` by default,
 `mlx_lm.server`, vLLM, LM Studio) or cloud; pick per family:
 
-- `SENSE_LLM_MODEL` / `SENSE_LLM_BASE_URL` — the agent's reasoning model.
-- `SENSE_EMBED_MODEL` / `SENSE_EMBED_BASE_URL` — vector-search embedder.
-- `SENSE_VLM_MODEL` / `SENSE_VLM_BASE_URL` — image atoms (only if you ingest images).
+- `OPENSAPIEN_LLM_MODEL` / `OPENSAPIEN_LLM_BASE_URL` — the agent's reasoning model.
+- `OPENSAPIEN_EMBED_MODEL` / `OPENSAPIEN_EMBED_BASE_URL` — vector-search embedder.
+- `OPENSAPIEN_VLM_MODEL` / `OPENSAPIEN_VLM_BASE_URL` — image atoms (only if you ingest images).
 
 The bearer token and Ed25519 signing key are auto-generated on first run into
-`server/data/`; override paths with `SENSE_TOKEN_FILE` / `SENSE_KEY_FILE` if migrating.
+`server/data/`; override paths with `OPENSAPIEN_TOKEN_FILE` / `OPENSAPIEN_KEY_FILE` if migrating.
 
 ## Testing
 
@@ -138,10 +138,10 @@ The bearer token and Ed25519 signing key are auto-generated on first run into
 cd server && pytest
 
 # Firmware host contract tests (no hardware): byte-matches the server's §C.6 encoder
-cd firmware/sense_sensor/test && make
+cd firmware/opensapien_sensor/test && make
 
 # Android relay protocol brain (JVM):
-cd android/sense-relay && ./gradlew test
+cd android/opensapien-relay && ./gradlew test
 ```
 
 ## Status

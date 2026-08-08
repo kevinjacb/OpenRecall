@@ -11,13 +11,13 @@ involved here; it is reserved for end-of-day video retrieval.
 
 import struct
 
-from sense_server.events.store import InMemoryEventStore
-from sense_server.gateway.core import GatewayCore
-from sense_server.ingest.audio_packet import PacketType, VadState
-from sense_server.ingest.pipeline import AudioIngestPipeline
-from sense_server.ingest.reassembler import SessionReassembler
-from sense_server.memory.extraction_worker import ExtractionEnqueuer
-from sense_server.protocol.messages import Ack, Bye, Hello, RequestChunks, TranscriptMsg
+from opensapien_server.events.store import InMemoryEventStore
+from opensapien_server.gateway.core import GatewayCore
+from opensapien_server.ingest.audio_packet import PacketType, VadState
+from opensapien_server.ingest.pipeline import AudioIngestPipeline
+from opensapien_server.ingest.reassembler import SessionReassembler
+from opensapien_server.memory.extraction_worker import ExtractionEnqueuer
+from opensapien_server.protocol.messages import Ack, Bye, Hello, RequestChunks, TranscriptMsg
 
 
 class FakeDecoder:
@@ -313,9 +313,9 @@ def make_core_with_store_and_speaker(window_ms: int = 100):
     confirms against a pre-seeded "you" centroid."""
     import math
 
-    from sense_server.ingest.speaker_config import SpeakerConfig
-    from sense_server.ingest.speaker_identifier import SpeakerIdentifier
-    from sense_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
+    from opensapien_server.ingest.speaker_config import SpeakerConfig
+    from opensapien_server.ingest.speaker_identifier import SpeakerIdentifier
+    from opensapien_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
 
     store = InMemoryEventStore()
     v = [0.5] * 8

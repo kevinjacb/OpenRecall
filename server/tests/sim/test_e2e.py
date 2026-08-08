@@ -14,15 +14,15 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from sense_server.commands.dispatcher import CommandDispatcher
-from sense_server.commands.model import Command
-from sense_server.commands.signing import CommandSigner
-from sense_server.events.store import InMemoryEventStore
-from sense_server.gateway.adapter import serve
-from sense_server.ingest.pipeline import AudioIngestPipeline
-from sense_server.ingest.reassembler import SessionReassembler
-from sense_server.sim.device import DeviceClient
-from sense_server.sim.runner import run_session
+from opensapien_server.commands.dispatcher import CommandDispatcher
+from opensapien_server.commands.model import Command
+from opensapien_server.commands.signing import CommandSigner
+from opensapien_server.events.store import InMemoryEventStore
+from opensapien_server.gateway.adapter import serve
+from opensapien_server.ingest.pipeline import AudioIngestPipeline
+from opensapien_server.ingest.reassembler import SessionReassembler
+from opensapien_server.sim.device import DeviceClient
+from opensapien_server.sim.runner import run_session
 
 pytestmark = pytest.mark.asyncio
 

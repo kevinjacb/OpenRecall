@@ -9,13 +9,13 @@ survives the gateway intact).
 
 from datetime import datetime, timedelta, timezone
 
-from sense_server.commands.dispatcher import CommandDispatcher
-from sense_server.commands.model import Command
-from sense_server.commands.signing import CommandSigner, SignedCommand, verify_command
-from sense_server.gateway.core import GatewayCore
-from sense_server.ingest.pipeline import AudioIngestPipeline
-from sense_server.ingest.reassembler import SessionReassembler
-from sense_server.protocol.messages import Ack, CommandAck, CommandMessage, Hello
+from opensapien_server.commands.dispatcher import CommandDispatcher
+from opensapien_server.commands.model import Command
+from opensapien_server.commands.signing import CommandSigner, SignedCommand, verify_command
+from opensapien_server.gateway.core import GatewayCore
+from opensapien_server.ingest.pipeline import AudioIngestPipeline
+from opensapien_server.ingest.reassembler import SessionReassembler
+from opensapien_server.protocol.messages import Ack, CommandAck, CommandMessage, Hello
 
 NOW = datetime.now(timezone.utc)
 

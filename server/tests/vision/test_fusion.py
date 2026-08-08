@@ -7,12 +7,12 @@ both modalities with no special-casing. This pins that multimodal contract.
 
 from datetime import datetime, timezone
 
-from sense_server.media.blob import InMemoryBlobStore
-from sense_server.memory.atom import MemoryAtom
-from sense_server.memory.index import InMemoryMemoryIndex
-from sense_server.memory.retrieval import IndexingPipeline, MemoryRetriever
-from sense_server.memory.store import InMemoryAtomStore
-from sense_server.vision.pipeline import VisionPipeline
+from opensapien_server.media.blob import InMemoryBlobStore
+from opensapien_server.memory.atom import MemoryAtom
+from opensapien_server.memory.index import InMemoryMemoryIndex
+from opensapien_server.memory.retrieval import IndexingPipeline, MemoryRetriever
+from opensapien_server.memory.store import InMemoryAtomStore
+from opensapien_server.vision.pipeline import VisionPipeline
 
 FIXED = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
 

@@ -10,8 +10,8 @@ import threading
 
 import pytest
 
-from sense_server.ingest.speaker_config import SpeakerConfig
-from sense_server.memory.speaker_registry import (
+from opensapien_server.ingest.speaker_config import SpeakerConfig
+from opensapien_server.memory.speaker_registry import (
     InMemorySpeakerRegistry,
     Speaker,
     SqliteSpeakerRegistry,

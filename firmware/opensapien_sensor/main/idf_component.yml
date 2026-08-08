@@ -1,0 +1,8 @@
+# Managed component dependencies for the OpenSapien firmware.
+#
+# libsodium provides Ed25519 verification (crypto_sign_ed25519_verify_detached);
+# this IDF's mbedTLS ships the EdDSA constants but no Ed25519 implementation.
+dependencies:
+  idf: ">=5.0"
+  espressif/libsodium: "*"   # Ed25519 verification (mbedTLS here has no Ed25519)
+  espressif/cjson: "*"       # parse the canonical §D command payload (cJSON left core IDF)

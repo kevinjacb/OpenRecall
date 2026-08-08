@@ -24,7 +24,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from sense_server.contracts.types import (
+from opensapien_server.contracts.types import (
     AgentAction,
     AgentActionKind,
     Confidence,
@@ -33,7 +33,7 @@ from sense_server.contracts.types import (
     RejectionReason,
     ValidatorContext,
 )
-from sense_server.agent.validator import StrictJSONValidator
+from opensapien_server.agent.validator import StrictJSONValidator
 
 
 def _ctx(atoms=("a1", "a2"), threshold: float = 0.3) -> ValidatorContext:

@@ -12,16 +12,16 @@ from __future__ import annotations
 import math
 from datetime import datetime, timezone
 
-from sense_server.events.model import CaptureEvent
-from sense_server.events.store import InMemoryEventStore
-from sense_server.ingest.speaker_config import SpeakerConfig
-from sense_server.memory.atom import MemoryAtom
-from sense_server.memory.speaker_registry import (
+from opensapien_server.events.model import CaptureEvent
+from opensapien_server.events.store import InMemoryEventStore
+from opensapien_server.ingest.speaker_config import SpeakerConfig
+from opensapien_server.memory.atom import MemoryAtom
+from opensapien_server.memory.speaker_registry import (
     InMemorySpeakerRegistry,
     Speaker,
     reassign_speaker,
 )
-from sense_server.memory.store import InMemoryAtomStore
+from opensapien_server.memory.store import InMemoryAtomStore
 
 
 def _unit(dim, seed):
@@ -94,9 +94,9 @@ def test_name_sets_display_name_and_confirms_enrollment():
 
 def test_reassign_all_sqlite_rel_labels_and_moves_embeddings(tmp_path):
     """The durable backend must not silently diverge from the in-memory one."""
-    from sense_server.events.store import SqliteEventStore
-    from sense_server.memory.store import SqliteAtomStore
-    from sense_server.memory.speaker_registry import SqliteSpeakerRegistry
+    from opensapien_server.events.store import SqliteEventStore
+    from opensapien_server.memory.store import SqliteAtomStore
+    from opensapien_server.memory.speaker_registry import SqliteSpeakerRegistry
 
     reg = SqliteSpeakerRegistry(tmp_path / "speakers.db", SpeakerConfig())
     _seed(reg, "a", _unit(4, 0.5))

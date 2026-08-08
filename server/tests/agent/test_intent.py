@@ -7,14 +7,14 @@ import time
 
 import pytest
 
-from sense_server.contracts.types import (
+from opensapien_server.contracts.types import (
     AgentAction,
     AgentActionKind,
     IssueCommandPayload,
     LLMResult,
     Prompt,
 )
-from sense_server.agent.intent import OpenAICompatibleAgentLLM
+from opensapien_server.agent.intent import OpenAICompatibleAgentLLM
 
 
 class FakeChat:
@@ -38,7 +38,7 @@ class FakeChat:
 
 def _prompt() -> Prompt:
     return Prompt(
-        system="You are Sense.",
+        system="You are OpenSapien.",
         user='{"session_id":"s1","text":"hi","limit":10}',
         system_prompt_version="v1",
         context_builder_version="v1",
@@ -328,5 +328,5 @@ async def test_concurrent_reason_calls_dont_serialize_h4():
 
 
 def test_agent_llm_protocol_satisfied():
-    from sense_server.agent.intent import AgentLLM
+    from opensapien_server.agent.intent import AgentLLM
     assert isinstance(OpenAICompatibleAgentLLM(FakeChat()), AgentLLM)

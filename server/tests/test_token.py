@@ -1,7 +1,7 @@
 # server/tests/test_token.py
 import os
 from pathlib import Path
-from sense_server.auth import load_or_create_token
+from opensapien_server.auth import load_or_create_token
 
 
 def test_load_or_create_token_generates_and_persists(tmp_path: Path):

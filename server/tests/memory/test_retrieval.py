@@ -8,10 +8,10 @@ Both use a fake embedder, so no model or network is involved.
 
 from datetime import datetime, timezone
 
-from sense_server.memory.atom import MemoryAtom
-from sense_server.memory.index import InMemoryMemoryIndex
-from sense_server.memory.retrieval import IndexingPipeline, MemoryRetriever
-from sense_server.memory.store import InMemoryAtomStore
+from opensapien_server.memory.atom import MemoryAtom
+from opensapien_server.memory.index import InMemoryMemoryIndex
+from opensapien_server.memory.retrieval import IndexingPipeline, MemoryRetriever
+from opensapien_server.memory.store import InMemoryAtomStore
 
 
 class FakeEmbedder:

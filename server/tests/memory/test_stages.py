@@ -21,19 +21,19 @@ from typing import Iterable
 
 import pytest
 
-from sense_server.memory.atom import MemoryAtom
-from sense_server.memory.embeddings import Embedder
-from sense_server.events.model import CaptureEvent
-from sense_server.memory.index import InMemoryMemoryIndex
-from sense_server.memory.stages import (
+from opensapien_server.memory.atom import MemoryAtom
+from opensapien_server.memory.embeddings import Embedder
+from opensapien_server.events.model import CaptureEvent
+from opensapien_server.memory.index import InMemoryMemoryIndex
+from opensapien_server.memory.stages import (
     EmbeddingStage,
     ExtractionStage,
     IndexingStage,
     Pipeline,
     VersionStampStage,
 )
-from sense_server.memory.extract import ExtractedMemory, Extractor
-from sense_server.memory.store import InMemoryAtomStore
+from opensapien_server.memory.extract import ExtractedMemory, Extractor
+from opensapien_server.memory.store import InMemoryAtomStore
 
 
 # --- helpers -----------------------------------------------------------------

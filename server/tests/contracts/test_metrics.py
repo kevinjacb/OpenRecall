@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from sense_server.agent.metrics import InMemoryMetricsRecorder
-from sense_server.contracts.metrics import KNOWN_METRICS, Metrics
+from opensapien_server.agent.metrics import InMemoryMetricsRecorder
+from opensapien_server.contracts.metrics import KNOWN_METRICS, Metrics
 
 
 def test_metrics_known_set_contains_required_names():

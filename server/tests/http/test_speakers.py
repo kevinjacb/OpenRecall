@@ -5,16 +5,16 @@ from datetime import datetime, timezone
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from sense_server.auth import load_or_create_token
-from sense_server.events.model import CaptureEvent
-from sense_server.events.store import InMemoryEventStore
-from sense_server.http.app import build_app
-from sense_server.ingest.speaker_config import SpeakerConfig
-from sense_server.memory.atom import MemoryAtom
-from sense_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
-from sense_server.memory.store import InMemoryAtomStore
-from sense_server.sessions.index import SessionIndex
-from sense_server.sessions.lifecycle import SessionLifecycle
+from opensapien_server.auth import load_or_create_token
+from opensapien_server.events.model import CaptureEvent
+from opensapien_server.events.store import InMemoryEventStore
+from opensapien_server.http.app import build_app
+from opensapien_server.ingest.speaker_config import SpeakerConfig
+from opensapien_server.memory.atom import MemoryAtom
+from opensapien_server.memory.speaker_registry import InMemorySpeakerRegistry, Speaker
+from opensapien_server.memory.store import InMemoryAtomStore
+from opensapien_server.sessions.index import SessionIndex
+from opensapien_server.sessions.lifecycle import SessionLifecycle
 
 
 def _speaker(speaker_id, display_name, is_wearer=False):

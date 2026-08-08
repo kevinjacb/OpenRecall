@@ -5,11 +5,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from sense_server.agent.metrics import InMemoryMetricsRecorder
-from sense_server.contracts.clock import FakeClock
-from sense_server.contracts.metrics import Metrics
-from sense_server.gateway.core import ProactiveOutbox
-from sense_server.protocol.messages import ProactiveMessage
+from opensapien_server.agent.metrics import InMemoryMetricsRecorder
+from opensapien_server.contracts.clock import FakeClock
+from opensapien_server.contracts.metrics import Metrics
+from opensapien_server.gateway.core import ProactiveOutbox
+from opensapien_server.protocol.messages import ProactiveMessage
 
 
 def _msg(session_id: str = "s1", request_id: str = "r1") -> ProactiveMessage:

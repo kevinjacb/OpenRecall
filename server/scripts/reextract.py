@@ -20,7 +20,7 @@ not the legacy per-event extractor, so it forms the same memories a live
 session would. The atom store and index are idempotent on ``atom_id``, so
 re-running is safe — already-stored atoms are not duplicated.
 
-The LLM + embedder are configured via the same ``SENSE_LLM_*`` / ``SENSE_EMBED_*``
+The LLM + embedder are configured via the same ``OPENSAPIEN_LLM_*`` / ``OPENSAPIEN_EMBED_*``
 env vars as ``run_gateway.py`` (no model is hardcoded). Export them first —
 e.g. ``set -a; source .env; set +a`` — the same way you launch the gateway.
 
@@ -36,21 +36,21 @@ import sqlite3
 import time
 from pathlib import Path
 
-from sense_server.agent.metrics import InMemoryMetricsRecorder
-from sense_server.events.store import SqliteEventStore
-from sense_server.memory.embeddings import OpenAICompatibleEmbedder
-from sense_server.memory.extraction_worker import ExtractionWorker
-from sense_server.memory.extract import LLMExtractor, LLMParseError
-from sense_server.memory.index import SqliteMemoryIndex
-from sense_server.memory.llm import OpenAICompatibleChatModel
-from sense_server.memory.stages import (
+from opensapien_server.agent.metrics import InMemoryMetricsRecorder
+from opensapien_server.events.store import SqliteEventStore
+from opensapien_server.memory.embeddings import OpenAICompatibleEmbedder
+from opensapien_server.memory.extraction_worker import ExtractionWorker
+from opensapien_server.memory.extract import LLMExtractor, LLMParseError
+from opensapien_server.memory.index import SqliteMemoryIndex
+from opensapien_server.memory.llm import OpenAICompatibleChatModel
+from opensapien_server.memory.stages import (
     EmbeddingStage,
     ExtractionStage,
     IndexingStage,
     Pipeline,
     VersionStampStage,
 )
-from sense_server.memory.store import SqliteAtomStore
+from opensapien_server.memory.store import SqliteAtomStore
 
 # Must match EXTRACTOR_VERSION in run_gateway.py so cursors this script stamps
 # are honoured by the live worker (and vice versa).

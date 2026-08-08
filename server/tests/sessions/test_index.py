@@ -12,8 +12,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from sense_server.events.model import CaptureEvent
-from sense_server.sessions.index import SessionIndex, SessionSummary
+from opensapien_server.events.model import CaptureEvent
+from opensapien_server.sessions.index import SessionIndex, SessionSummary
 
 
 # ---- helpers ----------------------------------------------------------------
@@ -346,7 +346,7 @@ def test_rebuild_from_store_populates_summaries_from_event_store():
     """On a cold start, the index must rebuild from the durable event
     store. Pre-seed 2 sessions with 3 events each, call rebuild, assert
     both summaries exist with the right aggregates."""
-    from sense_server.events.store import InMemoryEventStore
+    from opensapien_server.events.store import InMemoryEventStore
     store = InMemoryEventStore()
     for seq in range(3):
         store.append(_ce("s1", seq, text=f"s1-{seq}", created_at=datetime(2026, 7, 1, 12, seq, 0, tzinfo=timezone.utc)))
@@ -371,7 +371,7 @@ def test_rebuild_from_store_is_idempotent():
     """Re-running rebuild_from_store against the same store must
     produce the same state — no duplicate sessions, identical
     aggregates. A test harness or a double-restart must be safe."""
-    from sense_server.events.store import InMemoryEventStore
+    from opensapien_server.events.store import InMemoryEventStore
     store = InMemoryEventStore()
     for seq in range(3):
         store.append(_ce("s1", seq, text=f"a{seq}"))
@@ -393,7 +393,7 @@ def test_rebuild_from_store_empty_store_is_noop():
     """A fresh gateway on a brand-new events.db must not crash on
     rebuild; the index stays empty and /sessions returns an empty
     page. The first live event will populate the first summary."""
-    from sense_server.events.store import InMemoryEventStore
+    from opensapien_server.events.store import InMemoryEventStore
     store = InMemoryEventStore()  # no events
     idx = SessionIndex()
     idx.rebuild_from_store(store)
@@ -407,9 +407,9 @@ def test_rebuild_from_store_skips_failing_session():
     """If one session's events raise during replay, the rebuild
     continues with the next session. A bad event in the durable
     store must not poison every other session's summary."""
-    from sense_server.events.store import InMemoryEventStore
-    from sense_server.events.model import CaptureEvent
-    from sense_server.sessions.index import SessionIndex
+    from opensapien_server.events.store import InMemoryEventStore
+    from opensapien_server.events.model import CaptureEvent
+    from opensapien_server.sessions.index import SessionIndex
 
     class _FlakyEventStore(InMemoryEventStore):
         """In-memory store that raises when reading the 'bad' session.

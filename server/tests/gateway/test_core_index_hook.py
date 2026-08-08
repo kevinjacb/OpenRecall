@@ -13,14 +13,14 @@ from __future__ import annotations
 import struct
 from datetime import datetime, timezone
 
-from sense_server.events.store import InMemoryEventStore
-from sense_server.gateway.core import GatewayCore
-from sense_server.ingest.audio_packet import PacketType, VadState
-from sense_server.ingest.pipeline import AudioIngestPipeline
-from sense_server.ingest.reassembler import SessionReassembler
-from sense_server.protocol.messages import Bye, Hello
-from sense_server.sessions.index import SessionIndex
-from sense_server.sessions.lifecycle import SessionLifecycle
+from opensapien_server.events.store import InMemoryEventStore
+from opensapien_server.gateway.core import GatewayCore
+from opensapien_server.ingest.audio_packet import PacketType, VadState
+from opensapien_server.ingest.pipeline import AudioIngestPipeline
+from opensapien_server.ingest.reassembler import SessionReassembler
+from opensapien_server.protocol.messages import Bye, Hello
+from opensapien_server.sessions.index import SessionIndex
+from opensapien_server.sessions.lifecycle import SessionLifecycle
 
 
 # ---- fixtures / fakes -------------------------------------------------------
