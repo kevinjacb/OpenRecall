@@ -22,6 +22,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -106,25 +107,26 @@ class SetupActivity : ComponentActivity() {
                     .putExtra("token", c.token)
                 c.gatewayPort?.let { i.putExtra("gateway_port", it) }
                 startForegroundService(i)
-                // Phase 7: navigate. A re-provision (launched from Settings
-                // with EXTRA_RECONFIGURE) returns RESULT_OK to MainActivity;
-                // a first launch starts MainActivity fresh. Either way this
-                // SetupActivity finishes — the wizard is single-use.
-                if (intent?.getBooleanExtra(EXTRA_RECONFIGURE, false) == true) {
-                    setResult(RESULT_OK)
-                } else {
-                    startActivity(Intent(this, MainActivity::class.java))
-                }
+                // The wizard is always launched for-result from MainActivity
+                // (first run from Home's CTA, later from Settings), so it
+                // hands the result back and finishes. It never starts
+                // MainActivity itself — MainActivity is the launcher.
+                setResult(RESULT_OK)
                 finish()
             },
             onAttempt = { u, t -> ServerConfig(filesDir).saveCredentials(u, t) },
             initialUrl = saved.serverUrl,
             initialToken = saved.token,
         )
+        enableEdgeToEdge()
         setContent {
             OpenSapienTheme {
                 val step by vm.step.collectAsState()
-                SetupScreen(step) { u, t -> beginConnect(u, t) }
+                SetupScreen(
+                    step = step,
+                    onCancel = { finish() },
+                    onServer = { u, t -> beginConnect(u, t) },
+                )
             }
         }
     }
@@ -134,11 +136,6 @@ class SetupActivity : ComponentActivity() {
         if (this::scanner.isInitialized) scanner.close()
     }
 
-    companion object {
-        /** Intent extra marking a re-provision run (launched from Settings).
-         *  Absent on a first launch (the launcher intent). */
-        const val EXTRA_RECONFIGURE = "reconfigure"
-    }
 }
 
 /** Thin adapter exposing [OpenSapienHttpClient] behind the [ServerApi] contract. */

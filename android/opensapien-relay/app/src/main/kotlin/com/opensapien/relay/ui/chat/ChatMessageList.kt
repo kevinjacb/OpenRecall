@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import com.opensapien.relay.core.ui.Spacing
 import com.opensapien.relay.data.ChatMessage
 import com.opensapien.relay.data.ChatMessageKind
@@ -50,8 +51,8 @@ fun ChatMessageList(
     LazyColumn(
         state = listState,
         modifier = modifier.fillMaxSize().testTag("chat_list"),
-        contentPadding = PaddingValues(Spacing.md),
-        verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = Spacing.md),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         items(messages, key = { it.id }) { msg ->
             when (msg.kind) {

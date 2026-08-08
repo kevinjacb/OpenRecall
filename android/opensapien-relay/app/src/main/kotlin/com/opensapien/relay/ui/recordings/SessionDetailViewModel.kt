@@ -5,6 +5,9 @@ import androidx.lifecycle.viewModelScope
 import com.opensapien.relay.core.SenseLog
 import com.opensapien.relay.core.result.Outcome
 import com.opensapien.relay.core.ui.toDisplayMessage
+import com.opensapien.relay.data.MemoryAtom
+import com.opensapien.relay.data.MemoryOutcome
+import com.opensapien.relay.data.MemoryRepository
 import com.opensapien.relay.data.NoopSpeakerActions
 import com.opensapien.relay.data.SpeakerActions
 import com.opensapien.relay.data.SpeakerCache
@@ -86,7 +89,36 @@ class SessionDetailViewModel(
     private val repo: SessionRepository,
     val speakerCache: SpeakerCache = SpeakerCache(),
     private val speakerActions: SpeakerActions = NoopSpeakerActions,
+    private val memoryRepo: MemoryRepository? = null,
 ) : ViewModel() {
+
+    private val _memories = MutableStateFlow<List<MemoryAtom>>(emptyList())
+    /**
+     * The memory atoms extracted from this session, for the comp's "Memories
+     * from this session" chip row. Empty when the lookup fails or when
+     * [memoryRepo] wasn't supplied (tests) — the row simply doesn't render.
+     */
+    val memories: StateFlow<List<MemoryAtom>> = _memories.asStateFlow()
+
+    init {
+        loadMemories()
+    }
+
+    /** Fetch this session's atoms. A failure is silent by design: memories
+     *  are an enrichment, and an error banner over them would bury the
+     *  transcript, which is the point of the screen. */
+    private fun loadMemories() {
+        val repo = memoryRepo ?: return
+        viewModelScope.launch {
+            when (val result = repo.sessionAtoms(id.value)) {
+                is MemoryOutcome.Success -> _memories.value = result.atoms
+                is MemoryOutcome.Error -> SenseLog.w(
+                    tag = "SessionDetail",
+                    msg = "session memories unavailable: ${result.message}",
+                )
+            }
+        }
+    }
 
     // Bumped by [onRefresh] to re-collect the one-shot per-session flows.
     private val revision = MutableStateFlow(0)
@@ -141,6 +173,7 @@ class SessionDetailViewModel(
         if (_isRefreshing.value) return
         _isRefreshing.value = true
         revision.value = revision.value + 1
+        loadMemories()
     }
 
     /**

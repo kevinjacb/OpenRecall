@@ -1,10 +1,12 @@
 package com.opensapien.relay.ui.device
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -20,6 +22,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.compose.runtime.collectAsState
 import com.opensapien.relay.core.model.ApiError
 import com.opensapien.relay.core.result.Outcome
+import com.opensapien.relay.core.ui.SenseTheme
 import com.opensapien.relay.core.ui.Spacing
 import com.opensapien.relay.data.RepositoryModule
 import com.opensapien.relay.domain.model.DeviceSummary
@@ -31,14 +34,17 @@ import com.opensapien.relay.relay.ServerState
 import com.opensapien.relay.ui.design.ConnectionBadge
 import com.opensapien.relay.ui.design.InfoRow
 import com.opensapien.relay.ui.design.SectionHeader
+import com.opensapien.relay.ui.design.SenseTopBar
 import com.opensapien.relay.ui.design.Tone
+import com.opensapien.relay.ui.design.TopBarState
 
 /**
  * Device route. Builds the [DeviceViewModel] from the process singleton
- * (manual DI) and renders the stateless [DeviceScreen].
+ * (manual DI) and renders the stateless [DeviceScreen] under a back-arrow
+ * top bar — Device is a push screen reached from Settings, not a bar tab.
  */
 @Composable
-fun DeviceRoute(modifier: Modifier = Modifier) {
+fun DeviceRoute(onBack: () -> Unit, modifier: Modifier = Modifier) {
     val vm: DeviceViewModel = viewModel(
         factory = viewModelFactory {
             initializer {
@@ -53,13 +59,20 @@ fun DeviceRoute(modifier: Modifier = Modifier) {
     )
     val state by vm.state.collectAsState()
     val isRefreshing by vm.isRefreshing.collectAsState()
-    DeviceScreen(
-        state = state,
-        isRefreshing = isRefreshing,
-        onRefresh = vm::onRefresh,
-        onRetryConnection = vm::onRetryConnection,
-        modifier = modifier,
-    )
+    Column(
+        modifier
+            .fillMaxSize()
+            .background(SenseTheme.colors.canvas)
+            .statusBarsPadding(),
+    ) {
+        SenseTopBar(TopBarState(title = "Device", onBack = onBack))
+        DeviceScreen(
+            state = state,
+            isRefreshing = isRefreshing,
+            onRefresh = vm::onRefresh,
+            onRetryConnection = vm::onRetryConnection,
+        )
+    }
 }
 
 /**

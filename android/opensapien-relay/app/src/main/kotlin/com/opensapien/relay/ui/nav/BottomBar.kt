@@ -1,82 +1,135 @@
 package com.opensapien.relay.ui.nav
 
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.dp
+import com.opensapien.relay.core.ui.PillShape
+import com.opensapien.relay.core.ui.SenseTheme
+import com.opensapien.relay.ui.design.SenseIcons
 
 /**
- * The 4 main destinations. Device and Commands are reachable from
- * Home (drill-down cards); they are not bar tabs.
+ * The five bottom-bar destinations, in the comp's order.
  *
- * Order: Home, Recordings, Chat, Settings — most-used first,
- * "settings where I look for it" last. Chat sits between
- * Recordings and Settings because it is the user-facing ask surface
- * (the cognitive read path); Device + Commands are admin surfaces
- * hidden behind Home drill-downs.
+ * Memories is a tab here (it was previously reachable only as a deep-link
+ * from a chat refusal). The `design/` comp gives it a first-class slot —
+ * "what it decided to keep" is one of the product's two read surfaces, and
+ * burying it behind a refusal made it effectively undiscoverable.
  *
- * **Icon note:** the core `androidx.compose.material.icons.filled` set
- * only ships a small subset of Material Icons. We use icons that are
- * available in the core set today (`Home`, `List`, `Settings`) and
- * the visual differentiation will be tightened with custom SVGs in
- * a later visual-polish phase. A missing icon today would crash at
- * runtime; this choice is the boring-but-correct one.
+ * Device and Commands remain off the bar: they are diagnostic surfaces,
+ * reached from Settings.
  */
-private val mainDestinations: List<MainTab> = listOf(
-    MainTab(Destination.Home, "Home", Icons.Filled.Home),
-    MainTab(Destination.Recordings, "Recordings", Icons.AutoMirrored.Filled.List),
-    // Icons.AutoMirrored.Filled.Send (paper plane) is reused for
-    // the Chat tab so the icon matches the input bar's send
-    // affordance; the core icon set does not include a dedicated
-    // Chat icon.
-    MainTab(Destination.Chat, "Chat", Icons.AutoMirrored.Filled.Send),
-    MainTab(Destination.Settings, "Settings", Icons.Filled.Settings),
+internal val mainDestinations: List<MainTab> = listOf(
+    MainTab(Destination.Home, "Home", SenseIcons.Home),
+    MainTab(Destination.Recordings, "Recordings", SenseIcons.Recordings),
+    MainTab(Destination.Memory, "Memories", SenseIcons.Memories),
+    MainTab(Destination.Chat, "Chat", SenseIcons.Chat),
+    MainTab(Destination.Settings, "Settings", SenseIcons.Settings),
 )
 
-private data class MainTab(
+internal data class MainTab(
     val destination: Destination,
     val label: String,
     val icon: ImageVector,
 )
 
 /**
- * Bottom navigation bar. Accepts the current route so the active tab is
- * highlighted; the parent owns the actual NavController (so back-stack
- * and pop-up-to are managed in one place).
+ * The bottom navigation bar. Not an M3 `NavigationBar`: the comp's selected
+ * state is a warm accent pill behind the icon with the label always visible
+ * beneath, on the canvas colour with a hairline top rule — which the M3
+ * component's indicator, elevation and tonal surface all fight.
+ *
+ * The parent owns the NavController so back-stack behaviour lives in one
+ * place; this takes the current route and reports selections.
  */
 @Composable
 fun BottomBar(
     currentRoute: String?,
     onSelect: (Destination) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    NavigationBar(
-        containerColor = MaterialTheme.colorScheme.surface,
-        contentColor = MaterialTheme.colorScheme.onSurface,
+    val colors = SenseTheme.colors
+    Column(modifier.fillMaxWidth().background(colors.canvas)) {
+        Box(Modifier.fillMaxWidth().height(1.dp).background(colors.divider))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            mainDestinations.forEach { tab ->
+                TabItem(
+                    tab = tab,
+                    selected = currentRoute == tab.destination.route,
+                    onClick = { onSelect(tab.destination) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TabItem(
+    tab: MainTab,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = SenseTheme.colors
+    val indicator by animateColorAsState(
+        targetValue = if (selected) colors.accentTab else Color.Transparent,
+        label = "tab-indicator",
+    )
+    val content by animateColorAsState(
+        targetValue = if (selected) colors.ink else colors.slate,
+        label = "tab-content",
+    )
+    Column(
+        modifier = modifier
+            .selectable(selected = selected, role = Role.Tab, onClick = onClick)
+            .padding(vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
-        mainDestinations.forEach { tab ->
-            val selected = currentRoute == tab.destination.route
-            NavigationBarItem(
-                selected = selected,
-                onClick = { onSelect(tab.destination) },
-                icon = { Icon(tab.icon, contentDescription = tab.label) },
-                label = { Text(tab.label) },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = MaterialTheme.colorScheme.onPrimary,
-                    indicatorColor = MaterialTheme.colorScheme.primary,
-                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    selectedTextColor = MaterialTheme.colorScheme.onSurface,
-                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                ),
+        Box(
+            Modifier
+                .width(56.dp)
+                .height(30.dp)
+                .clip(PillShape)
+                .background(indicator),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                tab.icon,
+                contentDescription = null, // the label below is the accessible name
+                tint = content,
+                modifier = Modifier.size(21.dp),
             )
         }
+        Text(tab.label, style = MaterialTheme.typography.labelSmall, color = content)
     }
 }

@@ -1,50 +1,63 @@
 package com.opensapien.relay.ui.nav
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Architectural invariant: the bottom bar has AT MOST 4 tabs.
+ * Architectural invariant: the bottom bar has AT MOST 5 tabs, and they are
+ * exactly the ones the `design/` comp specifies.
  *
- * The phone is a relay; the spec gives 4 explicit slots
- * (Home, Recordings, Device, Settings) and no fifth. New features
- * (Chat, Memory) live as screens reached from one of the four tabs —
- * not as new bottom-bar entries. This invariant is binding: a
- * regression here means we have to redesign the navigation.
+ * The ceiling was 4 while Home carried drill-down cards for Device and
+ * Commands. The comp replaced those with a Memories tab — "what it decided
+ * to keep" is one of the product's two read surfaces, and reaching it only
+ * via a chat refusal made it undiscoverable — and moved the two diagnostic
+ * screens behind Settings. Five is the new ceiling; a sixth means the
+ * navigation needs redesigning, not another slot.
+ *
+ * These assertions read the real [mainDestinations] list rather than a
+ * hand-copied one, so adding a tab fails here instead of passing vacuously.
  */
 class BottomBarTest {
 
     @Test
-    fun `bottom bar ceiling is 4 tabs (INV-13)`() {
-        // The 4 canonical tabs.
-        val tabs = listOf(
-            Destination.Home,
-            Destination.Recordings,
-            Destination.Device,
-            Destination.Settings,
+    fun `bottom bar ceiling is 5 tabs (INV-13)`() {
+        assertTrue(
+            "bottom bar has ${mainDestinations.size} tabs; the ceiling is 5",
+            mainDestinations.size <= 5,
         )
-        assertEquals(4, tabs.size)
-        assertTrue(tabs.size <= 4)
     }
 
     @Test
-    fun `chat and memory are not bottom bar entries`() {
-        // Cognitive read path screens are reachable from Home, not from
-        // the bottom bar. They are Destinations, not bottom-bar tabs.
-        val bottomBarTabs = setOf(
-            Destination.Home,
-            Destination.Recordings,
-            Destination.Device,
-            Destination.Settings,
+    fun `bottom bar tabs are the five design destinations, in order`() {
+        assertEquals(
+            listOf(
+                Destination.Home,
+                Destination.Recordings,
+                Destination.Memory,
+                Destination.Chat,
+                Destination.Settings,
+            ),
+            mainDestinations.map { it.destination },
         )
-        assertTrue(Destination.Chat !in bottomBarTabs)
-        assertTrue(Destination.Memory !in bottomBarTabs)
+    }
+
+    @Test
+    fun `diagnostic surfaces are not bottom bar entries`() {
+        // Device and Commands are pushed from Settings, not tabbed.
+        val tabs = mainDestinations.map { it.destination }.toSet()
+        assertFalse(Destination.Device in tabs)
+        assertFalse(Destination.Commands in tabs)
+    }
+
+    @Test
+    fun `every tab has a label`() {
+        assertTrue(mainDestinations.all { it.label.isNotBlank() })
     }
 
     @Test
     fun `atom detail deep link is routable`() {
-        val dest = Destination.AtomDetail.build("a1")
-        assertEquals("memory/atom/a1", dest.route)
+        assertEquals("memory/atom/a1", Destination.AtomDetail.build("a1").route)
     }
 }

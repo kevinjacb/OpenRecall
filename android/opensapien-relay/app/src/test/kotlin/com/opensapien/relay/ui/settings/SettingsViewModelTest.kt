@@ -76,4 +76,34 @@ class SettingsViewModelTest {
         vm.save(toSave)
         assertEquals(toSave, repo.lastSaved, "save delegates to the repository")
     }
+
+    @Test fun forgetDeviceClearsEveryCredential() = runTest(dispatcher) {
+        // "Forget this Sense" must leave nothing behind: a surviving token or
+        // provisioned flag would keep Home claiming a device is paired and
+        // keep the relay retrying against a server the user disowned.
+        val repo = FakeConfigurationRepository(
+            Config(
+                serverUrl = "https://s:8766",
+                token = "tok",
+                deviceAddress = "AA:BB",
+                provisioned = true,
+                gatewayPort = 8765,
+            ),
+        )
+        val vm = SettingsViewModel(repo)
+        subscribe(backgroundScope, vm)
+
+        vm.forgetDevice()
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(Config(), repo.lastSaved, "an empty config is persisted")
+    }
+
+    @Test fun captureTogglesStartAtTheDesignDefaults() = runTest(dispatcher) {
+        val vm = SettingsViewModel(FakeConfigurationRepository(Config()))
+        assertEquals(CaptureSettings(), vm.capture.value)
+
+        vm.onCaptureChanged(CaptureSettings(wakeWord = true))
+        assertEquals(true, vm.capture.value.wakeWord)
+    }
 }

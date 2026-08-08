@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The app is pure Compose, so the platform theme's only jobs are to get
+      out of the way and to set the pre-composition window background.
+
+      NoActionBar matters: the default device theme draws a titled action bar
+      above the Compose content, which put a dark "OpenSapien Relay" strip on
+      top of every screen. Colours and typography all come from
+      core/ui/OpenSapienTheme.kt; the system bars are handled by
+      enableEdgeToEdge() in the Activities.
+    -->
+    <style name="Theme.OpenSapien" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/canvas</item>
+    </style>
+</resources>

@@ -48,11 +48,12 @@ fun CommandsScreen(
     onRetry: () -> Unit,
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
+    onBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     now: Instant = Instant.now(),
 ) {
     Column(modifier = modifier.fillMaxSize()) {
-        SenseTopBar(state = TopBarState(title = "Commands"))
+        SenseTopBar(state = TopBarState(title = "Commands", onBack = onBack))
         // Pull-to-refresh wraps the content: a pull-down re-fetches the
         // active-command list via [CommandsViewModel.onRefresh].
         PullToRefreshBox(

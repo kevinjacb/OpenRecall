@@ -1,31 +1,53 @@
 package com.opensapien.relay.ui.recordings
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import androidx.compose.runtime.collectAsState
-import com.opensapien.relay.core.ui.Spacing
+import com.opensapien.relay.core.ui.SenseTheme
 import com.opensapien.relay.core.util.formatHmMs
+import com.opensapien.relay.core.util.formatRelative
+import com.opensapien.relay.data.MemoryAtom
 import com.opensapien.relay.data.RepositoryModule
 import com.opensapien.relay.data.SpeakerCache
 import com.opensapien.relay.domain.model.AudioSegment
@@ -33,20 +55,14 @@ import com.opensapien.relay.domain.model.CaptureEvent
 import com.opensapien.relay.domain.model.SessionId
 import com.opensapien.relay.domain.model.SessionSummary
 import com.opensapien.relay.domain.model.TranscriptChunk
+import com.opensapien.relay.ui.design.AccentChip
 import com.opensapien.relay.ui.design.EmptyState
 import com.opensapien.relay.ui.design.LoadingCard
-import com.opensapien.relay.ui.design.MetricCard
-import com.opensapien.relay.ui.design.SenseTopBar
-import com.opensapien.relay.ui.design.TopBarState
-import androidx.compose.foundation.clickable
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import com.opensapien.relay.ui.design.PlaceholderTag
+import com.opensapien.relay.ui.design.SenseCard
+import com.opensapien.relay.ui.design.SenseDetailHeader
+import com.opensapien.relay.ui.design.SenseIcons
+import com.opensapien.relay.ui.design.WaveformStrip
 
 /**
  * SessionDetail route. Builds the [SessionDetailViewModel] for [id] from the
@@ -62,6 +78,7 @@ fun SessionDetailRoute(id: SessionId, onBack: () -> Unit, modifier: Modifier = M
                     RepositoryModule.repos.session,
                     speakerCache = RepositoryModule.repos.speakerCache,
                     speakerActions = RepositoryModule.repos.speakerActions,
+                    memoryRepo = RepositoryModule.repos.memoryRepository,
                 )
             }
         },
@@ -70,8 +87,10 @@ fun SessionDetailRoute(id: SessionId, onBack: () -> Unit, modifier: Modifier = M
     val isRefreshing by vm.isRefreshing.collectAsState()
     val youConfirmation by vm.youConfirmation.collectAsState()
     val speakerError by vm.speakerError.collectAsState()
+    val memories by vm.memories.collectAsState()
     SessionDetailScreen(
         state = state,
+        memories = memories,
         isRefreshing = isRefreshing,
         onRefresh = vm::onRefresh,
         onBack = onBack,
@@ -88,17 +107,17 @@ fun SessionDetailRoute(id: SessionId, onBack: () -> Unit, modifier: Modifier = M
 }
 
 /**
- * Stateless SessionDetail content. A [SenseTopBar] with a back arrow over
- * the progressive body: summary [MetricCard], then the event timeline. New
- * events arriving grow the [LazyColumn] without a full re-render (the events
- * come in via a new [SessionDetailUiState.Loaded]).
+ * Stateless session detail — the comp's recording screen: a back header, a
+ * metadata line, the audio player, the memories this session produced, then
+ * the transcript.
  *
- * The body is wrapped in a [PullToRefreshBox] so a pull-down gesture re-
- * fetches the session summary + event timeline.
+ * Speaker labels are tappable, opening rename / reassign, which is how a
+ * transcript gets from "Speaker 2" to a name.
  */
 @Composable
 fun SessionDetailScreen(
     state: SessionDetailUiState,
+    memories: List<MemoryAtom> = emptyList(),
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
     onBack: () -> Unit,
@@ -112,6 +131,7 @@ fun SessionDetailScreen(
     onDismissSpeakerError: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val colors = SenseTheme.colors
     val snackbarHostState: SnackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(speakerError) {
         if (speakerError != null) {
@@ -121,25 +141,36 @@ fun SessionDetailScreen(
     }
     Scaffold(
         modifier = modifier,
-        topBar = { SenseTopBar(TopBarState(title = "Session", onBack = onBack)) },
+        containerColor = colors.canvas,
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
     ) { padding ->
-        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+        Column(
+            Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .background(colors.canvas)
+                .statusBarsPadding(),
+        ) {
+            SenseDetailHeader(title = headerTitle(state), onBack = onBack)
             when (state) {
-                is SessionDetailUiState.Loading -> Column(Modifier.padding(Spacing.md)) { LoadingCard() }
+                is SessionDetailUiState.Loading ->
+                    Column(Modifier.padding(20.dp)) { LoadingCard() }
+
                 is SessionDetailUiState.Failed -> Box(
                     Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center,
                 ) {
                     EmptyState(
-                        title = "Couldn't load session",
+                        title = "Couldn't load this recording",
                         body = state.reason,
                         ctaLabel = "Try again",
                         onCta = onRefresh,
                     )
                 }
+
                 is SessionDetailUiState.LoadedSummary -> Body(
-                    state.summary, events = null, isRefreshing = isRefreshing, onRefresh = onRefresh,
+                    summary = state.summary, events = null, memories = memories,
+                    isRefreshing = isRefreshing, onRefresh = onRefresh,
                     speakerCache = speakerCache,
                     onRenameSpeaker = onRenameSpeaker,
                     onReassignSpeaker = onReassignSpeaker,
@@ -147,8 +178,10 @@ fun SessionDetailScreen(
                     onConfirmYou = onConfirmYou,
                     onDismissYouConfirmation = onDismissYouConfirmation,
                 )
+
                 is SessionDetailUiState.Loaded -> Body(
-                    state.summary, events = state.events, isRefreshing = isRefreshing, onRefresh = onRefresh,
+                    summary = state.summary, events = state.events, memories = memories,
+                    isRefreshing = isRefreshing, onRefresh = onRefresh,
                     speakerCache = speakerCache,
                     onRenameSpeaker = onRenameSpeaker,
                     onReassignSpeaker = onReassignSpeaker,
@@ -166,38 +199,43 @@ fun SessionDetailScreen(
 private fun Body(
     summary: SessionSummary,
     events: List<CaptureEvent>?,
-    isRefreshing: Boolean = false,
-    onRefresh: () -> Unit = {},
-    speakerCache: SpeakerCache = SpeakerCache(),
-    onRenameSpeaker: (speakerId: String, name: String) -> Unit = { _, _ -> },
-    onReassignSpeaker: (fromId: String, toId: String) -> Unit = { _, _ -> },
-    youConfirmation: YouConfirmationState = YouConfirmationState.Idle,
-    onConfirmYou: (name: String) -> Unit = {},
-    onDismissYouConfirmation: () -> Unit = {},
+    memories: List<MemoryAtom>,
+    isRefreshing: Boolean,
+    onRefresh: () -> Unit,
+    speakerCache: SpeakerCache,
+    onRenameSpeaker: (speakerId: String, name: String) -> Unit,
+    onReassignSpeaker: (fromId: String, toId: String) -> Unit,
+    youConfirmation: YouConfirmationState,
+    onConfirmYou: (name: String) -> Unit,
+    onDismissYouConfirmation: () -> Unit,
 ) {
-    // The timeline is keyed by the stable event id (NOT the design system's
-    // `timeline()` helper, which keys by title and would crash a LazyColumn
-    // on two transcripts with identical text).
+    val colors = SenseTheme.colors
     PullToRefreshBox(
         isRefreshing = isRefreshing,
         onRefresh = onRefresh,
         modifier = Modifier.fillMaxSize(),
     ) {
+        // Keyed by the stable event id — NOT by title, which would collide on
+        // two transcripts with identical text and crash the LazyColumn.
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(Spacing.md),
-            verticalArrangement = Arrangement.spacedBy(Spacing.sm),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp),
         ) {
-            item(key = "summary") {
-                MetricCard(
-                    title = "Duration",
-                    value = formatHmMs(summary.durationMs),
-                    subtitle = "${summary.transcriptCount} transcripts",
+            item(key = "meta") {
+                Text(
+                    text = metaLine(summary),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.grey,
+                    modifier = Modifier.padding(top = 4.dp),
                 )
             }
-            // One-time "is this you?" prompt, above the timeline. Composes
-            // nothing unless the state is Prompting, so it costs no space
-            // when idle/done.
+
+            item(key = "player") {
+                PlayerCard(summary, Modifier.padding(top = 16.dp))
+            }
+
+            // One-time "is this you?" prompt. Composes nothing unless the
+            // state is Prompting, so it costs no space when idle.
             item(key = "you-confirm") {
                 YouConfirmationBanner(
                     state = youConfirmation,
@@ -205,12 +243,28 @@ private fun Body(
                     onDismiss = onDismissYouConfirmation,
                 )
             }
+
+            if (memories.isNotEmpty()) {
+                item(key = "memories") {
+                    MemoriesSection(memories, Modifier.padding(top = 26.dp))
+                }
+            }
+
+            item(key = "transcript-label") {
+                Text(
+                    text = "TRANSCRIPT",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.slate,
+                    modifier = Modifier.padding(top = 28.dp, bottom = 14.dp),
+                )
+            }
+
             when {
                 events == null -> item(key = "events-loading") { LoadingCard() }
                 events.isEmpty() -> item(key = "events-empty") {
                     EmptyState(
-                        title = "No events",
-                        body = "This session has no transcript events yet.",
+                        title = "No transcript yet",
+                        body = "This session hasn't produced any transcript events.",
                     )
                 }
                 else -> items(events, key = { it.id }) { event ->
@@ -226,124 +280,257 @@ private fun Body(
     }
 }
 
+/**
+ * The audio player.
+ *
+ * **Placeholder.** The server exposes no audio download or streaming
+ * endpoint for a session — only its transcript events — so there is nothing
+ * to play. The card renders the comp's layout with a disabled transport and
+ * a [WaveformStrip] shaped from the session id, marked so it doesn't read as
+ * a broken control.
+ */
+@Composable
+private fun PlayerCard(summary: SessionSummary, modifier: Modifier = Modifier) {
+    val colors = SenseTheme.colors
+    SenseCard(modifier = modifier, contentPadding = PaddingValues(16.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Box(
+                Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(colors.track),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    SenseIcons.Play,
+                    contentDescription = "Playback unavailable",
+                    tint = colors.greyLight,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+            Column(Modifier.weight(1f)) {
+                WaveformStrip(seed = summary.id.value)
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        "00:00",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.greyFaint,
+                    )
+                    Text(
+                        formatHmMs(summary.durationMs),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.greyFaint,
+                    )
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            PlaceholderTag()
+            Text(
+                text = "Audio playback needs a session audio endpoint on the relay.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.grey,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MemoriesSection(memories: List<MemoryAtom>, modifier: Modifier = Modifier) {
+    val colors = SenseTheme.colors
+    Column(modifier) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                SenseIcons.Sparkle,
+                contentDescription = null,
+                tint = colors.accent,
+                modifier = Modifier.size(15.dp),
+            )
+            Text(
+                "MEMORIES FROM THIS SESSION",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.slate,
+            )
+        }
+        FlowRow(
+            modifier = Modifier.padding(top = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            memories.forEach { atom -> AccentChip(label = atom.text) }
+        }
+    }
+}
+
+/**
+ * One transcript hop: elapsed time in a fixed gutter, then the speaker and
+ * their line. Tapping the speaker opens rename / reassign.
+ */
 @Composable
 private fun EventRow(
     event: CaptureEvent,
-    speakerCache: SpeakerCache = SpeakerCache(),
-    onRename: (speakerId: String, name: String) -> Unit = { _, _ -> },
-    onReassign: (fromId: String, toId: String) -> Unit = { _, _ -> },
+    speakerCache: SpeakerCache,
+    onRename: (speakerId: String, name: String) -> Unit,
+    onReassign: (fromId: String, toId: String) -> Unit,
 ) {
-    // Speaker label resolution. TranscriptChunks carry the server-resolved
-    // speakerName (or null when the hop had no speaker / speaker unknown).
-    // We fall back to the cache (a prior hop may have named this speaker, or
-    // the local optimistic rename applied), then to "?".
+    val colors = SenseTheme.colors
+    // Transcript chunks carry the server-resolved speakerName (null when the
+    // hop had no speaker, or the speaker is unknown). Fall back to the cache
+    // — a prior hop may have named them, or a local rename may have applied.
     val chunk = event as? TranscriptChunk
     val speakerId = chunk?.speaker
     val speakerName = when {
         chunk == null || speakerId == null -> null
         chunk.speakerName != null -> chunk.speakerName
         speakerCache.get(speakerId)?.name != null -> speakerCache.get(speakerId)!!.name
-        else -> "?"
+        else -> "Unknown speaker"
     }
 
-    // Rename dialog state.
-    var showRename by remember { mutableStateOf(false) }
-    var renameText by remember { mutableStateOf("") }
-    // Per-row dropdown menu (Rename / Reassign…).
     var showMenu by remember { mutableStateOf(false) }
-    // Reassign picker menu.
+    var showRename by remember { mutableStateOf(false) }
     var showReassign by remember { mutableStateOf(false) }
+    var renameText by remember { mutableStateOf("") }
 
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = Spacing.xs)) {
-        // Speaker tag — tappable when this hop has a speaker (opens Rename /
-        // Reassign menu). Non-transcript rows render no tag.
-        if (chunk != null && speakerId != null) {
-            Text(
-                text = speakerName ?: "?",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .padding(bottom = Spacing.xs)
-                    .clickable { showMenu = true },
-            )
-            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                DropdownMenuItem(
-                    text = { Text("Rename") },
-                    onClick = {
-                        showMenu = false
-                        renameText = speakerName?.takeUnless { it == "?" } ?: ""
-                        showRename = true
-                    },
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Text(
+            text = formatHmMs(event.startMs).removePrefix("00:"),
+            style = MaterialTheme.typography.labelMedium,
+            color = colors.greyFaint,
+            modifier = Modifier.width(44.dp).padding(top = 2.dp),
+        )
+        Column(Modifier.weight(1f)) {
+            if (chunk != null && speakerId != null) {
+                Text(
+                    text = speakerName ?: "Unknown speaker",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.grey,
+                    modifier = Modifier
+                        .clickable { showMenu = true }
+                        .padding(bottom = 3.dp),
                 )
-                DropdownMenuItem(
-                    text = { Text("Reassign to…") },
-                    onClick = {
-                        showMenu = false
-                        showReassign = true
-                    },
-                )
-            }
-            // Rename dialog.
-            if (showRename) {
-                AlertDialog(
-                    onDismissRequest = { showRename = false },
-                    title = { Text("Name speaker") },
-                    text = {
-                        OutlinedTextField(
-                            value = renameText,
-                            onValueChange = { renameText = it },
-                            singleLine = true,
-                            label = { Text("Display name") },
-                        )
-                    },
-                    confirmButton = {
-                        TextButton(onClick = {
+                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Rename") },
+                        onClick = {
+                            showMenu = false
+                            renameText = speakerName?.takeUnless { it == "Unknown speaker" } ?: ""
+                            showRename = true
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Reassign to…") },
+                        onClick = {
+                            showMenu = false
+                            showReassign = true
+                        },
+                    )
+                }
+                if (showRename) {
+                    RenameSpeakerDialog(
+                        value = renameText,
+                        onValueChange = { renameText = it },
+                        onConfirm = {
                             if (renameText.isNotBlank()) onRename(speakerId, renameText.trim())
                             showRename = false
-                        }) { Text("Save") }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showRename = false }) { Text("Cancel") }
-                    },
-                )
-            }
-            // Reassign picker: list the other known speakers from the cache.
-            if (showReassign) {
-                val others = speakerCache.snapshot().values.filter { it.speakerId != speakerId }
-                DropdownMenu(expanded = showReassign, onDismissRequest = { showReassign = false }) {
-                    if (others.isEmpty()) {
-                        DropdownMenuItem(
-                            text = { Text("No other speakers yet") },
-                            onClick = { showReassign = false },
-                        )
-                    } else {
-                        others.forEach { entry ->
+                        },
+                        onDismiss = { showRename = false },
+                    )
+                }
+                if (showReassign) {
+                    // The reassign targets are the other speakers the cache
+                    // knows about — the server has no "merge into new" verb.
+                    val others = speakerCache.snapshot().values.filter { it.speakerId != speakerId }
+                    DropdownMenu(
+                        expanded = true,
+                        onDismissRequest = { showReassign = false },
+                    ) {
+                        if (others.isEmpty()) {
                             DropdownMenuItem(
-                                text = { Text(entry.name ?: "?") },
-                                onClick = {
-                                    showReassign = false
-                                    onReassign(speakerId, entry.speakerId)
-                                },
+                                text = { Text("No other speakers yet") },
+                                onClick = { showReassign = false },
                             )
+                        } else {
+                            others.forEach { entry ->
+                                DropdownMenuItem(
+                                    text = { Text(entry.name ?: "Unknown speaker") },
+                                    onClick = {
+                                        showReassign = false
+                                        onReassign(speakerId, entry.speakerId)
+                                    },
+                                )
+                            }
                         }
                     }
                 }
             }
+            Text(
+                text = eventText(event),
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.inkSoft,
+            )
         }
-        Text(
-            text = eventTitle(event),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-        Text(
-            text = "+${formatHmMs(event.startMs)}",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
-private fun eventTitle(event: CaptureEvent): String = when (event) {
+@Composable
+private fun RenameSpeakerDialog(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = SenseTheme.colors
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colors.card,
+        titleContentColor = colors.ink,
+        title = { Text("Name this speaker") },
+        text = {
+            com.opensapien.relay.ui.design.SenseTextField(
+                value = value,
+                onValueChange = onValueChange,
+                placeholder = "Display name",
+            )
+        },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+private fun headerTitle(state: SessionDetailUiState): String = when (state) {
+    is SessionDetailUiState.Loaded -> sessionTitle(state.summary)
+    is SessionDetailUiState.LoadedSummary -> sessionTitle(state.summary)
+    else -> "Recording"
+}
+
+/** "34 min ago · 20:23 · 697 segments" — the comp's metadata line. */
+private fun metaLine(summary: SessionSummary): String = buildString {
+    append(formatRelative(System.currentTimeMillis(), summary.startedAt.toEpochMilli()))
+    append(" · ")
+    append(formatHmMs(summary.durationMs))
+    append(" · ")
+    append("${summary.transcriptCount} segments")
+}
+
+private fun eventText(event: CaptureEvent): String = when (event) {
     is TranscriptChunk -> event.text.ifBlank { "(empty transcript)" }
     is AudioSegment -> "Audio · ${event.byteCount} bytes"
 }
