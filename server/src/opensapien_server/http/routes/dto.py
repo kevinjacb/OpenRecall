@@ -100,6 +100,11 @@ class MemoryAtomDTO(BaseModel):
     kind: str
     text: str
     created_at: datetime
+    # Conversation time (spec D6) — when this was said, not when the server
+    # extracted it. This is the field the client orders and groups on;
+    # `created_at` is kept for debugging. Null only for atoms written before
+    # the field existed and never backfilled.
+    occurred_at: datetime | None = None
     start_ms: int
     source_event_id: str
     source_modality: str
@@ -122,6 +127,39 @@ class MemorySearchResponseDTO(BaseModel):
     returned_count: int = 0
     top_score: float = 0.0
     retrieval_latency_ms: int = 0
+
+
+class MemoryListResponseDTO(BaseModel):
+    """Outbound payload for ``GET /memory`` in **list mode** (no ``q``).
+
+    Distinct from :class:`MemorySearchResponseDTO` because the two modes
+    answer different questions: search returns ranked hits with a relevance
+    score and a retrieval trace; listing returns a page of a browsable
+    collection with a cursor. Collapsing them would mean a `top_score` field
+    that is meaningless half the time.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    schema_version: Literal["v1"] = "v1"
+    atoms: list[MemoryAtomDTO] = Field(default_factory=list)
+    returned_count: int = 0
+    next_cursor: str | None = None
+
+
+class MemoryStatsResponseDTO(BaseModel):
+    """Outbound payload for ``GET /memory/stats`` — the Memories tab header.
+
+    ``by_kind`` is also how a client discovers the kind vocabulary: the
+    extractor emits free-form kinds, so the filter chips are built from
+    what actually exists rather than from a hardcoded list that silently
+    hides everything else.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    schema_version: Literal["v1"] = "v1"
+    total: int = 0
+    added_24h: int = 0
+    by_kind: dict[str, int] = Field(default_factory=dict)
 
 
 class SessionMemoryResponseDTO(BaseModel):

@@ -7,8 +7,11 @@ that field is a connection count, not a session count, so it lives
 separately from the durable :class:`~opensapien_server.sessions.index.SessionIndex`.
 
 ``register`` is called from ``GatewayCore._on_hello``; ``deregister`` is
-called from ``GatewayCore._on_bye`` (and as a safety net, from the
-``serve()`` handler when the connection closes abnormally). The set is
+called from ``GatewayCore._close_session``, which runs both on ``bye``
+and — the load-bearing path — from ``GatewayCore.on_disconnect`` in the
+transport's ``finally`` block. ``bye`` is unreliable (a WebSocket drop
+writes it into a dead socket), so without the disconnect path an abrupt
+disconnect leaks the session id here forever. The set is
 process-wide, in-memory; multi-process deployments would need a
 shared registry (Redis, ZooKeeper) — YAGNI for v1.
 """

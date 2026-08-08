@@ -17,6 +17,7 @@ import time
 
 from aiohttp import web
 
+from opensapien_server.contracts.clock import SystemClock
 from opensapien_server.events.store import EventStore
 from opensapien_server.http.auth import bearer_auth_middleware
 from opensapien_server.sessions.index import SessionIndex
@@ -39,6 +40,15 @@ def build_app(
     command_store=None,
     command_dispatcher=None,
     speaker_registry=None,
+    segment_index=None,
+    segment_meta=None,
+    audio_store=None,
+    settings_store=None,
+    liveness=None,
+    capability_provider=None,
+    clock=None,
+    reconciler=None,
+    memory_index=None,
 ):
     """Build the OpenSapien HTTP control API.
 
@@ -72,6 +82,18 @@ def build_app(
     app["sense_command_store"] = command_store
     app["sense_command_dispatcher"] = command_dispatcher
     app["sense_speaker_registry"] = speaker_registry
+    app["sense_segment_index"] = segment_index
+    app["sense_segment_meta"] = segment_meta
+    app["sense_audio_store"] = audio_store
+    app["sense_settings_store"] = settings_store
+    app["sense_liveness"] = liveness
+    app["sense_capability_provider"] = capability_provider
+    # Defaulted rather than left None: POST /commands needs a clock to stamp
+    # issued_at/expires_at, and a wall clock has no configuration worth
+    # forcing every caller to supply. Tests inject a FakeClock.
+    app["sense_clock"] = clock if clock is not None else SystemClock()
+    app["sense_reconciler"] = reconciler
+    app["sense_memory_index"] = memory_index
 
     from opensapien_server.http.routes.provisioning import add_routes as add_provisioning
     from opensapien_server.http.routes.sessions import add_routes as add_sessions
@@ -81,14 +103,20 @@ def build_app(
     from opensapien_server.http.routes.metrics_route import add_routes as add_metrics_route
     from opensapien_server.http.routes.commands import add_routes as add_commands
     from opensapien_server.http.routes.speakers import add_routes as add_speakers
+    from opensapien_server.http.routes.segments import add_routes as add_segments
+    from opensapien_server.http.routes.settings import add_routes as add_settings
+    from opensapien_server.http.routes.device import add_routes as add_device
 
     add_provisioning(app)
     add_sessions(app)
+    add_segments(app)
     add_status(app)
     add_agent(app)
     add_memory(app)
     add_metrics_route(app)
     add_speakers(app)
+    add_settings(app)
+    add_device(app)
     if command_store is not None and command_dispatcher is not None:
         add_commands(app)
     return app

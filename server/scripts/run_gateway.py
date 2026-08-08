@@ -42,7 +42,10 @@ from opensapien_server.events.store import SqliteEventStore
 from opensapien_server.gateway.adapter import build_pipeline_factory, serve
 from opensapien_server.gateway.core import ProactiveOutbox
 from opensapien_server.http.app import build_app
+from opensapien_server.media.audio import AudioStore
+from opensapien_server.media.retention import RetentionSweeper
 from opensapien_server.memory.atom import MemoryAtom  # noqa: F401  (used in stage wiring)
+from opensapien_server.memory.backfill import backfill_occurred_at
 from opensapien_server.memory.embeddings import OpenAICompatibleEmbedder
 from opensapien_server.memory.extract import LLMExtractor
 from opensapien_server.memory.llm import OpenAICompatibleChatModel
@@ -59,8 +62,15 @@ from opensapien_server.memory.stages import (
     VersionStampStage,
 )
 from opensapien_server.memory.store import SqliteAtomStore
+from opensapien_server.gateway.liveness import DeviceLiveness
 from opensapien_server.sessions.index import SessionIndex
 from opensapien_server.sessions.lifecycle import SessionLifecycle
+from opensapien_server.sessions.segment_meta import SqliteSegmentMetaStore
+from opensapien_server.sessions.segments import SegmentIndex
+from opensapien_server.sessions.sweeper import SegmentSweeper
+from opensapien_server.sessions.titler import SegmentTitler
+from opensapien_server.settings.reconciler import DeviceReconciler
+from opensapien_server.settings.store import SqliteSettingsStore
 
 
 def main() -> None:
@@ -114,6 +124,27 @@ def main() -> None:
     session_index.rebuild_from_store(store)
     session_lifecycle = SessionLifecycle()
 
+    # Segments (spec §2.1): the derived "recording" the app actually lists.
+    # Same cold-start story as the session index, and safe for the same
+    # reason — segment ids are deterministic, so the durable titles keyed by
+    # them survive the rebuild.
+    segment_index = SegmentIndex()
+    segment_index.rebuild_from_store(store)
+    segment_meta = SqliteSegmentMetaStore(
+        args.db.replace("events.db", "segment_meta.db")
+    )
+    # Device liveness (spec §5.1): the connection-freshness signal behind
+    # /device/status. Written by the gateway, read by HTTP.
+    liveness = DeviceLiveness()
+    # Audio plane (spec §3.1): a per-session Opus frame log next to the
+    # databases. Raw frames on write; the Ogg container is built on read.
+    audio_store = AudioStore(Path(args.db).parent / "audio")
+    # Settings are durable desired state (spec D2): a command-only toggle is
+    # dead whenever the device is offline, which is most of the time.
+    settings_store = SqliteSettingsStore(
+        args.db.replace("events.db", "settings.db")
+    )
+
     # Memory pipeline (M4.4 wiring): the gateway offloads extraction +
     # embedding + indexing to an out-of-band worker so the audio hot path
     # stays real-time. The enqueuer is the only seam the gateway hot path
@@ -121,6 +152,10 @@ def main() -> None:
     # recorder is process-wide so /metrics reflects the same numbers.
     metrics = InMemoryMetricsRecorder()
     atom_store = SqliteAtomStore(args.db.replace("events.db", "atoms.db"))
+    # Spec §1.1: give historical atoms their real conversation time, joined
+    # from the source capture event. Idempotent and best-effort — a row that
+    # can't be resolved keeps the created_at fallback.
+    backfill_occurred_at(store, atom_store)
     memory_index = SqliteMemoryIndex(args.db.replace("events.db", "memory_index.db"))
     # Speaker recognition: a Sqlite registry + an identifier wired into the
     # pipeline only when OPENSAPIEN_SPEAKER_ENABLED=true. Off by default — when
@@ -168,6 +203,14 @@ def main() -> None:
         embedding=EmbeddingStage(embedder=embedder),
         indexing=IndexingStage(index=memory_index),
         store=atom_store,
+    )
+    # Segment close is clock-driven, not event-driven (spec §2.1) — "no
+    # transcript for five minutes" cannot be observed by waiting for the next
+    # transcript. The sweep also owns titling, because "just closed" is when
+    # a segment is both complete and worth naming.
+    segment_sweeper = SegmentSweeper(
+        index=segment_index,
+        titler=SegmentTitler(events=store, meta=segment_meta, llm_chat=llm_chat),
     )
     enqueuer = ExtractionEnqueuer(capacity=1024, metrics=metrics)
     worker = ExtractionWorker(
@@ -278,6 +321,17 @@ def main() -> None:
         plan_timeout_s=plan_timeout_from_env(__import__("os").environ),
     )
 
+    # Convergence loop for device-level settings (spec §4.2). Shares the
+    # agent's dispatcher/ids/clock so a reconciler-issued command is
+    # indistinguishable from any other — same signing, same audit trail.
+    reconciler = DeviceReconciler(
+        settings=settings_store,
+        dispatcher=dispatcher,
+        ids=UuidIdGenerator(),
+        clock=SystemClock(),
+        capability_provider=ConstantCapabilityProvider(),
+    )
+
     token = load_or_create_token(args.token_file)
     # Thread the whisper noise-filter thresholds into the streaming
     # transcriber backend.
@@ -289,6 +343,12 @@ def main() -> None:
             model=args.model,
             whisper_config=agent_config.whisper,
             speaker_identifier=speaker_identifier,
+            audio_store=audio_store,
+            # `save_audio` is read once at factory build; `audio_enabled` is
+            # read per packet, because it is the backstop for a toggle the
+            # user can flip while the device is streaming (spec §4.1).
+            persist_audio=settings_store.get().capture.save_audio,
+            audio_enabled=lambda: settings_store.get().capture.audio_enabled,
         )
     factory = _make_factory()
     app = build_app(
@@ -309,6 +369,20 @@ def main() -> None:
         id_generator=UuidIdGenerator(),
         command_store=command_store,
         command_dispatcher=dispatcher,
+        segment_index=segment_index,
+        segment_meta=segment_meta,
+        audio_store=audio_store,
+        settings_store=settings_store,
+        liveness=liveness,
+        reconciler=reconciler,
+        capability_provider=ConstantCapabilityProvider(),
+        memory_index=memory_index,
+        clock=SystemClock(),
+    )
+    # Tiered retention (spec D8): audio expires, derived text is kept. The
+    # asymmetry must be stated plainly in the app's privacy copy.
+    retention_sweeper = RetentionSweeper(
+        audio_store=audio_store, settings_store=settings_store,
     )
 
     async def main_loop() -> None:
@@ -320,6 +394,8 @@ def main() -> None:
             # Start the extraction worker so enqueued sessions are
             # processed in the background.
             await worker.start()
+            await segment_sweeper.start()
+            await retention_sweeper.start()
             # P3: register the proactive engine as a worker listener.
             # The engine is fire-and-forget from the worker's POV, so
             # this never blocks extraction.
@@ -368,8 +444,13 @@ def main() -> None:
                 speaker_registry=speaker_registry,
                 atom_store=atom_store,
                 speaker_nudge=speaker_nudge,
+                segment_index=segment_index,
+                liveness=liveness,
+                reconciler=reconciler,
             )
         finally:
+            await retention_sweeper.stop()
+            await segment_sweeper.stop()
             await worker.stop()
             await http_runner.cleanup()
 

@@ -190,6 +190,10 @@ class ExtractionStage:
                         kind=memory.kind,
                         text=memory.text,
                         created_at=now,
+                        # Conversation time (spec D6): when the window's last
+                        # transcript was captured, not when this batch ran.
+                        # `now` can be hours or days later.
+                        occurred_at=last.created_at,
                         start_ms=last.start_ms,
                         speaker=(majority.speaker_id if majority else None),
                         speaker_confidence=(majority.confidence if majority else None),

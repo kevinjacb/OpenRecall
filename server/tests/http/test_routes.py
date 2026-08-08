@@ -87,10 +87,16 @@ async def test_memory_search_returns_results():
 
 
 @pytest.mark.asyncio
-async def test_memory_search_400_without_q():
+async def test_memory_without_q_lists_instead_of_400():
+    """Spec §1.2 replaced the 400: no `q` now means list mode.
+
+    The Memories tab has no search box on first paint, so an empty query
+    used to make the whole page unrenderable.
+    """
     status, body, _ = await _get(_build_app(StaticRetriever([]), InMemoryAtomStore(), InMemoryMetricsRecorder()), "/memory")
-    assert status == 400
-    assert body["code"] == "bad_request"
+    assert status == 200
+    assert body["atoms"] == []
+    assert body["next_cursor"] is None
 
 
 @pytest.mark.asyncio

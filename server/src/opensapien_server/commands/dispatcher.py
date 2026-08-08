@@ -98,6 +98,23 @@ class CommandDispatcher:
             self._store.save(self._record(command.command_id))
         return signed
 
+    def find_by_idempotency_key(self, key: str) -> str | None:
+        """The id of a live (unacked) command already holding ``key``, if any.
+
+        :meth:`issue` absorbs a duplicate silently — it returns the original
+        signed command either way — so from the outside a caller cannot tell
+        an absorbed retry from a newly-created command. The HTTP layer needs
+        that distinction to answer 200 rather than 201, and the mapping lives
+        here, so the question is answered here rather than reconstructed from
+        the persisted records (which do not carry the key).
+        """
+        if not key:
+            return None
+        existing_id = self._idem.get(key)
+        if existing_id is None or existing_id in self._acked:
+            return None
+        return existing_id
+
     def _record(self, command_id: str) -> 'CommandRecord':
         if command_id not in self._signed:
             raise KeyError(f'unknown command {command_id!r}')

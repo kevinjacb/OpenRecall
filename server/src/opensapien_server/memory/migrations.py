@@ -48,6 +48,31 @@ def migrate_memory_atoms_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def migrate_memory_atoms_occurred_at(conn: sqlite3.Connection) -> None:
+    """Add ``occurred_at`` (conversation time, spec D6) to ``memory_atoms``.
+
+    Nullable rather than ``NOT NULL DEFAULT``: the column's whole point is
+    that it can be *unknown* for a row written before it existed, and
+    ``MemoryAtom.timeline_at`` is the one place that resolves the fallback
+    to ``created_at``. Seeding the column with ``created_at`` at migration
+    time instead would make a guess indistinguishable from a real value.
+
+    The index is ``(occurred_at, atom_id)`` — the exact keyset order the
+    list endpoint pages on, so a page is an index range scan and the
+    tiebreaker never falls back to a sort.
+
+    Idempotent via ``PRAGMA table_info``. Safe to call on every startup.
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_atoms)")}
+    if "occurred_at" not in existing:
+        conn.execute("ALTER TABLE memory_atoms ADD COLUMN occurred_at TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_atoms_occurred "
+        "ON memory_atoms (occurred_at, atom_id)"
+    )
+    conn.commit()
+
+
 def migrate_capture_events_table(conn: sqlite3.Connection) -> None:
     """Add the three speaker columns to ``capture_events`` if absent.
 

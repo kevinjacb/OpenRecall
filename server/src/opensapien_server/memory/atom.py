@@ -26,8 +26,20 @@ class MemoryAtom(BaseModel):
     source_event_id: str  # provenance back into the §F event log
     kind: str
     text: str
-    created_at: datetime
+    created_at: datetime  # when the *server* learned this — extraction wall clock
     start_ms: int  # offset within the session timeline (from the source event)
+    # When the thing being remembered was actually *said* — the source
+    # capture event's wall clock (spec D6). Extraction runs in batch after
+    # the fact, so `created_at` is when the server learned something: last
+    # night's session extracted this morning would report as "added today"
+    # and every atom in it would share one timestamp. Every ordering and
+    # counting surface the app sees uses `occurred_at`; `created_at` stays
+    # on the wire for debugging.
+    #
+    # Nullable for atoms written before this field existed (and by callers
+    # that have no source event to date). Read through `timeline_at`, which
+    # falls back to `created_at`, rather than touching this directly.
+    occurred_at: datetime | None = None
     extraction_version: str = "v1"
     embedding_model: str = ""
     embedding_version: int = 0
@@ -36,6 +48,16 @@ class MemoryAtom(BaseModel):
     speaker: str | None = None  # majority speaker UUID for the extraction window
     speaker_confidence: float | None = None
     speaker_assignment: str | None = None  # "confirmed" | "tentative" | "none"
+
+    @property
+    def timeline_at(self) -> datetime:
+        """Conversation time for this atom — ``occurred_at`` or ``created_at``.
+
+        The single accessor for "when did this happen", so the fallback for
+        pre-``occurred_at`` rows lives in one place instead of at every
+        ordering, filtering and counting call site.
+        """
+        return self.occurred_at or self.created_at
 
     def to_provenance(self) -> "Provenance":
         """Return a structured ``Provenance`` view of this atom's origin.

@@ -49,6 +49,9 @@ if TYPE_CHECKING:
     from ..memory.extraction_worker import ExtractionEnqueuer
     from ..memory.speaker_registry import SpeakerRegistry
     from ..memory.store import AtomStore
+    from ..sessions.segments import SegmentIndex
+    from ..settings.reconciler import DeviceReconciler
+    from .liveness import DeviceLiveness
 
 Outbound = Union[Ack, RequestChunks, TranscriptMsg, CommandMessage, ProactiveMessage]
 PipelineFactory = Callable[[int], AudioIngestPipeline]
@@ -156,11 +159,17 @@ class GatewayCore:
         proactive_outbox: ProactiveOutbox | None = None,
         speaker_registry: "SpeakerRegistry | None" = None,
         atom_store: "AtomStore | None" = None,
+        segment_index: "SegmentIndex | None" = None,
+        reconciler: "DeviceReconciler | None" = None,
+        liveness: "DeviceLiveness | None" = None,
     ) -> None:
+        self._reconciler = reconciler
+        self._liveness = liveness
         self._factory = pipeline_factory
         self._store = event_store
         self._dispatcher = dispatcher
         self._session_index = session_index
+        self._segment_index = segment_index
         self._session_lifecycle = session_lifecycle
         self._enqueuer = enqueuer
         self._proactive_outbox = proactive_outbox
@@ -196,6 +205,12 @@ class GatewayCore:
             )
             return []
 
+        # Every inbound audio frame passes through here, gap markers
+        # included, which is what makes this a heartbeat rather than a
+        # speech detector (spec §5.1). Stamped before parsing: a packet we
+        # could not decode still proves the device is alive and reaching us.
+        if self._liveness is not None:
+            self._liveness.packet_received()
         packet = AudioPacket.parse(data)
         logger.info(
             "audio: session=%s chunk_seq=%d frames=%d vad=%s",
@@ -248,6 +263,11 @@ class GatewayCore:
     def _on_hello(self, msg: Hello) -> list[Outbound]:
         self._session_id = msg.session_id
         self._pipeline = self._factory(msg.start_seq)
+        # The factory only knows start_seq; the session id arrives here, and
+        # the audio log is keyed by it (spec §3.1).
+        bind = getattr(self._pipeline, "set_audio_target", None)
+        if bind is not None:
+            bind(msg.session_id)
         # Continue the per-session event counter past any events already in the
         # store for this session. The BLE relay does NOT replay on reconnect —
         # it resumes at the device's current chunk_seq (a boot-relative
@@ -272,23 +292,62 @@ class GatewayCore:
             logger.info("hello: session=%s start_seq=%d (fresh)", msg.session_id, msg.start_seq)
         if self._session_lifecycle is not None:
             self._session_lifecycle.register(msg.session_id)
+        # The device just became reachable, which is the moment to converge
+        # it on the settings the user chose while it was offline (spec §4.2).
+        # Issued before _pending_commands so a freshly-issued reconcile
+        # command rides out on this same hello rather than waiting for the
+        # next ack round trip.
+        if self._reconciler is not None:
+            try:
+                self._reconciler.reconcile()
+            except Exception:
+                # Reconciliation is a convergence mechanism, not a
+                # precondition for streaming. A failure must not refuse the
+                # connection; the next hello retries.
+                logger.exception("reconcile_on_hello_failed session=%s", msg.session_id)
         # initial sync: ack the cursor, then hand over any commands awaiting this session
         return [Ack(session_id=msg.session_id, next_seq=msg.start_seq), *self._pending_commands()]
 
     def _on_command_ack(self, msg: CommandAck) -> list[Outbound]:
         if self._dispatcher is None:
             raise GatewayError("command_ack received but no dispatcher is configured")
+        # Capture the type before acking: the ack is the only evidence the
+        # device actually changed state, and it is what stops the reconciler
+        # re-issuing on every reconnect (spec §4.2).
+        acked_type = self._command_type(msg.command_id)
         self._dispatcher.ack(msg.command_id)
+        if self._reconciler is not None and acked_type is not None:
+            try:
+                self._reconciler.note_acked(acked_type)
+            except Exception:
+                logger.exception("reconcile_note_ack_failed command=%s", msg.command_id)
         return list(self._pending_commands())  # pull the remainder
 
+    def _command_type(self, command_id: str) -> str | None:
+        for signed in self._dispatcher.pending():
+            if signed.command.command_id == command_id:
+                return signed.command.type
+        return None
+
     def _pending_commands(self) -> list[CommandMessage]:
-        """Signed commands still awaiting *this* session, as §E command messages."""
+        """Signed commands awaiting this session, as §E command messages.
+
+        A command with an **empty** ``session_id`` is *unbound*: "the device,
+        whenever it is next connected" (spec D3). HTTP callers can only issue
+        unbound commands, because session ids are relay-minted UUIDs that are
+        never surfaced over HTTP — so before this, a Settings toggle had no
+        correct value to target and its command was undeliverable.
+
+        The live session id is stamped into the outgoing message here. The
+        *signed* payload keeps the empty value, so the signature still
+        verifies — safe because the firmware never reads ``session_id``.
+        """
         if self._dispatcher is None or self._session_id is None:
             return []
         return [
             CommandMessage(session_id=self._session_id, **signed.to_wire())
             for signed in self._dispatcher.pending()
-            if signed.command.session_id == self._session_id
+            if signed.command.session_id in ("", self._session_id)
         ]
 
     def _on_bye(self, msg: Bye) -> list[Outbound]:
@@ -297,8 +356,7 @@ class GatewayCore:
         flushed = list(self._emit(self._pipeline.flush()))
         logger.info("bye: session=%s flushed %d final transcript(s)", msg.session_id, len(flushed))
         closing_session = self._session_id
-        if self._session_lifecycle is not None:
-            self._session_lifecycle.deregister(closing_session)
+        self._close_session(closing_session)
         # Bug C: the live extraction path held the trailing still-growing 60s
         # window back (finalize=False). The session ending is the signal to
         # finalize it — enqueue a finalize=True pass so the trailing partial
@@ -311,6 +369,42 @@ class GatewayCore:
         self._session_id = None
         self._pipeline = None
         return flushed
+
+    def _close_session(self, session_id: str) -> None:
+        """Release a session's connection-scoped state (spec §0.1, §0.2).
+
+        Deregisters it from the lifecycle registry (so ``activeSessions``
+        deflates and §5.2's "409 while open" does not make the session
+        permanently undeletable) and stamps ``ended_at`` on its summary.
+        Both are idempotent, which is what lets ``bye`` and the transport's
+        ``finally`` block both call this.
+        """
+        if self._session_lifecycle is not None:
+            self._session_lifecycle.deregister(session_id)
+        if self._session_index is not None:
+            self._session_index.mark_closed(session_id, datetime.now(timezone.utc))
+        # Best-effort accelerator only: the idle sweep closes the same
+        # segment moments later, which is what keeps §2.1 correct when the
+        # connection dies without a bye.
+        if self._segment_index is not None:
+            self._segment_index.close_session(session_id)
+
+    def on_disconnect(self) -> None:
+        """Everything the transport must do when a connection ends.
+
+        ``bye`` is unreliable (spec §0.3): on a WebSocket drop the relay
+        writes it into an already-dead socket, so the server usually never
+        sees it. The transport's ``finally`` block is therefore the only
+        close signal that always fires, and it owns the full teardown —
+        finalize the trailing extraction window, deregister the session,
+        and close its summary.
+
+        A no-op for a session that already said ``bye`` (which cleared
+        ``_session_id``) or never said ``hello``.
+        """
+        self.finalize_pending_session()
+        if self._session_id is not None:
+            self._close_session(self._session_id)
 
     def finalize_pending_session(self) -> None:
         """Finalize the trailing extraction window of the still-open session.
@@ -367,6 +461,13 @@ class GatewayCore:
                 stored = self._store.append(event)
             if stored and self._session_index is not None:
                 self._session_index.record(event)
+            # Segments are cut from the same event stream (spec §2.1). Fed
+            # here rather than from a separate consumer so the index the app
+            # reads can never lag the events it is derived from.
+            if stored and self._segment_index is not None:
+                self._segment_index.record(event)
+            if stored and self._liveness is not None:
+                self._liveness.transcript_emitted()
             # M4.3 wiring: every successful event append enqueues the
             # session for the background ExtractionWorker. The enqueuer
             # is bounded and dedupes, so this is safe per-transcript.

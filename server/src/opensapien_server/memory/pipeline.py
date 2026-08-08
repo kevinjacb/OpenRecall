@@ -56,6 +56,7 @@ class ExtractionPipeline:
                     kind=memory.kind,
                     text=memory.text,
                     created_at=self._clock(),
+                    occurred_at=event.created_at,  # conversation time (spec D6)
                     start_ms=event.start_ms,
                 )
                 self._atoms.append(atom)
