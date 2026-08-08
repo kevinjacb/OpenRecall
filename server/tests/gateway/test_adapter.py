@@ -22,8 +22,20 @@ class FakeDecoder:
 
 
 class FakeTranscriber:
+    """Returns a distinct string per call so each hop emits a new segment.
+
+    A constant string would be collapsed by the streaming transcriber's
+    cross-hop short-phrase dedup (the phantom-repeat defense) — which is
+    covered in test_streaming.py, not here. Here we want one transcript per
+    hop to verify the routing/plumbing contract.
+    """
+
+    def __init__(self) -> None:
+        self._n = 0
+
     def transcribe(self, pcm: bytes, sample_rate: int) -> str:
-        return "hello"
+        self._n += 1
+        return f"hello {self._n}"
 
 
 def make_core(window_ms: int = 100) -> GatewayCore:
@@ -67,9 +79,10 @@ def test_text_frame_is_routed_to_control_and_replies_are_json_strings():
 def test_binary_frame_is_routed_to_audio():
     """Under the streaming pipeline, 5 frames @ hop=20ms = 5 transcripts.
 
-    The str-returning FakeTranscriber returns "hello" each call, so
-    each hop produces a new committed segment (no dedup because the
-    start_ms is the trailing edge of an ever-growing buffer).
+    The str-returning FakeTranscriber returns a distinct string each call,
+    so each hop produces a new committed segment (the str adapter's start_ms
+    is the trailing edge of an ever-growing buffer, advancing past the
+    committed cursor every hop).
     """
     core = make_core(window_ms=100)
     handle_message(core, '{"type": "hello", "session_id": "s1", "start_seq": 0}')
@@ -80,6 +93,34 @@ def test_binary_frame_is_routed_to_audio():
     transcripts = [m for m in parsed if m["type"] == "transcript"]
     acks = [m for m in parsed if m["type"] == "ack"]
     assert len(transcripts) == 5
-    assert all(t["text"] == "hello" for t in transcripts)
+    assert [t["text"] for t in transcripts] == [f"hello {i}" for i in range(1, 6)]
     assert all(t["duration_ms"] == 20 for t in transcripts)
     assert acks == [{"type": "ack", "session_id": "s1", "next_seq": 1}]
+
+
+def test_build_pipeline_factory_threads_all_whisper_config_fields():
+    """build_pipeline_factory reads every WhisperConfig field at call time
+    (not deferred into the mlx-needing factory closure), so a typo in an
+    attribute name raises immediately. This pins the threading and guards
+    against silent default-fallback on a renamed field."""
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+
+    cfg = load_agent_config({
+        "OPENRECALL_WHISPER_NO_SPEECH_THRESHOLD": "0.7",
+        "OPENRECALL_WHISPER_LOGPROB_THRESHOLD": "-0.8",
+        "OPENRECALL_WHISPER_COMPRESSION_RATIO_THRESHOLD": "3.0",
+        "OPENRECALL_WHISPER_CONDITION_ON_PREVIOUS_TEXT": "true",
+        "OPENRECALL_WHISPER_HALLUCINATION_BLOCKLIST_ENABLED": "false",
+        "OPENRECALL_WHISPER_HALLUCINATION_MAX_WORDS": "6",
+        "OPENRECALL_WHISPER_HALLUCINATION_PHRASES": "thank you, hello",
+        "OPENRECALL_WHISPER_VAD_MODE": "webrtc",
+        "OPENRECALL_WHISPER_VAD_AGGRESSIVENESS": "2",
+    })
+    # Returns a factory closure; building it must not raise (all attr names
+    # are valid). It must NOT call the mlx/opus lazy imports.
+    factory = build_pipeline_factory(whisper_config=cfg.whisper)
+    assert callable(factory)
+
+    # No-config path (whisper_config=None) also yields a factory using defaults.
+    assert callable(build_pipeline_factory(whisper_config=None))

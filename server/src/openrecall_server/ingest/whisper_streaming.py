@@ -21,10 +21,14 @@ Install the extra and run on the Mac:
 """
 from __future__ import annotations
 
+import logging
+import math
 from collections.abc import Callable
 from typing import Any
 
 from .streaming_transcriber import Token
+
+logger = logging.getLogger(__name__)
 
 # int16 full-scale; PCM bytes -> float32 in [-1, 1) for Whisper.
 _INT16_FULL_SCALE = 32768.0
@@ -109,10 +113,79 @@ def _is_hallucinated_repetition(words: list[dict]) -> bool:
     )
 
 
+# --- short-phrase hallucination blocklist ------------------------------------
+# The repetition detector above catches a *long* looping segment. Whisper's
+# other near-silence failure mode is the opposite: a *short, single, confident*
+# training phrase — "Thank you.", "Hello.", "Thanks for watching." — emitted
+# on room noise the firmware VAD admitted. These pass no_speech_prob /
+# avg_logprob (they ARE confident predictions), so the confidence gate lets
+# them through and they get stored as phantom transcripts. The blocklist drops
+# a SHORT segment whose normalized text matches a known phantom. The word-
+# count gate keeps a real sentence that merely contains "thank you".
+#
+# Built from Whisper's documented silent-audio hallucinations + the phrases
+# this device's user observed in production. Tunable via
+# ``OPENRECALL_WHISPER_HALLUCINATION_PHRASES`` (comma-separated; overrides).
+#
+# Deliberately EXCLUDES bare common greetings ("hello", "hi"): a text
+# blocklist cannot tell a real isolated greeting from a phantom one, and
+# dropping a real "Hello." is a worse failure mode than the user fixing
+# the phantom case with one env line. "thank you" is included because the
+# user reported it and an isolated "thank you." on a memory wearable is
+# far more often a sign-off phantom than real speech. To block "hello" on
+# a device that hallucinates it, set OPENRECALL_WHISPER_HALLUCINATION_PHRASES
+# to the full desired list, or enable the spectral VAD gate (vad_mode).
+_DEFAULT_HALLUCINATION_PHRASES = (
+    "thank you",
+    "thanks for watching",
+    "thank you for watching",
+    "thanks for listening",
+    "thank you for listening",
+    "please subscribe",
+    "please consider subscribing",
+    "subscribe",
+    "by amara",
+    "amara",
+)
+
+
+def _normalize_phrase(text: str) -> str:
+    """Normalize a transcript phrase for blocklist matching: lowercase, strip
+    leading/trailing punctuation, collapse internal whitespace. Idempotent
+    so pre-normalized inputs (already lowercase) are unchanged."""
+    stripped = text.strip().lower()
+    # Strip the punctuation Whisper loves to append: . , ! ? ; : and quotes.
+    stripped = stripped.strip(".,!?;:'\"-()[]{}“”")
+    # Collapse runs of whitespace (mlx word-tokens join with single spaces, but
+    # be robust to any internal spacing).
+    return " ".join(stripped.split())
+
+
+def _resolve_blocklist(
+    enabled: bool,
+    phrases: tuple[str, ...] | None,
+) -> frozenset[str] | None:
+    """Build the normalized blocklist frozenset, or None when disabled.
+
+    ``None`` means "do not apply the blocklist" (the per-segment check is
+    skipped). An explicit empty tuple means "block nothing" (a deliberate
+    operator override) and yields an empty frozenset, which the caller's
+    ``in`` test handles correctly (matches nothing).
+    """
+    if not enabled:
+        return None
+    src = phrases if phrases is not None else _DEFAULT_HALLUCINATION_PHRASES
+    return frozenset(_normalize_phrase(p) for p in src)
+
+
 def _mlx_segments_to_tokens(
     response: dict,
     no_speech_threshold: float = 0.6,
     logprob_threshold: float = -1.0,
+    compression_ratio_threshold: float = 2.4,
+    hallucination_blocklist_enabled: bool = True,
+    hallucination_max_words: int = 4,
+    hallucination_phrases: tuple[str, ...] | None = None,
 ) -> list[Token]:
     """Translate mlx-whisper's output dict into a flat list of Tokens.
 
@@ -122,12 +195,20 @@ def _mlx_segments_to_tokens(
     confuse the streaming wrapper's dedup cursor.
 
     **Noise filtering** (server-side defense against quiet-input
-    hallucination): a segment is dropped if either
-    ``no_speech_prob > no_speech_threshold`` (mlx is confident the
-    audio is silence) OR
-    ``avg_logprob < logprob_threshold`` (mlx is uncertain about
-    what it heard). A missing field is treated as low-risk
-    (conservatively kept) so older mlx-whisper versions still work.
+    hallucination): a segment is dropped if any of these hold:
+
+    - ``no_speech_prob > no_speech_threshold`` (mlx is confident the
+      audio is silence),
+    - ``avg_logprob < logprob_threshold`` (mlx is uncertain about what
+      it heard),
+    - ``compression_ratio > compression_ratio_threshold`` (the segment
+      is too repetitive — a gzip-ratio hallucination signature), or
+    - it is a *short* segment (``<= hallucination_max_words`` words)
+      whose normalized text matches a known hallucination phrase in
+      the blocklist.
+
+    A missing field is treated as low-risk (conservatively kept) so
+    older mlx-whisper versions still work.
 
     Note: mlx-whisper prefixes non-first word-tokens with a single
     space (a tokenization marker, NOT content). The streaming wrapper
@@ -135,6 +216,9 @@ def _mlx_segments_to_tokens(
     the word boundary — it reconstructs ``"Hello, world!"`` from
     ``["Hello,", " world!"]``. We preserve the leading space here.
     """
+    blocklist = _resolve_blocklist(
+        hallucination_blocklist_enabled, hallucination_phrases,
+    )
     tokens: list[Token] = []
     for seg in response.get("segments", []):
         # Per-segment confidence gating. Missing fields are treated as
@@ -146,11 +230,28 @@ def _mlx_segments_to_tokens(
         avg_logprob = seg.get("avg_logprob")
         if avg_logprob is not None and avg_logprob < logprob_threshold:
             continue
+        # compression_ratio: mlx already applies this as a temperature
+        # fallback, but a segment can still surface with a high ratio
+        # (e.g. after the fallback gives up). Drop it as a backstop.
+        compression_ratio = seg.get("compression_ratio")
+        if compression_ratio is not None and compression_ratio > compression_ratio_threshold:
+            continue
         # Repeated-token hallucination: a real word looped on near-silence
         # has good confidence signals, so the checks above let it through.
         # Drop the whole segment if its words are unambiguously repetitive.
         if _is_hallucinated_repetition(seg.get("words") or []):
             continue
+        # Short-phrase blocklist: a short, confident phantom ("Thank you.",
+        # "Hello.") on noise. Gated on word count so a real sentence that
+        # contains the phrase is kept.
+        if blocklist is not None:
+            seg_words = seg.get("words") or []
+            word_count = len(seg_words) or len(seg.get("text", "").split())
+            if (
+                word_count <= hallucination_max_words
+                and _normalize_phrase(seg.get("text", "")) in blocklist
+            ):
+                continue
         for word in seg.get("words") or []:
             text = word.get("word", "")
             if not text:
@@ -206,11 +307,26 @@ class WhisperStreamingBackend:
         model: str = DEFAULT_MODEL,
         no_speech_threshold: float = 0.6,
         logprob_threshold: float = -1.0,
+        compression_ratio_threshold: float = 2.4,
+        condition_on_previous_text: bool = False,
+        hallucination_blocklist_enabled: bool = True,
+        hallucination_max_words: int = 4,
+        hallucination_phrases: tuple[str, ...] | None = None,
     ) -> None:
         self._mlx_transcribe = mlx_transcribe
         self._model = model
         self._no_speech_threshold = no_speech_threshold
         self._logprob_threshold = logprob_threshold
+        self._compression_ratio_threshold = compression_ratio_threshold
+        # condition_on_previous_text=False (the streaming default) stops a
+        # hop's hallucinated output from being fed back as the next hop's
+        # prompt — mlx-whisper's own default of True propagates phantoms
+        # across the rolling window. Each hop carries its own 5s context, so
+        # disabling it does not lose real cross-window continuity here.
+        self._condition_on_previous_text = condition_on_previous_text
+        self._hallucination_blocklist_enabled = hallucination_blocklist_enabled
+        self._hallucination_max_words = hallucination_max_words
+        self._hallucination_phrases = hallucination_phrases
 
     def transcribe(self, pcm: bytes, sample_rate: int) -> list[Token]:
         if sample_rate != 16000:
@@ -237,14 +353,41 @@ class WhisperStreamingBackend:
             word_timestamps=True,
             no_speech_threshold=self._no_speech_threshold,
             logprob_threshold=self._logprob_threshold,
+            compression_ratio_threshold=self._compression_ratio_threshold,
+            condition_on_previous_text=self._condition_on_previous_text,
         )
         tokens = _mlx_segments_to_tokens(
             response,
             no_speech_threshold=self._no_speech_threshold,
             logprob_threshold=self._logprob_threshold,
+            compression_ratio_threshold=self._compression_ratio_threshold,
+            hallucination_blocklist_enabled=self._hallucination_blocklist_enabled,
+            hallucination_max_words=self._hallucination_max_words,
+            hallucination_phrases=self._hallucination_phrases,
         )
-        if tokens:
-            print(
-                f"whisper streaming: {len(audio)} samples -> {len(tokens)} tokens"
-            )
+        # Instrumentation: a debug log so an operator can confirm the false-
+        # positive hypothesis and calibrate the blocklist / thresholds from
+        # real hops. Enable with DEBUG logging on this module. RMS dBFS is
+        # the input's loudness (0 = full scale; the firmware VAD admits frames
+        # down to ~-43 dBFS), no_speech_prob/avg_logprob are mlx's confidence,
+        # and the text is what survived the filters.
+        if logger.isEnabledFor(logging.DEBUG) and response.get("segments"):
+            try:
+                rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+                rms_dbfs = (20.0 * math.log10(rms)) if rms > 0 else -math.inf
+            except Exception:
+                rms_dbfs = 0.0
+            for seg in response.get("segments", []):
+                logger.debug(
+                    "whisper segment: rms_dbfs=%.1f no_speech_prob=%s "
+                    "avg_logprob=%s compression_ratio=%s text=%r",
+                    rms_dbfs,
+                    seg.get("no_speech_prob"),
+                    seg.get("avg_logprob"),
+                    seg.get("compression_ratio"),
+                    seg.get("text", ""),
+                )
+        logger.debug(
+            "whisper streaming: %d samples -> %d tokens", len(audio), len(tokens),
+        )
         return tokens

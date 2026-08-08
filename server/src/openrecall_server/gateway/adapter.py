@@ -127,24 +127,37 @@ def build_pipeline_factory(
     tokens whose start is past the committed cursor.
 
     ``whisper_config`` (a :class:`WhisperConfig`) threads the
-    server-side noise filtering thresholds (no_speech_threshold,
-    logprob_threshold) into the backend. Defaults to mlx-whisper's own
-    defaults (0.6 / -1.0) if not provided.
+    server-side noise filtering thresholds into the backend:
+    ``no_speech_threshold`` / ``logprob_threshold`` (per-segment
+    confidence), ``compression_ratio_threshold`` /
+    ``condition_on_previous_text`` (anti-hallucination), the
+    ``hallucination_blocklist`` (short-phrase phantom drop), and the
+    opt-in ``vad_mode`` / ``vad_aggressiveness`` (pre-Whisper spectral
+    VAD gate). Each defaults to the backend's own default when
+    ``whisper_config`` is None.
 
     Set ``use_streaming=False`` for the legacy hard-cut path (only used
     by tests that pre-date the streaming work).
     """
 
-    no_speech_threshold = (
-        whisper_config.no_speech_threshold
-        if whisper_config is not None
-        else 0.6
-    )
-    logprob_threshold = (
-        whisper_config.logprob_threshold
-        if whisper_config is not None
-        else -1.0
-    )
+    def _cfg(attr: str, default):
+        # When a WhisperConfig is provided it always carries every field
+        # (frozen, extra="forbid"), so a missing attr here is a typo — raise
+        # rather than silently fall back to the default. The default only
+        # applies when whisper_config is None (no config supplied).
+        if whisper_config is None:
+            return default
+        return getattr(whisper_config, attr)
+
+    no_speech_threshold = _cfg("no_speech_threshold", 0.6)
+    logprob_threshold = _cfg("logprob_threshold", -1.0)
+    compression_ratio_threshold = _cfg("compression_ratio_threshold", 2.4)
+    condition_on_previous_text = _cfg("condition_on_previous_text", False)
+    hallucination_blocklist_enabled = _cfg("hallucination_blocklist_enabled", True)
+    hallucination_max_words = _cfg("hallucination_max_words", 4)
+    hallucination_phrases = _cfg("hallucination_phrases", None)
+    vad_mode = _cfg("vad_mode", None)
+    vad_aggressiveness = _cfg("vad_aggressiveness", 3)
 
     def factory(start_seq: int) -> AudioIngestPipeline:
         from ..ingest.opus_decoder import OpusStreamDecoder
@@ -159,18 +172,24 @@ def build_pipeline_factory(
             # underlying model is shared implicitly via mlx-whisper's
             # module-level state. The streaming transcriber owns the
             # rolling PCM buffer and committed cursor.
+            backend_kwargs = dict(
+                no_speech_threshold=no_speech_threshold,
+                logprob_threshold=logprob_threshold,
+                compression_ratio_threshold=compression_ratio_threshold,
+                condition_on_previous_text=condition_on_previous_text,
+                hallucination_blocklist_enabled=hallucination_blocklist_enabled,
+                hallucination_max_words=hallucination_max_words,
+                hallucination_phrases=hallucination_phrases,
+            )
+            if model:
+                backend_kwargs["model"] = model
             transcriber = streaming_from_tokens(
-                WhisperStreamingBackend(
-                    model=model,
-                    no_speech_threshold=no_speech_threshold,
-                    logprob_threshold=logprob_threshold,
-                ) if model else WhisperStreamingBackend(
-                    no_speech_threshold=no_speech_threshold,
-                    logprob_threshold=logprob_threshold,
-                ),
+                WhisperStreamingBackend(**backend_kwargs),
                 sample_rate=16000,
                 hop_ms=hop_ms,
                 window_ms=window_ms,
+                vad_mode=vad_mode,
+                vad_aggressiveness=vad_aggressiveness,
             )
         else:
             transcriber = (

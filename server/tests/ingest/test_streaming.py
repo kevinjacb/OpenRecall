@@ -203,3 +203,108 @@ def test_drops_overlap_beyond_window():
     text = "".join(seg.text for seg in seg2)
     assert "x" not in text
     assert "y" in text
+
+
+# --- cross-hop short-phrase dedup (Fix D) ------------------------------------
+# Whisper hallucinating the same short phrase on consecutive noise hops
+# produces a fresh token each hop at a NEW absolute time (past the committed
+# cursor), so the overlap-zone dedup does NOT catch it — the transcript fills
+# with "Thank you. Thank you. Thank you." The cross-hop dedup collapses a
+# short segment identical to the last EMITTED one.
+
+
+def test_cross_hop_identical_short_phrase_is_deduped():
+    """Three consecutive identical short phantoms collapse to one emit."""
+    whisper = FakeWhisper([
+        [_tok("thank you", 0.0, 0.5)],      # emit; committed_ms -> 500
+        [_tok("thank you", 0.6, 1.0)],      # new (600 >= 500) but dup -> drop
+        [_tok("thank you", 0.6, 1.0)],      # still dup of last emitted -> drop
+        [_tok("real speech here", 0.6, 1.0)],  # different -> emit
+    ])
+    s = streaming_from_tokens(whisper, sample_rate=16000, hop_ms=1000, window_ms=5000)
+    seg1 = s.feed(b"\x00" * 16000)
+    seg2 = s.feed(b"\x00" * 16000)
+    seg3 = s.feed(b"\x00" * 16000)
+    seg4 = s.feed(b"\x00" * 16000)
+    assert seg1[0].text == "thank you"
+    assert seg2 == []   # deduped
+    assert seg3 == []   # deduped (still matches last EMITTED "thank you")
+    assert seg4[0].text == "real speech here"
+
+
+def test_cross_hop_dedup_does_not_advance_committed_cursor():
+    """Dropping a dup must NOT advance the committed cursor, so a later real
+    token that lands inside the phantom's span is still emitted."""
+    whisper = FakeWhisper([
+        [_tok("thank you", 0.0, 0.5)],      # emit; committed_ms = 500
+        [_tok("thank you", 0.6, 1.0)],      # dup -> drop (cursor stays 500)
+        [_tok("okay", 0.55, 0.7)],          # 550 >= 500 -> new, different -> emit
+    ])
+    s = streaming_from_tokens(whisper, sample_rate=16000, hop_ms=1000, window_ms=5000)
+    s.feed(b"\x00" * 16000)
+    s.feed(b"\x00" * 16000)
+    seg3 = s.feed(b"\x00" * 16000)
+    assert seg3[0].text == "okay"
+
+
+def test_cross_hop_dedup_skips_long_phrases():
+    """A long identical phrase repeated across hops is NOT collapsed — long
+    repeats are rare and real, and the repetition filter handles true loops."""
+    long_text = "this is a longer phrase that should not be deduped here at all"
+    whisper = FakeWhisper([
+        [_tok(long_text, 0.0, 0.5)],        # emit; committed_ms = 500
+        [_tok(long_text, 0.6, 1.0)],        # 12 words > _DEDUP_MAX_WORDS -> emit
+    ])
+    s = streaming_from_tokens(whisper, sample_rate=16000, hop_ms=1000, window_ms=5000)
+    seg1 = s.feed(b"\x00" * 16000)
+    seg2 = s.feed(b"\x00" * 16000)
+    assert seg1[0].text == long_text
+    assert seg2[0].text == long_text   # not deduped
+
+
+def test_cross_hop_dedup_normalizes_punctuation():
+    """Different trailing punctuation across hops still counts as a dup."""
+    whisper = FakeWhisper([
+        [_tok("thank you.", 0.0, 0.5)],
+        [_tok("thank you!", 0.6, 1.0)],
+    ])
+    s = streaming_from_tokens(whisper, sample_rate=16000, hop_ms=1000, window_ms=5000)
+    s.feed(b"\x00" * 16000)
+    seg2 = s.feed(b"\x00" * 16000)
+    assert seg2 == []   # "thank you!" normalized == "thank you." -> deduped
+
+
+# --- opt-in webrtcvad gate (Fix A) ------------------------------------------
+
+
+def test_vad_disabled_calls_backend_on_silence():
+    """Default (vad_mode=None): a silent hop still calls the backend (the
+    blocklist/repetition filters handle phantoms, not a pre-gate)."""
+    whisper = FakeWhisper([[_tok("thank you", 0.0, 0.5)], []])
+    s = streaming_from_tokens(whisper, sample_rate=16000, hop_ms=1000, window_ms=5000)
+    segs = s.feed(b"\x00" * 32000)  # 1s of silence
+    assert whisper.calls == 1   # backend WAS called
+    assert segs[0].text == "thank you"   # emitted (no pre-gate)
+
+
+def test_webrtcvad_gate_skips_silent_hop():
+    """With vad_mode='webrtc', a pure-silence hop is skipped before the
+    backend call so Whisper never sees it and can't hallucinate on it.
+    webrtcvad deterministically reports all-zero frames as non-speech."""
+    pytest.importorskip("webrtcvad")
+    whisper = FakeWhisper([[_tok("thank you", 0.0, 0.5)]])
+    s = streaming_from_tokens(
+        whisper, sample_rate=16000, hop_ms=1000, window_ms=5000, vad_mode="webrtc",
+    )
+    segs = s.feed(b"\x00" * 32000)  # 1s of silence
+    assert segs == []
+    assert whisper.calls == 0   # the backend was never called
+
+
+def test_webrtcvad_invalid_aggressiveness_raises():
+    pytest.importorskip("webrtcvad")
+    with pytest.raises(ValueError, match="vad_aggressiveness"):
+        streaming_from_tokens(
+            FakeWhisper([]), sample_rate=16000, hop_ms=1000, window_ms=5000,
+            vad_mode="webrtc", vad_aggressiveness=4,
+        )

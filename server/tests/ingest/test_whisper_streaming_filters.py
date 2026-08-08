@@ -327,6 +327,221 @@ def test_real_speech_plus_hallucination_keeps_real_speech():
     assert [t.text for t in tokens] == ["I", " am", " going", " to", " the", " store", " now"]
 
 
+# --- tests for the short-phrase hallucination blocklist ----------------------
+# Whisper's third failure mode on near-silent / low-SNR audio that the firmware
+# VAD admits: it emits a *short, confident* training phrase ("Thank you.",
+# "Hello.", "Thanks for watching.") with good no_speech_prob / avg_logprob, so
+# the confidence filter above lets it through. The blocklist drops a SHORT
+# segment (<= hallucination_max_words) whose normalized text matches a known
+# phantom. It is gated on word count so a real sentence that contains "thank
+# you" is kept.
+
+
+def test_short_thank_you_segment_is_dropped_by_blocklist():
+    """The user-reported false positive: a 2-word "Thank you." segment on
+    noise, with good confidence signals, must be dropped by the blocklist."""
+    response = _make_mlx_response(_mlx_segment(
+        text="Thank you.",
+        words=[{"word": "Thank", "start": 0.0, "end": 0.2},
+               {"word": " you.", "start": 0.2, "end": 0.4}],
+        no_speech_prob=0.1,   # mlx is "confident" this is speech
+        avg_logprob=-0.3,     # and confident about the words
+    ))
+    tokens = _mlx_segments_to_tokens(response, no_speech_threshold=0.6, logprob_threshold=-1.0)
+    assert tokens == []
+
+
+def test_short_hello_segment_dropped_when_phrase_is_listed():
+    """The user also reported "Hello." on noise. "hello" is NOT in the default
+    blocklist (a real isolated greeting is indistinguishable from a phantom by
+    text alone), so an operator who wants it blocked lists it explicitly —
+    this test exercises that opt-in mechanism."""
+    response = _make_mlx_response(_mlx_segment(
+        text="Hello.",
+        words=[{"word": "Hello.", "start": 0.0, "end": 0.3}],
+        no_speech_prob=0.1, avg_logprob=-0.3,
+    ))
+    # Without the explicit phrase, "hello" is kept (not in the default set).
+    tokens = _mlx_segments_to_tokens(response, no_speech_threshold=0.6, logprob_threshold=-1.0)
+    assert [t.text for t in tokens] == ["Hello."]
+    # With it listed, the short segment is dropped.
+    tokens = _mlx_segments_to_tokens(
+        response, no_speech_threshold=0.6, logprob_threshold=-1.0,
+        hallucination_phrases=("hello",),
+    )
+    assert tokens == []
+
+
+def test_blocklist_normalizes_punctuation_and_case():
+    """"Thanks for watching." with varying punctuation/case still matches."""
+    response = _make_mlx_response(_mlx_segment(
+        text="Thanks for watching.",
+        words=[{"word": "Thanks", "start": 0.0, "end": 0.2},
+               {"word": " for", "start": 0.2, "end": 0.3},
+               {"word": " watching.", "start": 0.3, "end": 0.5}],
+        no_speech_prob=0.1, avg_logprob=-0.3,
+    ))
+    tokens = _mlx_segments_to_tokens(response, no_speech_threshold=0.6, logprob_threshold=-1.0)
+    assert tokens == []
+
+
+def test_long_sentence_containing_thank_you_is_kept():
+    """A real sentence that contains "thank you" is NOT short, so the
+    word-count gate keeps it. Guards against false positives."""
+    response = _make_mlx_response(_mlx_segment(
+        text="Thank you for coming in today",
+        no_speech_prob=0.1, avg_logprob=-0.3,
+    ))
+    tokens = _mlx_segments_to_tokens(response, no_speech_threshold=0.6, logprob_threshold=-1.0)
+    # 6 words > hallucination_max_words default (4) -> kept.
+    assert [t.text for t in tokens] == ["Thank", " you", " for", " coming", " in", " today"]
+
+
+def test_blocklist_disabled_keeps_thank_you():
+    """With hallucination_blocklist_enabled=False the phantom is kept
+    (the operator's escape hatch)."""
+    response = _make_mlx_response(_mlx_segment(
+        text="Thank you.",
+        words=[{"word": "Thank", "start": 0.0, "end": 0.2},
+               {"word": " you.", "start": 0.2, "end": 0.4}],
+        no_speech_prob=0.1, avg_logprob=-0.3,
+    ))
+    tokens = _mlx_segments_to_tokens(
+        response, no_speech_threshold=0.6, logprob_threshold=-1.0,
+        hallucination_blocklist_enabled=False,
+    )
+    assert [t.text for t in tokens] == ["Thank", " you."]
+
+
+def test_blocklist_custom_phrases_override_default():
+    """A custom phrase set replaces the built-in default, so an unlisted
+    phantom is kept and a listed one is dropped."""
+    response_kept = _make_mlx_response(_mlx_segment(
+        text="Thank you.",
+        words=[{"word": "Thank", "start": 0.0, "end": 0.2},
+               {"word": " you.", "start": 0.2, "end": 0.4}],
+        no_speech_prob=0.1, avg_logprob=-0.3,
+    ))
+    tokens = _mlx_segments_to_tokens(
+        response_kept, no_speech_threshold=0.6, logprob_threshold=-1.0,
+        hallucination_phrases=("bye bye",),
+    )
+    # "thank you" not in the custom set -> kept.
+    assert [t.text for t in tokens] == ["Thank", " you."]
+
+    response_dropped = _make_mlx_response(_mlx_segment(
+        text="Bye bye.",
+        words=[{"word": "Bye", "start": 0.0, "end": 0.2},
+               {"word": " bye.", "start": 0.2, "end": 0.4}],
+        no_speech_prob=0.1, avg_logprob=-0.3,
+    ))
+    tokens = _mlx_segments_to_tokens(
+        response_dropped, no_speech_threshold=0.6, logprob_threshold=-1.0,
+        hallucination_phrases=("bye bye",),
+    )
+    assert tokens == []
+
+
+def test_blocklist_respects_max_words_boundary():
+    """A segment with exactly hallucination_max_words words IS gated; one
+    with max_words+1 is not."""
+    response_at = _make_mlx_response(_mlx_segment(
+        text="Thank you.",
+        words=[{"word": "Thank", "start": 0.0, "end": 0.2},
+               {"word": " you.", "start": 0.2, "end": 0.4}],
+        no_speech_prob=0.1, avg_logprob=-0.3,
+    ))
+    # max_words=2 -> "Thank you." (2 words) is gated and dropped.
+    tokens = _mlx_segments_to_tokens(
+        response_at, no_speech_threshold=0.6, logprob_threshold=-1.0,
+        hallucination_max_words=2,
+    )
+    assert tokens == []
+
+
+# --- tests for compression_ratio filtering -----------------------------------
+
+
+def test_segment_with_high_compression_ratio_is_dropped():
+    """A segment whose compression_ratio exceeds the threshold is too
+    repetitive (a hallucination signature); drop it. Missing field = kept."""
+    response = _make_mlx_response(_mlx_segment(
+        text="hello hello hello",
+        words=[{"word": "hello", "start": 0.0, "end": 0.3}],
+        no_speech_prob=0.1, avg_logprob=-0.3,
+    ))
+    response["segments"][0]["compression_ratio"] = 5.0
+    tokens = _mlx_segments_to_tokens(
+        response, no_speech_threshold=0.6, logprob_threshold=-1.0,
+        compression_ratio_threshold=2.4,
+    )
+    assert tokens == []
+
+
+def test_segment_with_low_compression_ratio_is_kept():
+    response = _make_mlx_response(_mlx_segment(
+        text="hello",
+        words=[{"word": "hello", "start": 0.0, "end": 0.3}],
+        no_speech_prob=0.1, avg_logprob=-0.3,
+    ))
+    response["segments"][0]["compression_ratio"] = 1.2
+    tokens = _mlx_segments_to_tokens(
+        response, no_speech_threshold=0.6, logprob_threshold=-1.0,
+        compression_ratio_threshold=2.4,
+    )
+    assert len(tokens) == 1
+
+
+def test_missing_compression_ratio_is_treated_as_low_risk():
+    response = _make_mlx_response(_mlx_segment(text="hello"))
+    tokens = _mlx_segments_to_tokens(
+        response, no_speech_threshold=0.6, logprob_threshold=-1.0,
+        compression_ratio_threshold=2.4,
+    )
+    assert len(tokens) == 1
+
+
+# --- tests for the backend wiring of the new defenses ------------------------
+
+
+def test_backend_passes_compression_ratio_and_condition_to_mlx():
+    """The backend threads compression_ratio_threshold and
+    condition_on_previous_text into the mlx decode call."""
+    fake = FakeMlxWhisper([_make_mlx_response(_mlx_segment(text="x"))])
+    b = WhisperStreamingBackend(
+        mlx_transcribe=fake,
+        compression_ratio_threshold=3.0,
+        condition_on_previous_text=True,
+    )
+    b.transcribe(b"\x00" * 16000, 16000)
+    assert fake.calls[0][2]["compression_ratio_threshold"] == 3.0
+    assert fake.calls[0][2]["condition_on_previous_text"] is True
+
+
+def test_backend_defaults_condition_on_previous_text_false():
+    """The streaming default is condition_on_previous_text=False so a
+    hop's hallucinated output is not fed back as the next hop's prompt."""
+    fake = FakeMlxWhisper([_make_mlx_response(_mlx_segment(text="x"))])
+    b = WhisperStreamingBackend(mlx_transcribe=fake)
+    b.transcribe(b"\x00" * 16000, 16000)
+    assert fake.calls[0][2]["condition_on_previous_text"] is False
+    assert fake.calls[0][2]["compression_ratio_threshold"] == 2.4
+
+
+def test_backend_drops_blocklisted_short_phrase():
+    """End-to-end: the backend drops a short "Thank you." segment produced by
+    the (faked) mlx call."""
+    fake = FakeMlxWhisper([_make_mlx_response(_mlx_segment(
+        text="Thank you.",
+        words=[{"word": "Thank", "start": 0.0, "end": 0.2},
+               {"word": " you.", "start": 0.2, "end": 0.4}],
+        no_speech_prob=0.1, avg_logprob=-0.3,
+    ))])
+    b = WhisperStreamingBackend(mlx_transcribe=fake)
+    tokens = b.transcribe(b"\x00" * 16000, 16000)
+    assert tokens == []
+
+
 # --- tests for the backend wiring -------------------------------------------
 
 

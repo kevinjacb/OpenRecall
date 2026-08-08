@@ -31,6 +31,13 @@ speaker = [
     "resemblyzer>=0.1",
     "numpy>=2",
 ]
+# Opt-in pre-Whisper spectral VAD gate (webrtcvad). Lazy-imported inside
+# StreamingTranscriber so the unit suite and a default install run without
+# it; install to use OPENRECALL_WHISPER_VAD_MODE=webrtc. Skips the Whisper
+# call on pure-noise hops so it can't hallucinate on silence.
+vad = [
+    "webrtcvad>=2.0",
+]
 # Provider-agnostic LLM client (extraction). Works against any OpenAI-compatible
 # endpoint — local (Ollama, mlx_lm.server) or cloud (MiniMax/OpenAI/…).
 llm = [

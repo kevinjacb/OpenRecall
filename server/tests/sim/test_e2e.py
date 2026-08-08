@@ -33,8 +33,19 @@ class FakeDecoder:
 
 
 class FakeTranscriber:
+    """Returns a distinct string per call so each hop emits a new segment.
+
+    A constant string would be collapsed by the streaming transcriber's
+    cross-hop short-phrase dedup (the phantom-repeat defense). Here we want
+    one transcript per hop to verify the end-to-end plumbing.
+    """
+
+    def __init__(self) -> None:
+        self._n = 0
+
     def transcribe(self, pcm: bytes, sample_rate: int) -> str:
-        return "hello world"
+        self._n += 1
+        return f"hello world {self._n}"
 
 
 def factory(start_seq: int) -> AudioIngestPipeline:
@@ -79,19 +90,20 @@ async def test_device_streams_audio_and_executes_a_signed_command():
 
         client = DeviceClient("s1", signer.public_key_bytes)
         # one packet of 5 frames. Under streaming, the FakeTranscriber
-        # returns "hello world" every hop, so the device receives one
+        # returns a distinct string every hop, so the device receives one
         # transcript per hop.
         await run_session(f"ws://127.0.0.1:{port}", client, [[b"opus"] * 5])
 
-        # Streaming + str adapter: every hop emits "hello world"
+        # Streaming + str adapter: every hop emits a distinct transcript
         # because the str adapter's start_ms is the trailing edge of
-        # the ever-growing buffer (no internal dedup of re-transcribed
-        # text without internal timestamps). 5 hops = 5 transcripts.
-        assert client.transcripts == ["hello world"] * 5
+        # the ever-growing buffer (advancing past the committed cursor
+        # each hop). 5 hops = 5 transcripts.
+        expected = [f"hello world {i}" for i in range(1, 6)]
+        assert client.transcripts == expected
         assert [c.command_id for c in client.verified_commands] == ["shoot"]
         assert dispatcher.pending() == []  # the device's ack reached the server
         # The event store keeps one event per committed transcript.
-        assert [e.text for e in events.events("s1")] == ["hello world"] * 5
+        assert [e.text for e in events.events("s1")] == expected
     finally:
         server.cancel()
         with pytest.raises(asyncio.CancelledError):

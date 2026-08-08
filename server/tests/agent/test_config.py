@@ -137,3 +137,107 @@ def test_agent_config_default_load_returns_whisper_defaults():
     cfg = load_agent_config({})
     assert cfg.whisper.no_speech_threshold == 0.6
     assert cfg.whisper.logprob_threshold == -1.0
+
+
+# --- WhisperConfig anti-hallucination fields ---------------------------------
+# Beyond the per-segment no_speech/logprob gates, Whisper has a third failure
+# mode on near-silent / low-SNR audio that the firmware VAD admits: it
+# autoregressively emits a *short, confident* training phrase ("Thank you.",
+# "Hello.", "Thanks for watching.") with good no_speech_prob / avg_logprob, so
+# the confidence filter lets it through. The fields below add three new
+# defenses, all env-tunable:
+#   - a phrase blocklist (drops short segments matching known phantoms),
+#   - compression_ratio_threshold + condition_on_previous_text=False (stops
+#     hallucinations from looping within a segment and propagating across
+#     hops),
+#   - an opt-in spectral VAD gate (webrtcvad) that skips the Whisper call
+#     entirely on pure-noise hops.
+
+
+def test_whisper_anti_hallucination_defaults():
+    cfg = WhisperConfig()
+    assert cfg.compression_ratio_threshold == 2.4
+    assert cfg.condition_on_previous_text is False
+    assert cfg.hallucination_blocklist_enabled is True
+    assert cfg.hallucination_max_words == 4
+    assert cfg.hallucination_phrases is None  # None -> built-in default set
+    assert cfg.vad_mode is None              # None -> VAD gate disabled
+    assert cfg.vad_aggressiveness == 3
+
+
+def test_whisper_compression_ratio_threshold_from_env():
+    cfg = load_agent_config({"OPENRECALL_WHISPER_COMPRESSION_RATIO_THRESHOLD": "3.0"})
+    assert cfg.whisper.compression_ratio_threshold == 3.0
+
+
+def test_whisper_compression_ratio_threshold_invalid_raises():
+    with pytest.raises(ValueError, match="OPENRECALL_WHISPER_COMPRESSION_RATIO_THRESHOLD"):
+        WhisperConfig(compression_ratio_threshold=0.0)
+    with pytest.raises(ValueError, match="OPENRECALL_WHISPER_COMPRESSION_RATIO_THRESHOLD"):
+        load_agent_config({"OPENRECALL_WHISPER_COMPRESSION_RATIO_THRESHOLD": "not-a-number"})
+
+
+def test_whisper_condition_on_previous_text_from_env():
+    cfg = load_agent_config({"OPENRECALL_WHISPER_CONDITION_ON_PREVIOUS_TEXT": "true"})
+    assert cfg.whisper.condition_on_previous_text is True
+    cfg = load_agent_config({"OPENRECALL_WHISPER_CONDITION_ON_PREVIOUS_TEXT": "0"})
+    assert cfg.whisper.condition_on_previous_text is False
+
+
+def test_whisper_condition_on_previous_text_invalid_raises():
+    with pytest.raises(ValueError, match="OPENRECALL_WHISPER_CONDITION_ON_PREVIOUS_TEXT"):
+        load_agent_config({"OPENRECALL_WHISPER_CONDITION_ON_PREVIOUS_TEXT": "maybe"})
+
+
+def test_whisper_hallucination_blocklist_enabled_from_env():
+    cfg = load_agent_config({"OPENRECALL_WHISPER_HALLUCINATION_BLOCKLIST_ENABLED": "false"})
+    assert cfg.whisper.hallucination_blocklist_enabled is False
+
+
+def test_whisper_hallucination_max_words_from_env():
+    cfg = load_agent_config({"OPENRECALL_WHISPER_HALLUCINATION_MAX_WORDS": "6"})
+    assert cfg.whisper.hallucination_max_words == 6
+
+
+def test_whisper_hallucination_max_words_invalid_raises():
+    with pytest.raises(ValueError, match="OPENRECALL_WHISPER_HALLUCINATION_MAX_WORDS"):
+        WhisperConfig(hallucination_max_words=0)
+    with pytest.raises(ValueError, match="OPENRECALL_WHISPER_HALLUCINATION_MAX_WORDS"):
+        load_agent_config({"OPENRECALL_WHISPER_HALLUCINATION_MAX_WORDS": "two"})
+
+
+def test_whisper_hallucination_phrases_from_env():
+    """Comma-separated env overrides the built-in default set."""
+    cfg = load_agent_config({"OPENRECALL_WHISPER_HALLUCINATION_PHRASES": "thank you, hello, bye"})
+    assert cfg.whisper.hallucination_phrases == ("thank you", "hello", "bye")
+
+
+def test_whisper_hallucination_phrases_empty_env_means_disable_via_empty_tuple():
+    """An empty list is a valid (if unusual) "block nothing custom" override;
+    the backend still uses the built-in set only when the field is None."""
+    cfg = load_agent_config({"OPENRECALL_WHISPER_HALLUCINATION_PHRASES": ""})
+    assert cfg.whisper.hallucination_phrases == ()
+
+
+def test_whisper_vad_mode_from_env():
+    cfg = load_agent_config({"OPENRECALL_WHISPER_VAD_MODE": "webrtc"})
+    assert cfg.whisper.vad_mode == "webrtc"
+    # Empty string disables (treated as None).
+    cfg = load_agent_config({"OPENRECALL_WHISPER_VAD_MODE": ""})
+    assert cfg.whisper.vad_mode is None
+
+
+def test_whisper_vad_mode_invalid_raises():
+    with pytest.raises(ValueError, match="OPENRECALL_WHISPER_VAD_MODE"):
+        load_agent_config({"OPENRECALL_WHISPER_VAD_MODE": "spectral"})
+
+
+def test_whisper_vad_aggressiveness_from_env():
+    cfg = load_agent_config({"OPENRECALL_WHISPER_VAD_AGGRESSIVENESS": "1"})
+    assert cfg.whisper.vad_aggressiveness == 1
+
+
+def test_whisper_vad_aggressiveness_out_of_range_raises():
+    for bad in ("-1", "4", "9"):
+        with pytest.raises(ValueError, match="OPENRECALL_WHISPER_VAD_AGGRESSIVENESS"):
+            WhisperConfig(vad_aggressiveness=int(bad))

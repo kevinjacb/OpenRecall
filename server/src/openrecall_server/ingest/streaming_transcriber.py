@@ -17,10 +17,24 @@ where it falls in the hop grid.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from .transcriber import Transcriber
+
+logger = logging.getLogger(__name__)
+
+# Cross-hop dedup: Whisper hallucinating the same short phrase on consecutive
+# noise hops emits it at a NEW absolute time each hop (past the committed
+# cursor), so the overlap-zone dedup does not catch it — the transcript fills
+# with "Thank you. Thank you. Thank you." Collapse a segment that is identical
+# to the last EMITTED segment AND short (<= this many words). Long phrases are
+# left alone (real repeats are rare; the repetition filter handles true loops).
+_DEDUP_MAX_WORDS = 5
+
+# webrtcvad frame size: 20 ms at 16 kHz mono 16-bit == 640 bytes.
+_VAD_FRAME_BYTES = 640
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +112,18 @@ class _TranscriberAdapter:
         return [Token(text=text.strip(), start_ms=duration_ms, end_ms=duration_ms)]
 
 
+def _normalize_segment_text(text: str) -> str:
+    """Normalize a joined segment for cross-hop dedup matching: lowercase,
+    strip punctuation, collapse whitespace. Robust to mlx appending different
+    trailing punctuation across hops."""
+    stripped = text.strip().lower().strip(".,!?;:'\"-()[]{}“”")
+    return " ".join(stripped.split())
+
+
+def _word_count(text: str) -> int:
+    return len(text.split())
+
+
 class StreamingTranscriber:
     """Wraps a :class:`StreamingBackend` to produce stable segments.
 
@@ -121,12 +147,23 @@ class StreamingTranscriber:
         hop_ms: int = 1000,
         window_ms: int = 5000,
         is_token_backend: bool = False,
+        vad_mode: str | None = None,
+        vad_aggressiveness: int = 3,
     ) -> None:
         """Construct the streaming transcriber.
 
         Use the :func:`streaming_from_tokens` / :func:`streaming_from_text`
         factory functions rather than the constructor directly — they
         set ``is_token_backend`` correctly so the wrapping is unambiguous.
+
+        ``vad_mode`` (opt-in): when ``"webrtc"``, a spectral VAD
+        (webrtcvad, an optional install) gates each hop BEFORE the
+        Whisper call — a pure-noise hop (zero voiced frames) is skipped
+        so Whisper never sees it and can't hallucinate on it. Off by
+        default: webrtcvad is an optional dependency and at high
+        aggressiveness can drop quiet real speech. If webrtcvad is not
+        installed, the gate logs a warning and disables itself rather
+        than crash.
         """
         if hop_ms <= 0 or hop_ms > window_ms:
             raise ValueError(
@@ -135,6 +172,10 @@ class StreamingTranscriber:
             )
         if window_ms <= 0:
             raise ValueError(f"window_ms must be > 0")
+        if vad_mode is not None and not (0 <= vad_aggressiveness <= 3):
+            raise ValueError(
+                f"vad_aggressiveness ({vad_aggressiveness}) must be in [0, 3]"
+            )
         if is_token_backend:
             self._backend: "StreamingBackend" = backend  # type: ignore[assignment]
         else:
@@ -154,6 +195,46 @@ class StreamingTranscriber:
         # Tokens emitted in the current hop (so we can extend the last
         # segment with the next hop's continuation).
         self._hop_tokens: list[Token] = []
+        # Cross-hop dedup: normalized text of the last EMITTED segment.
+        # A new short segment matching this is a phantom repeat on noise
+        # (each hop's phantom lands past the committed cursor, so the
+        # overlap dedup misses it) and is dropped without advancing the
+        # cursor. Updated only on emit, so the suppression chains.
+        self._last_emitted_text_norm: str = ""
+        # Opt-in spectral VAD gate (None = disabled / unavailable).
+        self._vad = None
+        if vad_mode == "webrtc":
+            try:
+                import webrtcvad
+                self._vad = webrtcvad.Vad(vad_aggressiveness)
+            except ImportError:
+                logger.warning(
+                    "vad_mode='webrtc' requested but the 'webrtcvad' package "
+                    "is not installed; install it (`pip install webrtcvad`) or "
+                    "unset OPENRECALL_WHISPER_VAD_MODE. The VAD gate is "
+                    "disabled — Whisper will run on every hop as before."
+                )
+                self._vad = None
+
+    def _hop_has_voiced_frames(self, pcm: bytes) -> bool:
+        """True if any 20 ms frame of ``pcm`` is voiced speech per webrtcvad.
+
+        webrtcvad requires exact 10/20/30 ms frames at 8/16/32/48 kHz; we feed
+        20 ms frames. A trailing partial frame (< 640 bytes) is dropped rather
+        than crash. A hop too short to contain even one frame is treated as
+        voiced (proceed) so we never skip on a truncation artifact.
+        """
+        if self._vad is None or len(pcm) < _VAD_FRAME_BYTES:
+            return True
+        for i in range(0, len(pcm) - _VAD_FRAME_BYTES + 1, _VAD_FRAME_BYTES):
+            try:
+                if self._vad.is_speech(bytes(pcm[i:i + _VAD_FRAME_BYTES]), self._sample_rate):
+                    return True
+            except Exception:
+                # A single bad frame must not gate the whole hop; treat as
+                # voiced so real speech is never dropped on a decoder blip.
+                return True
+        return False
 
     @property
     def committed_ms(self) -> int:
@@ -177,6 +258,13 @@ class StreamingTranscriber:
             del self._buffer[:trim]
             # The front of the buffer is now newer; advance the start.
             self._buffer_start_ms += (trim // 2) * 1000 // self._sample_rate
+
+        # 2.5. Optional spectral VAD gate: skip the Whisper call entirely on a
+        # pure-noise hop so it can't hallucinate on silence. The buffer (above)
+        # is still extended so the rolling context is preserved; we just avoid
+        # the expensive, hallucination-prone decode this hop.
+        if self._vad is not None and not self._hop_has_voiced_frames(pcm):
+            return []
 
         # 3. Call the backend with the current buffer.
         tokens = self._backend.transcribe(bytes(self._buffer), self._sample_rate)
@@ -206,6 +294,18 @@ class StreamingTranscriber:
         #    one hop = one segment keeps the gateway's existing
         #    segment-per-Transcript model intact.
         text = " ".join(t.text for t in new_tokens)
+        # 5.5. Cross-hop dedup: a short segment identical to the last EMITTED
+        # one is a phantom repeat on noise (the overlap dedup in step 4 only
+        # catches repeats at the same absolute time; a fresh phantom each hop
+        # lands past the cursor). Drop it WITHOUT advancing the committed
+        # cursor — the next hop's real speech still self-corrects past it.
+        norm = _normalize_segment_text(text)
+        if (
+            norm
+            and norm == self._last_emitted_text_norm
+            and _word_count(text) <= _DEDUP_MAX_WORDS
+        ):
+            return []
         segment = Segment(
             text=text,
             start_ms=new_tokens[0].start_ms,
@@ -218,6 +318,7 @@ class StreamingTranscriber:
         #    trailing edge of the call's audio, which is naturally past
         #    the previous hop's end.
         self._committed_ms = max(self._committed_ms, segment.end_ms)
+        self._last_emitted_text_norm = norm
         return [segment]
 
     def flush(self) -> list[Segment]:
@@ -260,13 +361,17 @@ def streaming_from_tokens(
     sample_rate: int = 16000,
     hop_ms: int = 1000,
     window_ms: int = 5000,
+    vad_mode: str | None = None,
+    vad_aggressiveness: int = 3,
 ) -> StreamingTranscriber:
     """Build a :class:`StreamingTranscriber` from a token-returning backend.
 
     Use this when the backend supports word-level timestamps
-    (mlx-whisper with ``word_timestamps=True``)."""
+    (mlx-whisper with ``word_timestamps=True``). ``vad_mode`` opts into the
+    pre-Whisper spectral VAD gate (see :class:`StreamingTranscriber`)."""
     return StreamingTranscriber(
         backend, sample_rate, hop_ms, window_ms, is_token_backend=True,
+        vad_mode=vad_mode, vad_aggressiveness=vad_aggressiveness,
     )
 
 
