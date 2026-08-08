@@ -106,6 +106,7 @@ def build_pipeline_factory(
     model: str | None = None,
     use_streaming: bool = True,
     whisper_config=None,
+    asr_config=None,
     gap_timeout_ms: int | None = 3000,
     speaker_identifier=None,
     speaker_window_ms: int = 2000,
@@ -125,6 +126,19 @@ def build_pipeline_factory(
     artifacts of the hard-cut 5s window pipeline: every hop re-runs
     Whisper on a rolling 5s context, and the streaming wrapper dedups
     tokens whose start is past the committed cursor.
+
+    ``asr_config`` (an :class:`AsrConfig`) selects *which* streaming
+    backend gets built. ``backend="whisper"`` (the default, and what
+    ``asr_config=None`` means) builds the mlx-whisper path described
+    above, unchanged. ``backend="parakeet"`` builds a
+    :class:`ParakeetStreamingBackend` instead — NVIDIA Parakeet-TDT via
+    parakeet-mlx, whose transducer decoder emits a blank symbol on
+    silence and so does not hallucinate phantom phrases on room noise.
+    The two backends satisfy the same ``StreamingBackend`` Protocol, so
+    everything above this seam (the rolling window, the committed
+    cursor, the cross-hop dedup, the optional VAD gate) is identical
+    either way. The Whisper-only noise filters below are simply not
+    applicable to Parakeet and are not passed to it.
 
     ``whisper_config`` (a :class:`WhisperConfig`) threads the
     server-side noise filtering thresholds into the backend:
@@ -159,6 +173,16 @@ def build_pipeline_factory(
     vad_mode = _cfg("vad_mode", None)
     vad_aggressiveness = _cfg("vad_aggressiveness", 3)
 
+    # Backend selection is resolved here, at factory-build time, so a bad
+    # value fails at startup rather than on the first audio packet. Same
+    # fail-fast getattr reasoning as _cfg above.
+    if asr_config is None:
+        asr_backend = "whisper"
+        parakeet_model = None
+    else:
+        asr_backend = asr_config.backend
+        parakeet_model = asr_config.parakeet_model
+
     def factory(start_seq: int) -> AudioIngestPipeline:
         from ..ingest.opus_decoder import OpusStreamDecoder
         from ..ingest.streaming_transcriber import streaming_from_tokens
@@ -166,25 +190,38 @@ def build_pipeline_factory(
         from ..ingest.whisper_streaming import WhisperStreamingBackend
 
         if use_streaming:
-            # The mlx_whisper call is the slow part (Whisper inference).
-            # In production each session gets its own backend (so the
-            # internal numpy buffers are session-scoped), but the
-            # underlying model is shared implicitly via mlx-whisper's
-            # module-level state. The streaming transcriber owns the
-            # rolling PCM buffer and committed cursor.
-            backend_kwargs = dict(
-                no_speech_threshold=no_speech_threshold,
-                logprob_threshold=logprob_threshold,
-                compression_ratio_threshold=compression_ratio_threshold,
-                condition_on_previous_text=condition_on_previous_text,
-                hallucination_blocklist_enabled=hallucination_blocklist_enabled,
-                hallucination_max_words=hallucination_max_words,
-                hallucination_phrases=hallucination_phrases,
-            )
-            if model:
-                backend_kwargs["model"] = model
+            # The model call is the slow part (ASR inference). In production
+            # each session gets its own backend (so the internal buffers are
+            # session-scoped); the underlying model is shared implicitly via
+            # the ASR library's own state. The streaming transcriber owns the
+            # rolling PCM buffer and committed cursor, identically for both
+            # backends.
+            if asr_backend == "parakeet":
+                from ..ingest.parakeet_streaming import ParakeetStreamingBackend
+
+                # `model` (the --model CLI flag) is the mlx-whisper repo
+                # override and is deliberately NOT reused here: pointing the
+                # Parakeet loader at a Whisper repo would fail confusingly.
+                # The Parakeet repo has its own knob (OPENRECALL_PARAKEET_MODEL).
+                parakeet_kwargs = {}
+                if parakeet_model:
+                    parakeet_kwargs["model_name"] = parakeet_model
+                backend = ParakeetStreamingBackend(**parakeet_kwargs)
+            else:
+                backend_kwargs = dict(
+                    no_speech_threshold=no_speech_threshold,
+                    logprob_threshold=logprob_threshold,
+                    compression_ratio_threshold=compression_ratio_threshold,
+                    condition_on_previous_text=condition_on_previous_text,
+                    hallucination_blocklist_enabled=hallucination_blocklist_enabled,
+                    hallucination_max_words=hallucination_max_words,
+                    hallucination_phrases=hallucination_phrases,
+                )
+                if model:
+                    backend_kwargs["model"] = model
+                backend = WhisperStreamingBackend(**backend_kwargs)
             transcriber = streaming_from_tokens(
-                WhisperStreamingBackend(**backend_kwargs),
+                backend,
                 sample_rate=16000,
                 hop_ms=hop_ms,
                 window_ms=window_ms,

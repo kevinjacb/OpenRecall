@@ -43,6 +43,18 @@ ENV_WHISPER_VAD_AGGRESSIVENESS = "OPENRECALL_WHISPER_VAD_AGGRESSIVENESS"
 # leave it opt-in rather than always-on.
 _VAD_MODES = ("webrtc",)
 
+# --- ASR backend selection --------------------------------------------------
+# Which streaming transcription backend the gateway builds. ``whisper`` (the
+# default) is the existing mlx-whisper path — unchanged behavior. ``parakeet``
+# switches to NVIDIA Parakeet-TDT via parakeet-mlx, whose transducer decoder
+# emits a "blank" symbol on silence and so structurally avoids the
+# autoregressive hallucinations ("Thank you.", "Hello.") that Whisper
+# produces on near-silent / low-SNR audio. The switch is one env var so an
+# operator can flip back trivially (unset it -> whisper).
+ENV_ASR_BACKEND = "OPENRECALL_ASR_BACKEND"
+ENV_PARAKEET_MODEL = "OPENRECALL_PARAKEET_MODEL"
+_ASR_BACKENDS = ("whisper", "parakeet")
+
 
 class GuardrailsConfig(BaseModel):
     """The three policy numbers the agent's :class:`Guardrails` consume."""
@@ -165,13 +177,57 @@ class WhisperConfig(BaseModel):
         return self
 
 
+class AsrConfig(BaseModel):
+    """Which streaming ASR backend the gateway builds, plus backend-specific
+    model overrides.
+
+    ``backend`` selects the transcription engine:
+
+    - ``"whisper"`` (the default): the existing mlx-whisper path
+      (:class:`WhisperStreamingBackend`). Selecting this leaves the system
+      exactly as it was before the Parakeet option existed — every
+      Whisper-specific noise filter in :class:`WhisperConfig` applies.
+    - ``"parakeet"``: NVIDIA Parakeet-TDT via parakeet-mlx
+      (:class:`ParakeetStreamingBackend`). The TDT transducer emits a "blank"
+      symbol during silence, so it structurally avoids the autoregressive
+      near-silence hallucinations that Whisper's blocklist/dedup only patch
+      over; the Whisper-specific no_speech/logprob/compression/blocklist
+      filters do not apply (they operate on mlx-whisper segment metadata
+      that Parakeet does not produce). The backend-agnostic cross-hop dedup
+      and the optional webrtcvad gate in :class:`StreamingTranscriber` still
+      protect it.
+
+    ``parakeet_model`` is the HuggingFace repo id for the Parakeet backend
+    (ignored when ``backend="whisper"``).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    backend: str = "whisper"
+    parakeet_model: str = "mlx-community/parakeet-tdt-0.6b-v3"
+
+    @model_validator(mode="after")
+    def _validate_backend(self) -> "AsrConfig":
+        if self.backend not in _ASR_BACKENDS:
+            raise ValueError(
+                f"{ENV_ASR_BACKEND}={self.backend!r} must be one of "
+                f"{list(_ASR_BACKENDS)}"
+            )
+        if not self.parakeet_model.strip():
+            raise ValueError(
+                f"{ENV_PARAKEET_MODEL}={self.parakeet_model!r} must be a "
+                f"non-empty HuggingFace repo id"
+            )
+        return self
+
+
 class AgentConfig(BaseModel):
-    """The full server config — guardrails + whisper noise filtering.
-    Future policy (extraction interval, model override, etc.) lives here."""
+    """The full server config — guardrails + whisper noise filtering + ASR
+    backend selection. Future policy (extraction interval, etc.) lives here."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     whisper: WhisperConfig = Field(default_factory=WhisperConfig)
+    asr: AsrConfig = Field(default_factory=AsrConfig)
 
 
 # --- env loader --------------------------------------------------------------
@@ -282,7 +338,20 @@ def load_agent_config(env: Mapping[str, str]) -> AgentConfig:
             ENV_WHISPER_VAD_AGGRESSIVENESS,
             env[ENV_WHISPER_VAD_AGGRESSIVENESS],
         )
+    asr_kwargs: dict = {}
+    if ENV_ASR_BACKEND in env:
+        # Case/whitespace-insensitive so OPENRECALL_ASR_BACKEND="Parakeet "
+        # works. An empty value means "unset" -> the whisper default, so an
+        # operator can revert by blanking the var as well as by removing it.
+        raw_backend = env[ENV_ASR_BACKEND].strip().lower()
+        if raw_backend:
+            asr_kwargs["backend"] = raw_backend
+    if ENV_PARAKEET_MODEL in env:
+        raw_model = env[ENV_PARAKEET_MODEL].strip()
+        if raw_model:
+            asr_kwargs["parakeet_model"] = raw_model
     return AgentConfig(
         guardrails=GuardrailsConfig(**guardrails_kwargs),
         whisper=WhisperConfig(**whisper_kwargs),
+        asr=AsrConfig(**asr_kwargs),
     )

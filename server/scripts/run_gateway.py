@@ -342,6 +342,7 @@ def main() -> None:
             hop_ms=1000,
             model=args.model,
             whisper_config=agent_config.whisper,
+            asr_config=agent_config.asr,
             speaker_identifier=speaker_identifier,
             audio_store=audio_store,
             # `save_audio` is read once at factory build; `audio_enabled` is

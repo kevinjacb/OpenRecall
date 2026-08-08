@@ -38,6 +38,15 @@ speaker = [
 vad = [
     "webrtcvad>=2.0",
 ]
+# Alternative streaming ASR backend: NVIDIA Parakeet-TDT via parakeet-mlx.
+# Its transducer decoder emits a blank symbol on silence, so it does not
+# produce Whisper's near-silence phantom phrases. Lazy-imported inside
+# ParakeetStreamingBackend so the unit suite and a default install run
+# without it; select at runtime with OPENRECALL_ASR_BACKEND=parakeet.
+parakeet = [
+    "parakeet-mlx>=0.5",
+    "numpy>=2",
+]
 # Provider-agnostic LLM client (extraction). Works against any OpenAI-compatible
 # endpoint — local (Ollama, mlx_lm.server) or cloud (MiniMax/OpenAI/…).
 llm = [

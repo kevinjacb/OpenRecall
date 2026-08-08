@@ -241,3 +241,63 @@ def test_whisper_vad_aggressiveness_out_of_range_raises():
     for bad in ("-1", "4", "9"):
         with pytest.raises(ValueError, match="OPENRECALL_WHISPER_VAD_AGGRESSIVENESS"):
             WhisperConfig(vad_aggressiveness=int(bad))
+
+
+# --- ASR backend selection (whisper <-> parakeet switch) ---------------------
+
+
+def test_asr_backend_defaults_to_whisper():
+    """The default must be whisper: adding the Parakeet option changes
+    nothing for an operator who sets no new env vars."""
+    cfg = load_agent_config({})
+    assert cfg.asr.backend == "whisper"
+    assert cfg.asr.parakeet_model == "mlx-community/parakeet-tdt-0.6b-v3"
+
+
+def test_asr_backend_parakeet_from_env():
+    cfg = load_agent_config({"OPENRECALL_ASR_BACKEND": "parakeet"})
+    assert cfg.asr.backend == "parakeet"
+
+
+def test_asr_backend_is_case_and_whitespace_insensitive():
+    cfg = load_agent_config({"OPENRECALL_ASR_BACKEND": "  Parakeet "})
+    assert cfg.asr.backend == "parakeet"
+
+
+def test_asr_backend_empty_env_falls_back_to_whisper():
+    """Blanking the var is a valid way to revert, not a validation error."""
+    cfg = load_agent_config({"OPENRECALL_ASR_BACKEND": ""})
+    assert cfg.asr.backend == "whisper"
+
+
+def test_asr_backend_invalid_raises():
+    with pytest.raises(ValueError, match="OPENRECALL_ASR_BACKEND"):
+        load_agent_config({"OPENRECALL_ASR_BACKEND": "deepgram"})
+
+
+def test_parakeet_model_override_from_env():
+    cfg = load_agent_config({
+        "OPENRECALL_ASR_BACKEND": "parakeet",
+        "OPENRECALL_PARAKEET_MODEL": "mlx-community/parakeet-tdt-1.1b",
+    })
+    assert cfg.asr.parakeet_model == "mlx-community/parakeet-tdt-1.1b"
+
+
+def test_parakeet_model_blank_env_keeps_default():
+    cfg = load_agent_config({"OPENRECALL_PARAKEET_MODEL": "   "})
+    assert cfg.asr.parakeet_model == "mlx-community/parakeet-tdt-0.6b-v3"
+
+
+def test_parakeet_model_empty_value_raises_on_direct_construction():
+    from openrecall_server.agent.config import AsrConfig
+
+    with pytest.raises(ValueError, match="OPENRECALL_PARAKEET_MODEL"):
+        AsrConfig(parakeet_model="  ")
+
+
+def test_whisper_filters_are_unaffected_by_backend_choice():
+    """Selecting parakeet must not silently disturb the whisper config, so
+    flipping back is a pure revert."""
+    cfg = load_agent_config({"OPENRECALL_ASR_BACKEND": "parakeet"})
+    assert cfg.whisper.no_speech_threshold == 0.6
+    assert cfg.whisper.hallucination_blocklist_enabled is True

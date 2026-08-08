@@ -124,3 +124,100 @@ def test_build_pipeline_factory_threads_all_whisper_config_fields():
 
     # No-config path (whisper_config=None) also yields a factory using defaults.
     assert callable(build_pipeline_factory(whisper_config=None))
+
+
+# --- ASR backend switch (whisper <-> parakeet) ------------------------------
+
+
+def _streamer_backend(factory):
+    """Reach the StreamingBackend a factory's pipeline actually built."""
+    pipeline = factory(0)
+    return pipeline._streamer._backend
+
+
+def test_default_factory_builds_the_whisper_backend():
+    """No asr_config (and the default config) must keep the existing path —
+    this is the guard that the switch changed nothing by default."""
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+    from openrecall_server.ingest.whisper_streaming import WhisperStreamingBackend
+
+    assert isinstance(_streamer_backend(build_pipeline_factory()), WhisperStreamingBackend)
+
+    cfg = load_agent_config({})
+    factory = build_pipeline_factory(whisper_config=cfg.whisper, asr_config=cfg.asr)
+    assert isinstance(_streamer_backend(factory), WhisperStreamingBackend)
+
+
+def test_parakeet_backend_is_built_when_selected():
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+    from openrecall_server.ingest.parakeet_streaming import ParakeetStreamingBackend
+
+    cfg = load_agent_config({"OPENRECALL_ASR_BACKEND": "parakeet"})
+    factory = build_pipeline_factory(whisper_config=cfg.whisper, asr_config=cfg.asr)
+
+    backend = _streamer_backend(factory)
+    assert isinstance(backend, ParakeetStreamingBackend)
+    # Selecting it must not load the model (no mlx/parakeet_mlx import).
+    assert backend._model is None
+
+
+def test_parakeet_model_override_reaches_the_backend():
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+
+    cfg = load_agent_config({
+        "OPENRECALL_ASR_BACKEND": "parakeet",
+        "OPENRECALL_PARAKEET_MODEL": "mlx-community/parakeet-tdt-1.1b",
+    })
+    factory = build_pipeline_factory(whisper_config=cfg.whisper, asr_config=cfg.asr)
+
+    assert _streamer_backend(factory)._model_name == "mlx-community/parakeet-tdt-1.1b"
+
+
+def test_whisper_model_flag_is_not_reused_for_parakeet():
+    """--model overrides the mlx-whisper repo; handing it to the Parakeet
+    loader would fail confusingly, so the flag must be ignored there."""
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+
+    cfg = load_agent_config({"OPENRECALL_ASR_BACKEND": "parakeet"})
+    factory = build_pipeline_factory(
+        model="mlx-community/whisper-small", whisper_config=cfg.whisper, asr_config=cfg.asr,
+    )
+
+    assert _streamer_backend(factory)._model_name == "mlx-community/parakeet-tdt-0.6b-v3"
+
+
+def test_switching_back_to_whisper_restores_the_filters():
+    """The revert path: flipping the env var back rebuilds the Whisper
+    backend with its noise filters intact."""
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+    from openrecall_server.ingest.whisper_streaming import WhisperStreamingBackend
+
+    cfg = load_agent_config({
+        "OPENRECALL_ASR_BACKEND": "whisper",
+        "OPENRECALL_WHISPER_NO_SPEECH_THRESHOLD": "0.7",
+    })
+    factory = build_pipeline_factory(whisper_config=cfg.whisper, asr_config=cfg.asr)
+
+    backend = _streamer_backend(factory)
+    assert isinstance(backend, WhisperStreamingBackend)
+    assert backend._no_speech_threshold == 0.7
+
+
+def test_vad_gate_applies_to_the_parakeet_backend_too():
+    """The backend-agnostic defenses live above the seam, so they must still
+    be wired when Parakeet is selected."""
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+
+    cfg = load_agent_config({
+        "OPENRECALL_ASR_BACKEND": "parakeet",
+        "OPENRECALL_WHISPER_VAD_MODE": "webrtc",
+    })
+    factory = build_pipeline_factory(whisper_config=cfg.whisper, asr_config=cfg.asr)
+
+    assert factory(0)._streamer._vad is not None
