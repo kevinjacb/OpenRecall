@@ -72,6 +72,7 @@ import com.openrecall.relay.ui.design.RecallIcons
 import com.openrecall.relay.ui.design.RecallTextField
 import com.openrecall.relay.ui.design.WaveformScrubber
 import com.openrecall.relay.ui.design.WaveformStrip
+import com.openrecall.relay.ui.design.placeholderPeaks
 
 /** Bars in the scrubber. The server publishes fixed 500 ms buckets and the
  *  client downsamples, so this is a display constant and nothing else. */
@@ -459,7 +460,13 @@ private fun PlayerCard(
     } else {
         0f
     }
-    val bars = remember(waveform) { waveform?.resampled(WAVEFORM_BARS).orEmpty() }
+    // Real peaks when the server published them. When it didn't but the audio
+    // still plays, the deterministic placeholder curve stands in — the strip is
+    // then a transport you can drag rather than a decoration you can't.
+    val bars = remember(waveform, summary.id, summary.hasAudio) {
+        waveform?.resampled(WAVEFORM_BARS)?.takeIf { it.isNotEmpty() }
+            ?: if (summary.hasAudio) placeholderPeaks(summary.id.value, WAVEFORM_BARS) else emptyList()
+    }
 
     // Where the finger is mid-drag, or null when nobody is scrubbing. While it
     // is set it wins over the player's own position for both the playhead and
@@ -467,8 +474,11 @@ private fun PlayerCard(
     // the 200 ms position poll. The decoder is only asked to seek on release —
     // a drag across the strip would otherwise fire a seek per touch event.
     var scrubFraction by remember { mutableStateOf<Float?>(null) }
-    // Nothing to scrub until the stream is prepared and has a real length.
-    val seekable = playback.durationMs > 0
+    // Scrubbing needs a length to map the fraction onto, but *not* the player's
+    // own: it reports zero for a stream with no length in its container. The
+    // segment's duration, derived from event timestamps, is the one that always
+    // exists — `durationMs` above already prefers the decoder's when it has one.
+    val seekable = summary.hasAudio && durationMs > 0
     val displayProgress = scrubFraction ?: progress
     val displayPositionMs = scrubFraction
         ?.let { (durationMs * it).toLong() }
@@ -512,7 +522,7 @@ private fun PlayerCard(
                         progress = displayProgress,
                         onScrub = if (seekable) ({ scrubFraction = it }) else null,
                         onScrubEnd = { fraction ->
-                            player.seekToFraction(fraction)
+                            player.seekTo((durationMs * fraction).toLong())
                             scrubFraction = null
                         },
                     )

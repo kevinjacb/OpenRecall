@@ -108,16 +108,27 @@ class SegmentPlayer(private val context: Context) {
         }
     }
 
-    /** Seek to a fraction of the stream. Clamped, because a scrubber drag can
-     *  overshoot its track by a pixel and `seekTo` past the end is an error. */
-    fun seekToFraction(fraction: Float) {
+    /**
+     * Seek to an absolute position.
+     *
+     * Absolute rather than fractional, and clamped against the player's own
+     * duration only when it has one: [MediaPlayer.getDuration] reports 0 (or
+     * -1) for a stream whose container carries no length, which is the normal
+     * case for the Opus the relay serves. Gating the seek on that value made
+     * the scrubber inert on exactly the recordings it was built for — so the
+     * caller supplies the position from the duration *it* trusts, and the
+     * clamp here is a safety net rather than a precondition.
+     */
+    fun seekTo(positionMs: Long) {
         val mp = player ?: return
-        val duration = state.durationMs
-        if (duration <= 0) return
-        val target = (duration * fraction.coerceIn(0f, 1f)).toLong()
+        if (!state.available) return
+        val known = state.durationMs
+        val target = if (known > 0) positionMs.coerceIn(0L, known) else positionMs.coerceAtLeast(0L)
         runCatching {
             mp.seekTo(target.toInt())
             state = state.copy(positionMs = target)
+        }.onFailure {
+            RecallLog.w(tag = TAG, msg = "seek failed: ${it.javaClass.simpleName}")
         }
     }
 

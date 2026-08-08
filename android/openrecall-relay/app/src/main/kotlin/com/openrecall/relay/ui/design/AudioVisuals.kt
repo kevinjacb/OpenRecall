@@ -18,6 +18,8 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -97,6 +99,13 @@ fun LiveBars(
  * commits the seek, which keeps a drag from firing dozens of `seekTo` calls.
  *
  * Passing a null [onScrub] leaves the strip inert — no gestures, no playhead.
+ *
+ * The gesture handler is installed unconditionally and re-reads its callbacks
+ * through [rememberUpdatedState] on every event. Both details matter:
+ * `pointerInput(Unit)` never restarts its block, so a chain that only gains the
+ * modifier once the stream is ready would keep whatever lambdas existed when
+ * the node was built — capturing a duration of zero and silently swallowing
+ * every seek. Reading the latest lambda per event sidesteps that entirely.
  */
 @Composable
 fun WaveformScrubber(
@@ -110,36 +119,34 @@ fun WaveformScrubber(
     remainingColor: Color = RecallTheme.colors.track,
 ) {
     val clamped = progress.coerceIn(0f, 1f)
-    val scrubModifier = if (onScrub != null) {
-        Modifier.pointerInput(Unit) {
-            awaitEachGesture {
-                val down = awaitFirstDown(requireUnconsumed = false)
-                val width = size.width.toFloat()
-                if (width <= 0f) return@awaitEachGesture
-                // Consuming from the down onwards is what stops an enclosing
-                // scrollable from reading the drag as a scroll and stealing it.
-                down.consume()
-                var fraction = (down.position.x / width).coerceIn(0f, 1f)
-                onScrub(fraction)
-                while (true) {
-                    val change = awaitPointerEvent().changes
-                        .firstOrNull { it.id == down.id } ?: break
-                    if (!change.pressed) break
-                    fraction = (change.position.x / width).coerceIn(0f, 1f)
-                    onScrub(fraction)
-                    change.consume()
-                }
-                onScrubEnd?.invoke(fraction)
-            }
-        }
-    } else {
-        Modifier
-    }
+    val currentScrub by rememberUpdatedState(onScrub)
+    val currentScrubEnd by rememberUpdatedState(onScrubEnd)
     Box(
         modifier = modifier
             .fillMaxWidth()
             .height(height)
-            .then(scrubModifier),
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val width = size.width.toFloat()
+                    val scrub = currentScrub
+                    if (width <= 0f || scrub == null) return@awaitEachGesture
+                    // Consuming from the down onwards is what stops an enclosing
+                    // scrollable from reading the drag as a scroll and stealing it.
+                    down.consume()
+                    var fraction = (down.position.x / width).coerceIn(0f, 1f)
+                    scrub(fraction)
+                    while (true) {
+                        val change = awaitPointerEvent().changes
+                            .firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                        fraction = (change.position.x / width).coerceIn(0f, 1f)
+                        currentScrub?.invoke(fraction)
+                        change.consume()
+                    }
+                    currentScrubEnd?.invoke(fraction)
+                }
+            },
     ) {
         Row(
             modifier = Modifier.fillMaxSize(),
@@ -200,24 +207,35 @@ fun WaveformStrip(
     height: Dp = 36.dp,
     color: Color = RecallTheme.colors.track,
 ) {
-    val offset = seed.hashCode().toDouble()
     Row(
         modifier = modifier.fillMaxWidth().height(height),
         verticalAlignment = Alignment.Bottom,
         horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        repeat(bars) { i ->
-            // Mirrors the comp's `8 + |sin(i*1.7) * cos(i*0.6)| * 28` curve,
-            // phase-shifted by the seed so different sessions differ.
-            val t = i + offset % 7.0
-            val fraction = (0.22f + abs(sin(t * 1.7) * cos(t * 0.6)).toFloat() * 0.78f)
+        placeholderPeaks(seed, bars).forEach { peak ->
             Box(
                 Modifier
                     .weight(1f)
-                    .fillMaxHeight(fraction)
+                    .fillMaxHeight(peak)
                     .clip(RoundedCornerShape(2.dp))
                     .background(color),
             )
         }
+    }
+}
+
+/**
+ * The placeholder bar curve, as `0f..1f` amplitudes.
+ *
+ * Mirrors the comp's `8 + |sin(i*1.7) * cos(i*0.6)| * 28` shape, phase-shifted
+ * by [seed] so different recordings differ. Shared with [WaveformScrubber] so
+ * that a recording whose audio plays but whose peaks the server never
+ * published still gets a strip you can drag, instead of an inert decoration.
+ */
+fun placeholderPeaks(seed: String, bars: Int = 34): List<Float> {
+    val offset = seed.hashCode().toDouble() % 7.0
+    return (0 until bars).map { i ->
+        val t = i + offset
+        (0.22f + abs(sin(t * 1.7) * cos(t * 0.6)).toFloat() * 0.78f).coerceIn(0f, 1f)
     }
 }
