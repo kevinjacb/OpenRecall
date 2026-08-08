@@ -168,6 +168,7 @@ void app_main(void) {
   ESP_ERROR_CHECK(audio_capture_init());
   ESP_ERROR_CHECK(opus_stream_init());
 
+  // provision happens here. 
   if (provisioning_init() != 0) {
     ESP_LOGE(TAG, "provisioning_init failed");
   }
