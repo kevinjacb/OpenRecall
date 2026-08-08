@@ -80,7 +80,8 @@ class SessionRepositoryImpl(
      * Held under the same [loadMutex] as [loadMoreSessions] so a refresh
      * can't race an in-flight page load.
      */
-    override suspend fun refreshSessions() = loadMutex.withLock {
+    override suspend fun refreshSessions(silent: Boolean) = loadMutex.withLock {
+        if (silent) return@withLock mergeFirstPage()
         accumulated.clear()
         cursor = null
         started = false
@@ -88,6 +89,59 @@ class SessionRepositoryImpl(
         loadErrors.value = null
         pages.value = PagedResult.Loading
         fetchPage()
+    }
+
+    /**
+     * The auto-refresh tick: fetch page 1 and fold it into the list already
+     * on screen, without ever passing through [PagedResult.Loading] or
+     * [PagedResult.Error].
+     *
+     * Merge policy — sessions the server returns that we don't have yet are
+     * prepended (the server orders newest-first, and a new recording is what
+     * the tick exists to surface); sessions we already hold are replaced by
+     * the fresh copy in place, so a still-growing session's duration,
+     * segment count and preview update without moving. Pages the user
+     * scrolled in are untouched, and so are [cursor]/[exhausted] — silent
+     * refreshing must not break paging.
+     *
+     * Failures are swallowed by design: this runs once a second, and a blip
+     * must not replace the list with an error or flash an inline retry row.
+     * The next tick — or any user-initiated load — surfaces a persistent
+     * problem through the normal error paths.
+     */
+    private suspend fun mergeFirstPage() {
+        val page = try {
+            api.listSessions(PAGE_SIZE, null)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            return
+        }
+        val fresh = page.sessions.map { it.toDomain() }
+        if (accumulated.isEmpty()) {
+            // Nothing on screen yet (first load still pending, or the list is
+            // empty/exhausted): this tick IS the first page, so it owns the
+            // paging state exactly as [fetchPage] would set it.
+            started = true
+            if (fresh.isEmpty() && page.nextCursor == null) {
+                cursor = null
+                exhausted = true
+                pages.value = PagedResult.Exhausted
+                return
+            }
+            accumulated.addAll(fresh)
+            cursor = page.nextCursor
+            exhausted = cursor == null
+            pages.value = PagedResult.Page(accumulated.toList(), cursor)
+            return
+        }
+        val byId = fresh.associateBy { it.id }
+        val known = accumulated.map { it.id }.toSet()
+        val merged = fresh.filter { it.id !in known } +
+            accumulated.map { byId[it.id] ?: it }
+        accumulated.clear()
+        accumulated.addAll(merged)
+        pages.value = PagedResult.Page(accumulated.toList(), cursor)
     }
 
     /**

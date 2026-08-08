@@ -4,6 +4,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -26,6 +28,11 @@ fun MemoryRoute(
             initializer { MemoryViewModel(repo = RepositoryModule.repos.memoryRepository) }
         },
     )
+    // Auto-refresh while the tab is on screen, so atoms extracted from a live
+    // session show up without a pull gesture.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.startAutoRefresh() }
+    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { vm.stopAutoRefresh() }
+
     val state by vm.state.collectAsState()
     val isRefreshing by vm.isRefreshing.collectAsState()
     MemoryScreen(

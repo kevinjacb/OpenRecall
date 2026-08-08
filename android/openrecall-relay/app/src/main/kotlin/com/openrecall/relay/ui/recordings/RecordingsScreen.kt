@@ -27,6 +27,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -55,6 +57,11 @@ fun RecordingsRoute(onOpen: (SessionId) -> Unit, modifier: Modifier = Modifier) 
             initializer { RecordingsViewModel(RepositoryModule.repos.session) }
         },
     )
+    // Auto-refresh while the tab is on screen: new recordings appear, and a
+    // session still being transcribed keeps growing, without a gesture.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.startAutoRefresh() }
+    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { vm.stopAutoRefresh() }
+
     val state by vm.state.collectAsState()
     val isRefreshing by vm.isRefreshing.collectAsState()
     val query by vm.query.collectAsState()

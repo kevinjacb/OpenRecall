@@ -41,6 +41,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -85,6 +87,11 @@ fun SessionDetailRoute(id: SessionId, onBack: () -> Unit, modifier: Modifier = M
             }
         },
     )
+    // Auto-refresh while the screen is on top: a session that is still being
+    // transcribed keeps filling in without a pull gesture.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.startAutoRefresh() }
+    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { vm.stopAutoRefresh() }
+
     val state by vm.state.collectAsState()
     val isRefreshing by vm.isRefreshing.collectAsState()
     val youConfirmation by vm.youConfirmation.collectAsState()
