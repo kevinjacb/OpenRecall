@@ -217,8 +217,10 @@ class ChatViewModel(
         // (HttpSpeakerActions ignores it and calls repo.renameSpeaker
         // directly), so we dispatch even when the relay is not Live. The
         // old gate silently dropped the rename — a bug the user saw as
-        // "rename failing" with no error surface. ask() still needs a live
-        // session (it routes through the live agent), so its own gate stays.
+        // "rename failing" with no error surface. ask() is left as-is: it
+        // passes the nullable session id straight to the repo, which handles
+        // a null (non-live) id itself; the gate removed here was nameSpeaker's
+        // alone.
         val sid = currentSessionId() ?: ""
         viewModelScope.launch {
             runCatching { speakerActions.nameSpeaker(sid, speakerId, name) }
