@@ -3,6 +3,7 @@ package com.opensapien.relay.protocol
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -91,7 +92,11 @@ sealed interface ServerMessage {
 fun parseServerMessage(text: String): ServerMessage {
     val obj = runCatching { Wire.json.parseToJsonElement(text) as? JsonObject }.getOrNull()
         ?: return ServerMessage.Unknown("malformed")
-    fun str(k: String) = (obj[k]?.jsonPrimitive?.content)
+    fun str(k: String): String? {
+        val e = obj[k] ?: return null
+        if (e is JsonNull) return null
+        return e.jsonPrimitive.content
+    }
     fun int(k: String) = (obj[k]?.jsonPrimitive?.content?.toIntOrNull())
     fun bool(k: String): Boolean = obj[k]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false
     return when (str("type")) {

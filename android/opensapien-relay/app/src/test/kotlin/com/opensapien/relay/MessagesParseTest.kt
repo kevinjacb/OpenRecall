@@ -37,6 +37,21 @@ class MessagesParseTest {
     }
 
     @Test
+    fun transcript_speaker_fields_null_when_present_json_null() {
+        // The server emits a present JSON null ("speaker":null) for a hop with
+        // no resolved speaker. The parser must surface Kotlin null, not the
+        // literal string "null" (JsonNull.content == "null" is the bug).
+        val msg = parseServerMessage(
+            """{"type":"transcript","session_id":"s","text":"hi","duration_ms":1000,
+               "speaker":null,"speaker_name":null,"is_wearer":null}"""
+        )
+        assertTrue(msg is ServerMessage.Transcript)
+        assertNull(msg.speaker)
+        assertNull(msg.speakerName)
+        assertEquals(false, msg.isWearer)
+    }
+
+    @Test
     fun proactive_with_name_speaker_propose_is_parsed() {
         val msg = parseServerMessage(
             """{"type":"proactive","request_id":"r1","text":"Who was that?",
