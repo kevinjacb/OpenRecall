@@ -55,6 +55,60 @@ class RecordingsViewModelTest {
         assertTrue(loaded.canLoadMore, "cursor c1 is non-null")
     }
 
+    @Test fun queryFiltersLoadedSessionsByPreviewAndId() = runTest(dispatcher) {
+        // The sessions API has no search parameter, so the Recordings search
+        // box filters what has already been paged in. Matching must cover the
+        // preview text and the id — the id is what the row headline shows.
+        val repo = FakeSessionRepository()
+        repo.queue(listOf(summary("alpha"), summary("beta")), nextCursor = null)
+        val vm = RecordingsViewModel(repo)
+        backgroundScope.launch { vm.state.toList(mutableListOf()) }
+        testScheduler.advanceUntilIdle()
+
+        vm.onQueryChange("p-alpha")
+        testScheduler.advanceUntilIdle()
+        assertEquals(
+            listOf("alpha"),
+            assertIs<RecordingsUiState.Loaded>(vm.state.value).items.map { it.id.value },
+        )
+
+        vm.onQueryChange("BETA")
+        testScheduler.advanceUntilIdle()
+        assertEquals(
+            listOf("beta"),
+            assertIs<RecordingsUiState.Loaded>(vm.state.value).items.map { it.id.value },
+        )
+    }
+
+    @Test fun queryWithNoMatchesRendersEmptyNotError() = runTest(dispatcher) {
+        val repo = FakeSessionRepository()
+        repo.queue(listOf(summary("alpha")), nextCursor = null)
+        val vm = RecordingsViewModel(repo)
+        backgroundScope.launch { vm.state.toList(mutableListOf()) }
+        testScheduler.advanceUntilIdle()
+
+        vm.onQueryChange("nothing matches this")
+        testScheduler.advanceUntilIdle()
+
+        assertIs<RecordingsUiState.Empty>(vm.state.value)
+    }
+
+    @Test fun blankQueryShowsEverything() = runTest(dispatcher) {
+        val repo = FakeSessionRepository()
+        repo.queue(listOf(summary("a"), summary("b")), nextCursor = null)
+        val vm = RecordingsViewModel(repo)
+        backgroundScope.launch { vm.state.toList(mutableListOf()) }
+        testScheduler.advanceUntilIdle()
+
+        vm.onQueryChange("  ")
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(
+            listOf("a", "b"),
+            assertIs<RecordingsUiState.Loaded>(vm.state.value).items.map { it.id.value },
+        )
+    }
+
     @Test fun onLoadMoreAppendsNextPage() = runTest(dispatcher) {
         val repo = FakeSessionRepository()
         repo.queue(listOf(summary("a")), nextCursor = "c1")

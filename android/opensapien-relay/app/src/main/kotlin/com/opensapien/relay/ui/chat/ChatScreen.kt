@@ -1,9 +1,11 @@
 package com.opensapien.relay.ui.chat
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -12,26 +14,25 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
+import com.opensapien.relay.core.ui.SenseTheme
 import com.opensapien.relay.data.ChatMessage
 import com.opensapien.relay.data.Role
 import com.opensapien.relay.ui.design.EmptyState
-import com.opensapien.relay.ui.design.SenseTopBar
-import com.opensapien.relay.ui.design.TopBarState
+import com.opensapien.relay.ui.design.SenseScreenHeader
 
 /**
- * Stateless Chat screen. The Route builds the ViewModel and
- * collects the state; this Composable just renders.
+ * Stateless Chat screen. The route builds the ViewModel and collects state;
+ * this composable only renders.
  *
- * Layout (wrapped in a [Scaffold] so a failed nudge-rename can surface as a
- * Snackbar, mirroring [com.opensapien.relay.ui.recordings.SessionDetailScreen]):
- *  - topBar: SenseTopBar("Chat")
- *  - snackbarHost: shows [speakerError] (a transient rename-send failure)
- *  - content: if messages.isEmpty(): EmptyState ("Ask the agent", "Try ...")
- *    else: ChatMessageList (weight=1f), then ChatInputBar (always at bottom)
+ * Layout: the editorial header, then either the empty state or the message
+ * list (weight 1f), then the composer pinned to the bottom. The `weight` on
+ * the empty state matters — `fillMaxSize` there would consume the column and
+ * push the composer off screen.
  *
- * The "isThinking" computation (loading && last message is USER)
- * lives in this Composable, not the Route — it's a view-level
- * concern, not a data-layer concern.
+ * The "is the agent thinking" test (loading, and the last message is the
+ * user's) lives here rather than in the route: it is a view concern, not a
+ * data one.
  */
 @Composable
 fun ChatScreen(
@@ -47,6 +48,7 @@ fun ChatScreen(
     onDismissSpeakerError: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val colors = SenseTheme.colors
     val isThinking = loading && messages.lastOrNull()?.role == Role.USER
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(speakerError) {
@@ -57,22 +59,27 @@ fun ChatScreen(
     }
     Scaffold(
         modifier = modifier,
-        topBar = { SenseTopBar(state = TopBarState(title = "Chat")) },
+        containerColor = colors.canvas,
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+        Column(
+            Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .background(colors.canvas)
+                .statusBarsPadding(),
+        ) {
+            SenseScreenHeader(
+                eyebrow = "Chat",
+                hero = "Ask what it heard",
+                modifier = Modifier.padding(horizontal = 20.dp),
+            )
             if (messages.isEmpty()) {
-                // weight(1f) — takes the remaining vertical space between
-                // the top bar and the input bar. fillMaxSize() would consume
-                // the whole column and push the ChatInputBar off-screen
-                // (the visible bug from the manual smoke test on 2026-07-19).
                 EmptyState(
-                    title = "Ask the agent",
-                    body = "Try \"what did I say about X yesterday?\" — answers cite " +
-                        "the memory atoms they used.",
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("chat_empty"),
+                    title = "Nothing asked yet",
+                    body = "Try “what did I say about the enclosure yesterday?” — " +
+                        "answers cite the memories they used.",
+                    modifier = Modifier.weight(1f).testTag("chat_empty"),
                 )
             } else {
                 ChatMessageList(

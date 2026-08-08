@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!--
+      The app is pure Compose, so the platform theme's only jobs are to get
+      out of the way and to set the pre-composition window background.
+
+      NoActionBar matters: the default device theme draws a titled action bar
+      above the Compose content, which put a dark "OpenSapien Relay" strip on
+      top of every screen. Colours and typography all come from
+      core/ui/OpenSapienTheme.kt; the system bars are handled by
+      enableEdgeToEdge() in the Activities.
+
+      Light-only: there is deliberately no values-night counterpart, so a
+      phone in dark mode resolves this same theme. forceDarkAllowed stops the
+      platform from auto-inverting it — without that, a light theme under
+      system dark mode can be force-darkened by the OS on some devices, which
+      would undo the whole thing. The attribute is API 29+; below that,
+      force-dark doesn't exist, so the older platforms need nothing.
+    -->
+    <style name="Theme.OpenSapien" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/canvas</item>
+        <item name="android:forceDarkAllowed" tools:targetApi="29">false</item>
+    </style>
+</resources>

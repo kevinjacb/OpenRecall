@@ -1,54 +1,96 @@
 package com.opensapien.relay.core.ui
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.ReadOnlyComposable
 
 /**
- * The OpenSapien Material 3 theme. Monochrome by design — dynamic color is off
- * so the brand doesn't drift based on the user's wallpaper. Single accent
- * (warm graphite-on-ink) is reserved for the live/recording state.
+ * The OpenSapien theme. Two colour systems live side by side, deliberately:
  *
- * Both light and dark variants share the same neutral hues, just inverted
- * luminance, so a screenshot in either mode looks like the same product.
+ *  - `MaterialTheme.colorScheme` — so stock M3 components (TextField,
+ *    Snackbar, Dialog) pick up the right colours without per-call-site
+ *    overrides.
+ *  - [SenseTheme.colors] — the richer, design-comp-accurate token set
+ *    ([SenseColors]) that our own components read. M3's scheme has no slot
+ *    for "accent chip fill" or "healthy-status pill", so those live here.
  *
- * `darkTheme` is exposed for tests + explicit overrides; production
- * callers should omit it and let the system flag decide.
+ * Dynamic colour is off: the brand must not drift with the user's wallpaper.
+ *
+ * **The app is light-only.** `darkTheme` defaults to `false` rather than
+ * `isSystemInDarkTheme()`, so a phone in dark mode still gets the light comp.
+ * The dark palette is kept and still reachable by passing `darkTheme = true`
+ * (tests and previews do), but nothing in production sets it.
+ *
+ * Forcing light here is only one of three layers — the platform window theme
+ * (`res/values/themes.xml`, with no `values-night` counterpart and force-dark
+ * disabled) and the system-bar icon style (`enableEdgeToEdge` in the
+ * Activities) have to agree, or you get a light app under dark system bars
+ * whose icons are invisible.
  */
 @Composable
 fun OpenSapienTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = false,
     content: @Composable () -> Unit,
 ) {
-    val colors = if (darkTheme) {
+    val sense = if (darkTheme) SenseColors.dark() else SenseColors.light()
+    val scheme = if (darkTheme) {
         darkColorScheme(
-            background = SensePalette.BackgroundDark,
-            surface = SensePalette.SurfaceDark,
-            onBackground = SensePalette.OnSurfaceDark,
-            onSurface = SensePalette.OnSurfaceDark,
-            onSurfaceVariant = SensePalette.OnSurfaceMutedDark,
-            outline = SensePalette.OutlineDark,
-            primary = SensePalette.AccentDark,
-            onPrimary = SensePalette.BackgroundDark,
+            primary = sense.accent,
+            onPrimary = sense.canvas,
+            primaryContainer = sense.accentSoft,
+            onPrimaryContainer = sense.accentInk,
+            secondary = sense.ok,
+            onSecondary = sense.canvas,
+            background = sense.canvas,
+            onBackground = sense.ink,
+            surface = sense.card,
+            onSurface = sense.ink,
+            surfaceVariant = sense.canvasSunken,
+            onSurfaceVariant = sense.grey,
+            outline = sense.border,
+            outlineVariant = sense.divider,
+            error = sense.danger,
         )
     } else {
         lightColorScheme(
-            background = SensePalette.BackgroundLight,
-            surface = SensePalette.SurfaceLight,
-            onBackground = SensePalette.OnSurfaceLight,
-            onSurface = SensePalette.OnSurfaceLight,
-            onSurfaceVariant = SensePalette.OnSurfaceMutedLight,
-            outline = SensePalette.OutlineLight,
-            primary = SensePalette.AccentLight,
-            onPrimary = SensePalette.OnSurfaceLight,
+            primary = sense.accent,
+            onPrimary = sense.card,
+            primaryContainer = sense.accentSoft,
+            onPrimaryContainer = sense.accentInk,
+            secondary = sense.ok,
+            onSecondary = sense.card,
+            background = sense.canvas,
+            onBackground = sense.ink,
+            surface = sense.card,
+            onSurface = sense.ink,
+            surfaceVariant = sense.canvasSunken,
+            onSurfaceVariant = sense.grey,
+            outline = sense.border,
+            outlineVariant = sense.divider,
+            error = sense.danger,
         )
     }
-    MaterialTheme(
-        colorScheme = colors,
-        typography = SenseTypography,
-        shapes = SenseShapes,
-        content = content,
-    )
+    CompositionLocalProvider(LocalSenseColors provides sense) {
+        MaterialTheme(
+            colorScheme = scheme,
+            typography = SenseTypography,
+            shapes = SenseShapes,
+            content = content,
+        )
+    }
+}
+
+/**
+ * Accessor for the design-system tokens that M3's `colorScheme` can't
+ * express. Mirrors the `MaterialTheme` object convention so call sites read
+ * `SenseTheme.colors.accentSoft` next to `MaterialTheme.typography.titleSmall`.
+ */
+object SenseTheme {
+    val colors: SenseColors
+        @Composable
+        @ReadOnlyComposable
+        get() = LocalSenseColors.current
 }

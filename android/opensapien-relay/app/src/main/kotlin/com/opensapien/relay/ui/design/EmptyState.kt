@@ -5,7 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Button
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -15,13 +15,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.opensapien.relay.core.ui.SenseTheme
 import com.opensapien.relay.core.ui.Spacing
 
 /**
- * Empty-state placeholder. Always provides an icon slot (often null
- * for the simplest cases), title, and body. The optional CTA is a
- * filled button — only shown when provided, so a CTA-less empty state
- * doesn't leave dead space.
+ * Empty-state placeholder: optional icon, title, body, optional CTA. Centred
+ * and narrow — the comp keeps empty copy short and never lets a CTA run the
+ * full screen width.
  */
 @Composable
 fun EmptyState(
@@ -32,6 +32,7 @@ fun EmptyState(
     ctaLabel: String? = null,
     onCta: (() -> Unit)? = null,
 ) {
+    val colors = SenseTheme.colors
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -42,25 +43,29 @@ fun EmptyState(
         if (icon != null) {
             Icon(
                 imageVector = icon,
-                contentDescription = null, // title carries the meaning
-                modifier = Modifier.size(48.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                contentDescription = null, // the title carries the meaning
+                modifier = Modifier.size(40.dp),
+                tint = colors.greyFaint,
             )
         }
         Text(
             title,
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.titleLarge,
+            color = colors.ink,
             textAlign = TextAlign.Center,
         )
         Text(
             body,
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = colors.grey,
             textAlign = TextAlign.Center,
         )
         if (ctaLabel != null && onCta != null) {
-            Button(onClick = onCta) { Text(ctaLabel) }
+            SecondaryButton(
+                label = ctaLabel,
+                onClick = onCta,
+                modifier = Modifier.padding(top = Spacing.sm).width(220.dp),
+            )
         }
     }
 }

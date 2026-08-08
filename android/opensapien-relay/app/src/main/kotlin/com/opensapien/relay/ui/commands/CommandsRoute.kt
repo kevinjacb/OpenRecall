@@ -22,7 +22,7 @@ import kotlinx.coroutines.launch
  * The stateless [CommandsScreen] is rendered below.
  */
 @Composable
-fun CommandsRoute(modifier: Modifier = Modifier) {
+fun CommandsRoute(onBack: () -> Unit, modifier: Modifier = Modifier) {
     val scope = rememberCoroutineScope()
     val vm: CommandsViewModel = viewModel(
         factory = viewModelFactory {
@@ -43,6 +43,7 @@ fun CommandsRoute(modifier: Modifier = Modifier) {
         onRetry = { scope.launch { vm.refresh() } },
         isRefreshing = isRefreshing,
         onRefresh = vm::onRefresh,
+        onBack = onBack,
         modifier = modifier,
     )
 }

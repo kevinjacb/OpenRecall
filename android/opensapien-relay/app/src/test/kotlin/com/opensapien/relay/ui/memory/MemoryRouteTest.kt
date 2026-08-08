@@ -65,6 +65,52 @@ class MemoryRouteTest {
     }
 
     @Test
+    fun `kind filter narrows the visible atoms without refetching`() = runTest(dispatcher) {
+        // The /memory search endpoint has no kind parameter, so the filter
+        // row is a local narrowing of what came back. `atoms` must stay
+        // intact so clearing the filter restores the full result set.
+        val atoms = listOf(
+            MemoryAtom("a1", "s1", "Task", "send the numbers", "2026-08-08", 0, "e1", "transcript", "v1", "bge", "v1"),
+            MemoryAtom("a2", "s1", "Person", "Priya owns the timeline", "2026-08-08", 0, "e2", "transcript", "v1", "bge", "v1"),
+        )
+        val vm = MemoryViewModel(MemoryRepository(RouteStubMemoryApi(searchAtoms = atoms)))
+        vm.onQueryChanged("x")
+        advanceUntilIdle()
+        assertEquals(2, vm.state.value.visibleAtoms.size)
+
+        vm.onFilterSelected("Task")
+        assertEquals(listOf("a1"), vm.state.value.visibleAtoms.map { it.atomId })
+        assertEquals("the unfiltered result set is retained", 2, vm.state.value.atoms.size)
+
+        vm.onFilterSelected(MemoryState.ALL_FILTER)
+        assertEquals(2, vm.state.value.visibleAtoms.size)
+    }
+
+    @Test
+    fun `filter matching ignores case so extractor casing does not hide memories`() = runTest(dispatcher) {
+        val atoms = listOf(
+            MemoryAtom("a1", "s1", "task", "lowercase kind", "2026-08-08", 0, "e1", "transcript", "v1", "bge", "v1"),
+        )
+        val vm = MemoryViewModel(MemoryRepository(RouteStubMemoryApi(searchAtoms = atoms)))
+        vm.onQueryChanged("x")
+        advanceUntilIdle()
+
+        vm.onFilterSelected("Task")
+        assertEquals(1, vm.state.value.visibleAtoms.size)
+    }
+
+    @Test
+    fun `typing searches without an explicit submit`() = runTest(dispatcher) {
+        val atoms = listOf(
+            MemoryAtom("a1", "s1", "Task", "hello", "2026-08-08", 0, "e1", "transcript", "v1", "bge", "v1"),
+        )
+        val vm = MemoryViewModel(MemoryRepository(RouteStubMemoryApi(searchAtoms = atoms)))
+        vm.onQueryChanged("hello")
+        advanceUntilIdle()
+        assertEquals(1, vm.state.value.atoms.size)
+    }
+
+    @Test
     fun `error path puts errorMessage in state`() = runTest(dispatcher) {
         val vm = MemoryViewModel(MemoryRepository(RouteFailingMemoryApi()))
         vm.onQueryChanged("x")
