@@ -9,7 +9,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -48,11 +47,15 @@ private val LedGreen = Color(0xFF3FBF7F)
 private val LedAmber = Color(0xFFE8813F)
 private val LedGrey = Color(0xFF8D8B88)
 
-/** Idle auto-rotation, in radians per second, matching the comp's `STATES.speed`. */
+/**
+ * Idle auto-rotation, in radians per second. Connected and searching are the comp's
+ * `STATES.speed`; off is lifted from the comp's 0.10 (one turn per minute, which
+ * reads as a frozen image) to something that still looks alive on a phone.
+ */
 private fun DeviceVisualState.spinSpeed(): Float = when (this) {
     DeviceVisualState.Connected -> 0.30f
     DeviceVisualState.Searching -> 0.75f
-    DeviceVisualState.Off -> 0.10f
+    DeviceVisualState.Off -> 0.22f
 }
 
 /** Radians of yaw per pixel of horizontal drag — the comp uses `dx * 0.010`. */
@@ -96,7 +99,6 @@ fun DeviceVisual(
 
     var yaw by remember { mutableFloatStateOf(START_YAW) }
     var spin by remember { mutableFloatStateOf(0f) }
-    var dragging by remember { mutableStateOf(false) }
     var idleRamp by remember { mutableFloatStateOf(0f) }
     var elapsed by remember { mutableFloatStateOf(0f) }
     var pop by remember { mutableFloatStateOf(0f) }
@@ -113,11 +115,16 @@ fun DeviceVisual(
                 last = now
                 elapsed += dt
 
-                if (!dragging) {
-                    idleRamp = (idleRamp + dt * 0.9f).coerceAtMost(1f)
-                    yaw += spin + speed * dt * idleRamp
-                    spin *= SPIN_DECAY_PER_FRAME.pow(dt * 60f)
-                }
+                // The idle spin is unconditional: each drag sample knocks
+                // [idleRamp] back to zero, so the finger owns the rotation while
+                // it is moving and the auto-rotation fades back in about a second
+                // after it stops. Nothing can latch it off — a gesture that ends
+                // without an end/cancel callback (the scroll container stealing
+                // the pointer, say) would otherwise freeze the device for good.
+                idleRamp = (idleRamp + dt * 0.9f).coerceAtMost(1f)
+                yaw += spin + speed * dt * idleRamp
+                spin *= SPIN_DECAY_PER_FRAME.pow(dt * 60f)
+
                 if (pop > 0f) pop = (pop - dt * 1.6f).coerceAtLeast(0f)
             }
         }
@@ -129,13 +136,14 @@ fun DeviceVisual(
             .height(height)
             .pointerInput(Unit) {
                 detectHorizontalDragGestures(
-                    onDragStart = { dragging = true; idleRamp = 0f; spin = 0f },
-                    onDragEnd = { dragging = false },
-                    onDragCancel = { dragging = false },
+                    onDragStart = { spin = 0f },
                 ) { change, dragAmount ->
                     change.consume()
                     val delta = dragAmount * DRAG_RADIANS_PER_PX
                     yaw += delta
+                    // Hold the idle spin off for as long as the finger keeps
+                    // moving, and leave the last sample behind as fling velocity.
+                    idleRamp = 0f
                     spin = delta
                 }
             },
