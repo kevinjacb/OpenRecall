@@ -178,18 +178,24 @@ class ChatViewModelTest {
     }
 
     @Test
-    fun `nameSpeaker noops when the relay is not live`() = runTest(dispatcher) {
+    fun `nameSpeaker dispatches even when the relay is not live`() = runTest(dispatcher) {
         val repo = FakeAgentRepo { _, _ -> error("ask should not be called") }
         val store = ChatHistoryStore()
         val actions = RecordingSpeakerActions()
-        // RelayController is Initial (reset in setUp) → currentSessionId() is null
-        // → nameSpeaker must drop the request silently instead of crashing.
+        // RelayController is Initial (reset in setUp) → currentSessionId() is
+        // null. The HTTP rename endpoint does NOT need the live session id
+        // (HttpSpeakerActions ignores it), so nameSpeaker must still dispatch
+        // (with an empty session id) instead of silently dropping the rename —
+        // the bug the user saw as "rename failing".
         val vm = ChatViewModel(repo, store, speakerActions = actions)
 
         vm.nameSpeaker("spk-1", "Sarah")
         advanceUntilIdle()
 
-        assertEquals("no control emitted with no live session", 0, actions.named.size)
+        assertEquals(1, actions.named.size)
+        assertEquals("empty session id when not live", "", actions.named[0].sessionId)
+        assertEquals("spk-1", actions.named[0].speakerId)
+        assertEquals("Sarah", actions.named[0].name)
     }
 }
 

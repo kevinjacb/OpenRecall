@@ -213,8 +213,13 @@ class ChatViewModel(
      * in [ChatScreen]) so the user knows the server didn't record the name.
      */
     fun nameSpeaker(speakerId: String, name: String) {
-        val sid = currentSessionId()
-        if (sid.isNullOrEmpty()) return
+        // The HTTP rename endpoint does not need the live session id
+        // (HttpSpeakerActions ignores it and calls repo.renameSpeaker
+        // directly), so we dispatch even when the relay is not Live. The
+        // old gate silently dropped the rename — a bug the user saw as
+        // "rename failing" with no error surface. ask() still needs a live
+        // session (it routes through the live agent), so its own gate stays.
+        val sid = currentSessionId() ?: ""
         viewModelScope.launch {
             runCatching { speakerActions.nameSpeaker(sid, speakerId, name) }
                 .onSuccess { _speakerError.value = null }
