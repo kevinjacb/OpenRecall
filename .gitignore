@@ -47,3 +47,5 @@ docs/superpowers/
 # --- Editor ---
 .idea/
 .vscode/
+# --- Claude Design tool artefacts ---
+android/**/design/.thumbnail
