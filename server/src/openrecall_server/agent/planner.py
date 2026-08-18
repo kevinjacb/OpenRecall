@@ -40,6 +40,8 @@ from ..commands.model import Command
 from ..contracts.clock import Clock
 from ..contracts.id_generator import IdGenerator
 from ..contracts.metrics import Metrics
+from ..memory.atom import MemoryAtom
+from ..memory.store import AtomStore
 
 from ..contracts.types import (
     AgentAction,
@@ -96,6 +98,15 @@ class Planner:
         command_validator: CommandValidator | None = None,
         command_guardrails: CommandGuardrails | None = None,
         dispatcher: CommandDispatcher | None = None,
+        # P1 instruction processor: server-side actions mint atoms directly.
+        # atom_store is the same store the extraction worker populates, so a
+        # create_memory atom is immediately queryable. recent_transcript feeds
+        # the planner context so "make a memory out of that" can refer to what
+        # was just said. Both optional so the P2-answers / P2-commands slices
+        # that don't mint still wire a Planner without them.
+        atom_store: "AtomStore | None" = None,
+        reminder_store=None,
+        recent_transcript=None,
     ) -> None:
         self._retriever = retriever
         self._context_builder = context_builder
@@ -110,6 +121,9 @@ class Planner:
         self._command_validator = command_validator
         self._command_guardrails = command_guardrails
         self._dispatcher = dispatcher
+        self._atom_store = atom_store
+        self._reminder_store = reminder_store
+        self._recent = recent_transcript
 
     async def plan(self, ctx: PlannerContext) -> PlannerResult:
         trigger_kind = type(ctx.trigger).__name__
@@ -148,12 +162,18 @@ class Planner:
 
         # 2. BUILD CONTEXT
         capabilities = self._caps.capabilities()
+        recent_text = ""
+        if self._recent is not None and ctx.session_id:
+            try:
+                recent_text = self._recent.recent(ctx.session_id)
+            except Exception:
+                recent_text = ""
         # P3: pass the Trigger envelope. The ContextBuilder is
         # source-agnostic; for UserRequest it uses trigger.text, for
         # Proactive it uses trigger.transcript. The proactive
         # ISSUE_COMMAND prohibition is enforced later in this method.
         prompt = self._context_builder.build(
-            ctx.trigger, retrieved, capabilities
+            ctx.trigger, retrieved, capabilities, recent_transcript=recent_text,
         )
 
         # 4. REASON (async — H4)
@@ -227,6 +247,38 @@ class Planner:
                 return result
             return await self._dispatch_command(
                 ctx, retrieved, validated, prompt,
+                retrieval_latency, llm_latency, validator_latency, guardrails_latency,
+            )
+
+        # P1: server-side actions. These are NOT device commands; they
+        # mint atoms directly and bypass StrictCommandGuardrails. They
+        # ARE confidence-gated by the answer-path guardrails above (they
+        # fall through to the rate limit + confidence gate like ANSWER).
+        # A guardrail REFUSE means the confidence was too low — do not mint.
+        if validated.action.kind == AgentActionKind.CREATE_MEMORY:
+            if guarded.outcome == _REFUSE:
+                result = self._build_result(
+                    ctx, retrieved, outcome=PlannerOutcome.REFUSE, guarded=guarded,
+                    retrieval_latency_ms=retrieval_latency, llm_latency_ms=llm_latency,
+                    validator_latency_ms=validator_latency, guardrails_latency_ms=guardrails_latency,
+                )
+                self._safe_audit(result, prompt=prompt, ctx=ctx)
+                return result
+            return self._create_memory(
+                ctx, retrieved, validated, guarded, prompt,
+                retrieval_latency, llm_latency, validator_latency, guardrails_latency,
+            )
+        if validated.action.kind == AgentActionKind.CREATE_REMINDER:
+            if guarded.outcome == _REFUSE:
+                result = self._build_result(
+                    ctx, retrieved, outcome=PlannerOutcome.REFUSE, guarded=guarded,
+                    retrieval_latency_ms=retrieval_latency, llm_latency_ms=llm_latency,
+                    validator_latency_ms=validator_latency, guardrails_latency_ms=guardrails_latency,
+                )
+                self._safe_audit(result, prompt=prompt, ctx=ctx)
+                return result
+            return self._create_reminder(
+                ctx, retrieved, validated, guarded, prompt,
                 retrieval_latency, llm_latency, validator_latency, guardrails_latency,
             )
 
@@ -398,6 +450,56 @@ class Planner:
         self._safe_audit(result, prompt=prompt, ctx=ctx)
         return result
 
+    def _create_memory(
+        self, ctx, retrieved, validated, guarded, prompt,
+        retrieval_latency_ms, llm_latency_ms, validator_latency_ms, guardrails_latency_ms,
+    ):
+        """Mint a MemoryAtom from the LLM's create_memory action.
+
+        Bypasses the extraction worker (direct mint, exactly as
+        VisionPipeline.capture does). kind chosen by the LLM (default
+        "fact"); source_pipeline_version="instruction" so the atom is
+        distinguishable from transcript / vision atoms.
+        """
+        action = validated.action
+        if self._atom_store is None:
+            return self._build_result(
+                ctx, retrieved, outcome=PlannerOutcome.REFUSE,
+                guarded=GuardedAction(
+                    outcome=_REFUSE, action=action,
+                    refusal_reason=RejectionReason.UNKNOWN,
+                    refusal_message="memory store is not configured on this server",
+                ),
+                retrieval_latency_ms=retrieval_latency_ms, llm_latency_ms=llm_latency_ms,
+                validator_latency_ms=validator_latency_ms, guardrails_latency_ms=guardrails_latency_ms,
+            )
+        atom = MemoryAtom(
+            atom_id=self._ids.new(),
+            session_id=ctx.session_id or "",
+            source_event_id="",  # direct mint — no source capture event
+            kind=action.memory_kind or "fact",
+            text=action.text,
+            created_at=self._clock.now(),
+            start_ms=0,
+            occurred_at=self._clock.now(),
+            source_pipeline_version="instruction",
+        )
+        self._atom_store.append(atom)
+        result = self._build_result(
+            ctx, retrieved, outcome=PlannerOutcome.CREATE_MEMORY, guarded=guarded,
+            retrieval_latency_ms=retrieval_latency_ms, llm_latency_ms=llm_latency_ms,
+            validator_latency_ms=validator_latency_ms, guardrails_latency_ms=guardrails_latency_ms,
+            memory_atom_id=atom.atom_id,
+        )
+        self._safe_audit(result, prompt=prompt, ctx=ctx)
+        return result
+
+    def _create_reminder(
+        self, ctx, retrieved, validated, guarded, prompt,
+        retrieval_latency_ms, llm_latency_ms, validator_latency_ms, guardrails_latency_ms,
+    ):
+        raise NotImplementedError  # Task 8
+
     def _do_retrieve(self, ctx: PlannerContext) -> RetrievedContext:
         # P3: the retriever only needs a string to embed. For
         # UserRequest the trigger text is the question; for Proactive
@@ -427,6 +529,7 @@ class Planner:
         guardrails_latency_ms: int,
         command_id: str | None = None,
         command_status: str | None = None,
+        memory_atom_id: str | None = None, reminder_id: str | None = None,
     ) -> PlannerResult:
         # Map outcome -> confidence band (per the wire contract).
         if outcome == PlannerOutcome.RETURN:
@@ -453,6 +556,8 @@ class Planner:
             refusal_message=guarded.refusal_message,
             command_id=command_id,
             command_status=command_status,
+            memory_atom_id=memory_atom_id,
+            reminder_id=reminder_id,
             retrieval_latency_ms=retrieval_latency_ms,
             llm_latency_ms=llm_latency_ms,
             validator_latency_ms=validator_latency_ms,
