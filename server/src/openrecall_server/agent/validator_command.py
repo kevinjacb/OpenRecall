@@ -17,13 +17,17 @@ Per-type schemas (per the spec §6.2):
   - ``start_audio``:     no params
   - ``stop_audio``:      no params
   - ``request_buffer``:  ``seconds in [1, 60]``
+  - ``record_audio``:    ``duration_s in [1, 120]``  (P1)
+  - ``start_video``:     no params                   (P1)
+  - ``stop_video``:      no params                   (P1)
+  - ``flush_snapshots``: no params                   (P1)
 
-The validator also enforces the command allowlist: only the 5 P2
-types are autonomously executable. ``display_text``, ``play_audio``,
-and ``show_status`` are not in the P2 list; they fail validation as
-``UNKNOWN_TYPE``. Adding them to the allowlist is a one-line change
-in :data:`_ALLOWLIST` once a future phase implements the
-corresponding firmware executors.
+The validator also enforces the command allowlist: the 5 P2 types
+plus the 4 P1 instruction-processor types are autonomously
+executable. ``display_text``, ``play_audio``, and ``show_status``
+are not allowlisted; they fail validation as ``UNKNOWN_TYPE``.
+Adding them is a one-line change in :data:`_ALLOWLIST` once a future
+phase implements the corresponding firmware executors.
 
 The validator is stateless and dependency-free — every consumer can
 share one instance.
@@ -38,15 +42,21 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..contracts.types import IssueCommandPayload
 
 
-# Command allowlist — the 5 P2 types. Adding a new type here is the
-# binding contract for "the firmware knows how to execute this". Until
-# a corresponding executor lands in P4, do not add to this set.
+# Command allowlist — the P2 types plus the P1 instruction-processor
+# types. Adding a new type here is the binding contract for "the device
+# knows how to execute this" (firmware executor or, for P1, the device
+# simulator).
 ALLOWLIST: frozenset[str] = frozenset({
     "capture_photo",
     "record_video",
     "start_audio",
     "stop_audio",
     "request_buffer",
+    # P1 instruction processor.
+    "record_audio",
+    "start_video",
+    "stop_video",
+    "flush_snapshots",
 })
 
 
@@ -105,6 +115,17 @@ _TYPE_SCHEMAS: dict[str, dict] = {
             "seconds": (_is_number, 1, 60),
         },
     },
+    # P1 instruction processor.
+    "record_audio": {
+        "required": ("duration_s",),
+        "optional": (),
+        "fields": {
+            "duration_s": (_is_number, 1, 120),
+        },
+    },
+    "start_video": {"required": (), "optional": (), "fields": {}},
+    "stop_video": {"required": (), "optional": (), "fields": {}},
+    "flush_snapshots": {"required": (), "optional": (), "fields": {}},
 }
 
 

@@ -28,6 +28,11 @@ CommandType = Literal[
     "display_text",
     "show_status",
     "request_buffer",
+    # P1 instruction processor: prospective audio + voice-activated video.
+    "record_audio",
+    "start_video",
+    "stop_video",
+    "flush_snapshots",
 ]
 
 

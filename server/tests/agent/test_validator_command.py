@@ -250,3 +250,47 @@ def test_validated_command_preserves_command_type():
     v = StrictCommandValidator()
     out = v.validate(_payload("record_video", {"duration_s": 10}))
     assert out.command.command_type == "record_video"
+
+
+# --- P1 instruction processor: record_audio / start_video / stop_video /
+#     flush_snapshots -----------------------------------------------
+
+
+def test_record_audio_validates_duration_in_bounds():
+    from openrecall_server.agent.validator_command import StrictCommandValidator
+    v = StrictCommandValidator()
+    assert v.validate(_payload("record_audio", {"duration_s": 20})).rejection is None
+    assert v.validate(_payload("record_audio", {"duration_s": 1})).rejection is None
+    assert v.validate(_payload("record_audio", {"duration_s": 120})).rejection is None
+
+
+def test_record_audio_rejects_out_of_range_duration():
+    from openrecall_server.agent.validator_command import (
+        StrictCommandValidator, RejectionReason,
+    )
+    v = StrictCommandValidator()
+    assert v.validate(_payload("record_audio", {"duration_s": 0})).rejection == RejectionReason.PARAM_OUT_OF_RANGE
+    assert v.validate(_payload("record_audio", {"duration_s": 121})).rejection == RejectionReason.PARAM_OUT_OF_RANGE
+
+
+def test_record_audio_requires_duration_s():
+    from openrecall_server.agent.validator_command import (
+        StrictCommandValidator, RejectionReason,
+    )
+    v = StrictCommandValidator()
+    assert v.validate(_payload("record_audio", {})).rejection == RejectionReason.MISSING_REQUIRED_PARAM
+
+
+def test_start_video_stop_video_flush_snapshots_accept_no_params():
+    from openrecall_server.agent.validator_command import StrictCommandValidator
+    v = StrictCommandValidator()
+    for t in ("start_video", "stop_video", "flush_snapshots"):
+        assert v.validate(_payload(t, {})).rejection is None, t
+
+
+def test_start_video_rejects_unknown_param():
+    from openrecall_server.agent.validator_command import (
+        StrictCommandValidator, RejectionReason,
+    )
+    v = StrictCommandValidator()
+    assert v.validate(_payload("start_video", {"duration_s": 5})).rejection == RejectionReason.UNKNOWN_PARAM

@@ -84,6 +84,7 @@ class IssueCommandPayload(BaseModel):
     command_type: Literal[
         "capture_photo", "record_video", "start_audio",
         "stop_audio", "request_buffer",
+        "record_audio", "start_video", "stop_video", "flush_snapshots",
     ]
     params: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str
