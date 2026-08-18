@@ -317,6 +317,18 @@ class CapabilityProvider(Protocol):
     def resources(self) -> DeviceResourceStatus: ...
 
 
+@runtime_checkable
+class RecentTranscriptProvider(Protocol):
+    """Single seam for "what has the user said recently in this session?".
+
+    The planner reads the recent live-session transcript so server-side
+    actions (create_memory, create_reminder) and prospective commands
+    (record_audio) can refer to what was just said. Bounded by max_age_s.
+    """
+
+    def recent(self, session_id: str, max_age_s: int = 60) -> str: ...
+
+
 # =============================================================================
 # Planner (N3.2 / INV-9)
 # =============================================================================
