@@ -123,3 +123,19 @@ def test_mapper_preserves_score_on_chips():
     result = _result(atoms=atoms)
     dto = map_planner_result_to_dto(result)
     assert dto.atoms[0].score == 0.42
+
+
+def test_map_create_memory_outcome():
+    r = _result(outcome=PlannerOutcome.CREATE_MEMORY, memory_atom_id="m1", confidence=0.9)
+    dto = map_planner_result_to_dto(r)
+    assert dto.outcome == "create_memory"
+    assert dto.memory_atom_id == "m1"
+    assert dto.reminder_id is None
+
+
+def test_map_create_reminder_outcome():
+    r = _result(outcome=PlannerOutcome.CREATE_REMINDER, reminder_id="rm1", confidence=0.9)
+    dto = map_planner_result_to_dto(r)
+    assert dto.outcome == "create_reminder"
+    assert dto.reminder_id == "rm1"
+    assert dto.memory_atom_id is None

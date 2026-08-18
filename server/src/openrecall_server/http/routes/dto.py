@@ -76,7 +76,10 @@ class AgentResponseDTO(BaseModel):
     request_id: str
     retrieval_trace_id: str
     audit_id: str
-    outcome: Literal["return", "return_with_uncertainty", "refuse", "issue_command"]
+    outcome: Literal[
+        "return", "return_with_uncertainty", "refuse",
+        "issue_command", "create_memory", "create_reminder",
+    ]
     answer: str | None = None
     atoms: list[AtomChipDTO] = Field(default_factory=list)
     confidence: float | None = None
@@ -85,6 +88,9 @@ class AgentResponseDTO(BaseModel):
     payload: dict | None = None
     command_id: str | None = None
     command_status: str | None = None
+    # P1 instruction processor: the minted id for server-side outcomes.
+    memory_atom_id: str | None = None
+    reminder_id: str | None = None
 
 
 # --- /memory ----------------------------------------------------------------

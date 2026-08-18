@@ -67,6 +67,10 @@ def map_planner_result_to_dto(result: PlannerResult) -> AgentResponseDTO:
         outcome_wire = "return_with_uncertainty"
     elif result.outcome == PlannerOutcome.ISSUE_COMMAND:
         outcome_wire = "issue_command"
+    elif result.outcome == PlannerOutcome.CREATE_MEMORY:
+        outcome_wire = "create_memory"
+    elif result.outcome == PlannerOutcome.CREATE_REMINDER:
+        outcome_wire = "create_reminder"
     else:
         outcome_wire = "refuse"
     return AgentResponseDTO(
@@ -81,4 +85,6 @@ def map_planner_result_to_dto(result: PlannerResult) -> AgentResponseDTO:
         refusal_reason=result.refusal_message if result.outcome == PlannerOutcome.REFUSE else None,
         command_id=result.command_id,
         command_status=result.command_status,
+        memory_atom_id=result.memory_atom_id,
+        reminder_id=result.reminder_id,
     )
