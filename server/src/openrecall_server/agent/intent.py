@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
 from pydantic import ValidationError
@@ -102,6 +103,32 @@ def _parse(raw: str) -> LLMResult:
     except (TypeError, ValueError) as e:
         return LLMResult(raw=raw, parsed=None, parse_error=f"confidence: {e}")
 
+    # P1: server-side action payloads. create_memory carries an optional
+    # memory_kind (the atom kind: fact/task/preference/event); the planner
+    # defaults to "fact" at mint time. create_reminder carries a required
+    # due_at (ISO 8601); the LLM resolves relative times ("at 6pm", "in an
+    # hour") against the server wall clock. A missing/unparseable due_at is
+    # a parse failure — the validator cannot accept a reminder without one.
+    memory_kind: str | None = None
+    due_at: datetime | None = None
+    if kind in (AgentActionKind.CREATE_MEMORY, AgentActionKind.CREATE_REMINDER):
+        memory_kind = data.get("memory_kind")
+        if kind == AgentActionKind.CREATE_REMINDER:
+            raw_due = data.get("due_at")
+            if not raw_due:
+                return LLMResult(
+                    raw=raw, parsed=None,
+                    parse_error="create_reminder reply missing 'due_at'",
+                )
+            try:
+                due_at = datetime.fromisoformat(raw_due)
+            except (TypeError, ValueError) as e:
+                return LLMResult(
+                    raw=raw, parsed=None, parse_error=f"due_at: {e}",
+                )
+            if due_at.tzinfo is None:
+                due_at = due_at.replace(tzinfo=timezone.utc)
+
     # P2-commands: parse the structured command payload for
     # issue_command. The 5-type allowlist and per-type param bounds
     # are enforced by IssueCommandPayload (Literal type) — the
@@ -158,6 +185,8 @@ def _parse(raw: str) -> LLMResult:
             atom_ids=atom_ids,
             confidence=confidence,
             command=command,
+            memory_kind=memory_kind,
+            due_at=due_at,
         ),
         parse_error=None,
     )

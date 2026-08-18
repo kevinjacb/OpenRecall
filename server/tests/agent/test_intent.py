@@ -14,7 +14,7 @@ from openrecall_server.contracts.types import (
     LLMResult,
     Prompt,
 )
-from openrecall_server.agent.intent import OpenAICompatibleAgentLLM
+from openrecall_server.agent.intent import OpenAICompatibleAgentLLM, _parse
 
 
 class FakeChat:
@@ -330,3 +330,52 @@ async def test_concurrent_reason_calls_dont_serialize_h4():
 def test_agent_llm_protocol_satisfied():
     from openrecall_server.agent.intent import AgentLLM
     assert isinstance(OpenAICompatibleAgentLLM(FakeChat()), AgentLLM)
+
+
+# --- create_memory / create_reminder parsing (P1 instruction-processor) ----
+
+
+def test_parse_create_memory():
+    raw = json.dumps({
+        "kind": "create_memory", "text": "user likes espresso",
+        "atom_ids": [], "confidence": 0.9, "memory_kind": "preference",
+    })
+    r = _parse(raw)
+    assert r.parse_error is None
+    assert r.parsed.kind.value == "create_memory"
+    assert r.parsed.text == "user likes espresso"
+    assert r.parsed.memory_kind == "preference"
+
+
+def test_parse_create_memory_defaults_memory_kind_to_none():
+    raw = json.dumps({"kind": "create_memory", "text": "x", "confidence": 0.9})
+    r = _parse(raw)
+    assert r.parse_error is None
+    assert r.parsed.memory_kind is None  # mint defaults to "fact"
+
+
+def test_parse_create_reminder_with_iso_due_at():
+    raw = json.dumps({
+        "kind": "create_reminder", "text": "call mom",
+        "atom_ids": [], "confidence": 0.9, "due_at": "2026-08-18T18:00:00",
+    })
+    r = _parse(raw)
+    assert r.parse_error is None
+    assert r.parsed.due_at is not None
+    assert r.parsed.due_at.tzinfo is not None  # naive coerced to UTC
+
+
+def test_parse_create_reminder_missing_due_at_is_parse_error():
+    raw = json.dumps({"kind": "create_reminder", "text": "call mom", "confidence": 0.9})
+    r = _parse(raw)
+    assert r.parsed is None
+    assert "due_at" in (r.parse_error or "")
+
+
+def test_parse_create_reminder_bad_due_at_is_parse_error():
+    raw = json.dumps({
+        "kind": "create_reminder", "text": "x", "confidence": 0.9, "due_at": "not-a-date",
+    })
+    r = _parse(raw)
+    assert r.parsed is None
+    assert "due_at" in (r.parse_error or "")
