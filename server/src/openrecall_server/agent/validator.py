@@ -6,14 +6,17 @@ binding rules are:
 
   1. ``parse_error is not None``  -> ``INVALID_JSON``
   2. ``NO_MEMORY`` with any atom_ids  -> ``SCHEMA_MISMATCH``
-  3. ``ISSUE_COMMAND`` without a parsed command payload
+  3. ``CREATE_MEMORY`` with empty text  -> ``SCHEMA_MISMATCH``
+  4. ``CREATE_REMINDER`` with empty text or no ``due_at``
+     -> ``SCHEMA_MISMATCH``
+  5. ``ISSUE_COMMAND`` without a parsed command payload
      -> ``MISSING_COMMAND_PAYLOAD``
-  4. ``ANSWER`` with empty atom_ids  -> ``NO_ATOM_CITED``
-  5. ``ANSWER`` with any cited id not in the retrieved set
+  6. ``ANSWER`` with empty atom_ids  -> ``NO_ATOM_CITED``
+  7. ``ANSWER`` with any cited id not in the retrieved set
      -> ``CITED_ATOM_NOT_RETRIEVED``
-  6. ``ANSWER`` with confidence outside [0, 1]
+  8. ``ANSWER`` with confidence outside [0, 1]
      -> ``CONFIDENCE_OUT_OF_RANGE``
-  7. otherwise  -> accepted
+  9. otherwise  -> accepted
 
 The ``ISSUE_COMMAND`` branch is intentionally minimal: the generic
 validator only enforces the wire-shape contract (the kind is set
@@ -24,6 +27,15 @@ which is the sole authority for command-type / param-bounds policy.
 Splitting the two means a change to bounds does not require a
 generic-validator regression test, and a change to the wire shape
 does not require a command-bounds regression test.
+
+The ``CREATE_MEMORY`` / ``CREATE_REMINDER`` branches (P1 instruction
+processor) are server-side actions minted by the planner — they are
+NOT device commands and bypass :class:`StrictCommandValidator` /
+:class:`StrictCommandGuardrails` entirely. The generic validator
+enforces only their wire shape (non-empty text, and a ``due_at`` for
+reminders); neither requires a cited atom (they are not factual
+answers). They are confidence-gated by the answer guardrails, wired
+in a later task.
 """
 from __future__ import annotations
 
@@ -80,7 +92,25 @@ class StrictJSONValidator:
                 )
             return ValidatedAction(action=action, rejection=None)
 
-        # 3. P2-commands: ISSUE_COMMAND skips the answer-style
+        # 3. P1: server-side actions. create_memory requires non-empty text
+        # (the memory body); memory_kind is optional (defaults to "fact"
+        # at mint time). create_reminder requires non-empty text AND a
+        # due_at. Neither requires a cited atom (they are not factual
+        # answers); both are confidence-gated by the answer guardrails.
+        if action.kind == AgentActionKind.CREATE_MEMORY:
+            if not action.text:
+                return ValidatedAction(
+                    action=action, rejection=RejectionReason.SCHEMA_MISMATCH,
+                )
+            return ValidatedAction(action=action, rejection=None)
+        if action.kind == AgentActionKind.CREATE_REMINDER:
+            if not action.text or action.due_at is None:
+                return ValidatedAction(
+                    action=action, rejection=RejectionReason.SCHEMA_MISMATCH,
+                )
+            return ValidatedAction(action=action, rejection=None)
+
+        # 4. P2-commands: ISSUE_COMMAND skips the answer-style
         # citation checks (an empty atom_ids is the v2 prompt's
         # contracted shape for a device action) and instead requires
         # a parsed IssueCommandPayload. The 5-type allowlist and
@@ -94,14 +124,14 @@ class StrictJSONValidator:
                 )
             return ValidatedAction(action=action, rejection=None)
 
-        # 4. ANSWER must cite at least one retrieved atom.
+        # 5. ANSWER must cite at least one retrieved atom.
         if not action.atom_ids:
             return ValidatedAction(
                 action=action,
                 rejection=RejectionReason.NO_ATOM_CITED,
             )
 
-        # 5. All cited atoms must come from the retrieved set.
+        # 6. All cited atoms must come from the retrieved set.
         cited = set(action.atom_ids)
         if not cited.issubset(retrieved):
             return ValidatedAction(
@@ -109,12 +139,12 @@ class StrictJSONValidator:
                 rejection=RejectionReason.CITED_ATOM_NOT_RETRIEVED,
             )
 
-        # 6. Confidence is bounded.
+        # 7. Confidence is bounded.
         if not (0.0 <= action.confidence <= 1.0):
             return ValidatedAction(
                 action=action,
                 rejection=RejectionReason.CONFIDENCE_OUT_OF_RANGE,
             )
 
-        # 7. Accepted.
+        # 8. Accepted.
         return ValidatedAction(action=action, rejection=None)

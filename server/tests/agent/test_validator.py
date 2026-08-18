@@ -322,3 +322,67 @@ def test_validator_preserves_no_memory_and_answer_behavior_unchanged():
     res = LLMResult(raw="...", parsed=parsed, parse_error=None)
     out = v.validate(_ctx(atoms=("a1",)), res)
     assert out.rejection == RejectionReason.CITED_ATOM_NOT_RETRIEVED
+
+
+# --- create_memory / create_reminder (P1 instruction processor) ------------
+#
+# These are server-side actions minted by the planner (not device commands).
+# They bypass command guardrails and the answer-path citation checks; the
+# generic validator only enforces their wire shape. Helpers below are
+# prefixed ``_p1_`` to avoid shadowing the existing ``_ctx`` / ``_result``
+# helpers above (which have a different signature).
+
+from datetime import datetime, timezone  # noqa: E402
+
+
+def _p1_ctx():
+    return ValidatorContext(retrieved_atom_ids=())
+
+
+def _p1_result(kind, **kw):
+    return LLMResult(
+        raw="{}", parsed=AgentAction(kind=kind, confidence=0.9, **kw), parse_error=None,
+    )
+
+
+def test_create_memory_requires_nonempty_text():
+    v = StrictJSONValidator()
+    out = v.validate(_p1_ctx(), _p1_result(AgentActionKind.CREATE_MEMORY, text=""))
+    assert out.rejection == RejectionReason.SCHEMA_MISMATCH
+
+
+def test_create_memory_accepts_with_text_and_optional_kind():
+    v = StrictJSONValidator()
+    out = v.validate(
+        _p1_ctx(),
+        _p1_result(
+            AgentActionKind.CREATE_MEMORY, text="the user likes espresso", memory_kind="preference"
+        ),
+    )
+    assert out.rejection is None
+
+
+def test_create_reminder_requires_text_and_due_at():
+    v = StrictJSONValidator()
+    due = datetime(2026, 8, 18, 18, 0, tzinfo=timezone.utc)
+    assert (
+        v.validate(
+            _p1_ctx(), _p1_result(AgentActionKind.CREATE_REMINDER, text="", due_at=due)
+        ).rejection
+        == RejectionReason.SCHEMA_MISMATCH
+    )
+    assert (
+        v.validate(
+            _p1_ctx(), _p1_result(AgentActionKind.CREATE_REMINDER, text="call mom", due_at=None)
+        ).rejection
+        == RejectionReason.SCHEMA_MISMATCH
+    )
+
+
+def test_create_reminder_accepts_text_and_due_at():
+    v = StrictJSONValidator()
+    due = datetime(2026, 8, 18, 18, 0, tzinfo=timezone.utc)
+    out = v.validate(
+        _p1_ctx(), _p1_result(AgentActionKind.CREATE_REMINDER, text="call mom", due_at=due)
+    )
+    assert out.rejection is None

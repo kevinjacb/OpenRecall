@@ -68,6 +68,9 @@ class AgentActionKind(str, Enum):
     ANSWER = "answer"
     NO_MEMORY = "no_memory"
     ISSUE_COMMAND = "issue_command"
+    # P1 instruction processor: server-side actions minted by the planner.
+    CREATE_MEMORY = "create_memory"
+    CREATE_REMINDER = "create_reminder"
 
 
 class IssueCommandPayload(BaseModel):
@@ -109,6 +112,12 @@ class AgentAction(BaseModel):
     atom_ids: tuple[str, ...] = Field(default_factory=tuple)
     confidence: float = Field(ge=0.0, le=1.0)
     command: IssueCommandPayload | None = None
+    # P1: server-side action payloads. create_memory uses `text` as the
+    # memory text and `memory_kind` as the atom kind (fact/task/...,
+    # default "fact" at mint time). create_reminder uses `text` as the
+    # reminder text and `due_at` as the fire time (server wall clock).
+    memory_kind: str | None = None
+    due_at: datetime | None = None
 
 
 class LLMResult(BaseModel):
@@ -328,6 +337,9 @@ class PlannerOutcome(str, Enum):
     RETURN_WITH_UNCERTAINTY = "return_with_uncertainty"  # answered, low confidence
     REFUSE = "refuse"                          # explicit refusal
     ISSUE_COMMAND = "issue_command"            # autonomous command dispatch
+    # P1 instruction processor: server-side outcomes.
+    CREATE_MEMORY = "create_memory"
+    CREATE_REMINDER = "create_reminder"
 
 
 class UserRequest(BaseModel):
@@ -417,6 +429,11 @@ class PlannerResult(BaseModel):
     # lifecycle UI watches the dispatcher for status changes.
     command_id: str | None = None
     command_status: str | None = None  # initial lifecycle status (PENDING)
+    # P1: present iff outcome == CREATE_MEMORY / CREATE_REMINDER. Carries
+    # the minted atom_id (create_memory) or the reminder atom_id
+    # (create_reminder; the reminder side-table row keys on the same id).
+    memory_atom_id: str | None = None
+    reminder_id: str | None = None
     # End-to-end latency breakdown, observed by the Planner.
     retrieval_latency_ms: int = 0
     llm_latency_ms: int = 0
