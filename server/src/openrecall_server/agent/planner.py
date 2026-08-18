@@ -498,7 +498,48 @@ class Planner:
         self, ctx, retrieved, validated, guarded, prompt,
         retrieval_latency_ms, llm_latency_ms, validator_latency_ms, guardrails_latency_ms,
     ):
-        raise NotImplementedError  # Task 8
+        """Mint a reminder: a kind='reminder' MemoryAtom (the text) + a
+        ReminderStore schedule row (the due_at). occurred_at is the due_at
+        so the reminder shows on the timeline at its fire time. The
+        ReminderSweeper (Task 9) fires it as a proactive message when due.
+        """
+        action = validated.action
+        if self._atom_store is None or self._reminder_store is None:
+            return self._build_result(
+                ctx, retrieved, outcome=PlannerOutcome.REFUSE,
+                guarded=GuardedAction(
+                    outcome=_REFUSE, action=action,
+                    refusal_reason=RejectionReason.UNKNOWN,
+                    refusal_message="reminder store is not configured on this server",
+                ),
+                retrieval_latency_ms=retrieval_latency_ms, llm_latency_ms=llm_latency_ms,
+                validator_latency_ms=validator_latency_ms, guardrails_latency_ms=guardrails_latency_ms,
+            )
+        due_at = action.due_at or self._clock.now()
+        atom = MemoryAtom(
+            atom_id=self._ids.new(),
+            session_id=ctx.session_id or "",
+            source_event_id="",
+            kind="reminder",
+            text=action.text,
+            created_at=self._clock.now(),
+            start_ms=0,
+            occurred_at=due_at,
+            source_pipeline_version="instruction",
+        )
+        self._atom_store.append(atom)
+        self._reminder_store.add(
+            atom_id=atom.atom_id, session_id=ctx.session_id or "",
+            text=action.text, due_at=due_at,
+        )
+        result = self._build_result(
+            ctx, retrieved, outcome=PlannerOutcome.CREATE_REMINDER, guarded=guarded,
+            retrieval_latency_ms=retrieval_latency_ms, llm_latency_ms=llm_latency_ms,
+            validator_latency_ms=validator_latency_ms, guardrails_latency_ms=guardrails_latency_ms,
+            reminder_id=atom.atom_id,
+        )
+        self._safe_audit(result, prompt=prompt, ctx=ctx)
+        return result
 
     def _do_retrieve(self, ctx: PlannerContext) -> RetrievedContext:
         # P3: the retriever only needs a string to embed. For
