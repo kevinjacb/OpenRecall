@@ -79,6 +79,11 @@ def _capability_name(command_type: str) -> str:
         "start_audio": "microphone",
         "stop_audio": "microphone",
         "request_buffer": "retrospective_buffer",
+        # P1 instruction processor.
+        "record_audio": "microphone",
+        "start_video": "camera",
+        "stop_video": "camera",
+        "flush_snapshots": "camera",
     }.get(command_type, "unknown")
 
 
@@ -88,6 +93,11 @@ CAPABILITY_REQUIREMENTS: dict[str, "callable"] = {
     "start_audio": _needs_microphone,
     "stop_audio": _needs_microphone,  # also needs the mic
     "request_buffer": _needs_retrospective_buffer,
+    # P1 instruction processor.
+    "record_audio": _needs_microphone,
+    "start_video": _needs_camera,
+    "stop_video": _needs_camera,
+    "flush_snapshots": _needs_camera,
 }
 
 
@@ -200,9 +210,9 @@ class StrictCommandGuardrails:
                 f"battery {self._resources.battery_pct:.0%} is below the "
                 f"{min_battery:.0%} minimum for {command.command_type!r}"
             )
-        # Storage: only record_video / request_buffer actually
-        # write audio; check the duration-scaled estimate.
-        if command.command_type in ("record_video", "request_buffer"):
+        # Storage: only record_video / request_buffer / record_audio
+        # actually write audio; check the duration-scaled estimate.
+        if command.command_type in ("record_video", "request_buffer", "record_audio"):
             seconds = command.params.get("duration_s") or command.params.get("seconds") or 0
             needed = seconds * _STORAGE_BYTES_PER_SECOND
             if self._resources.storage_free_bytes < needed:

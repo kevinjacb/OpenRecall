@@ -227,3 +227,47 @@ def test_refused_result_marks_command_as_not_allowed():
     assert out.rejection is not None
     assert out.message is not None
     assert out.command is None
+
+
+# --- P1 instruction processor: record_audio + start/stop_video + flush_snapshots
+
+
+def test_record_audio_needs_microphone():
+    g = StrictCommandGuardrails(
+        _caps(microphone=False), _resources()
+    )
+    out = g.check(_command("record_audio", {"duration_s": 20}))
+    assert not out.allowed
+    assert out.rejection == RejectionReason.CAPABILITY_UNAVAILABLE
+    assert "microphone" in (out.message or "")
+
+
+def test_record_audio_passes_with_mic_and_storage():
+    g = StrictCommandGuardrails(_caps(), _resources())
+    assert g.check(_command("record_audio", {"duration_s": 20})).allowed
+
+
+def test_record_audio_refused_on_low_storage():
+    g = StrictCommandGuardrails(
+        _caps(), _resources(storage_free_bytes=0)
+    )
+    out = g.check(_command("record_audio", {"duration_s": 20}))
+    assert not out.allowed
+    assert out.rejection == RejectionReason.RESOURCE_UNAVAILABLE
+
+
+def test_start_video_needs_camera():
+    g = StrictCommandGuardrails(
+        _caps(camera=False), _resources()
+    )
+    for t in ("start_video", "stop_video", "flush_snapshots"):
+        out = g.check(_command(t))
+        assert not out.allowed, t
+        assert out.rejection == RejectionReason.CAPABILITY_UNAVAILABLE, t
+        assert "camera" in (out.message or ""), t
+
+
+def test_start_video_passes_with_camera():
+    g = StrictCommandGuardrails(_caps(), _resources())
+    for t in ("start_video", "stop_video", "flush_snapshots"):
+        assert g.check(_command(t)).allowed, t
