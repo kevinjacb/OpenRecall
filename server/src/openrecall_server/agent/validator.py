@@ -20,7 +20,7 @@ binding rules are:
 
 The ``ISSUE_COMMAND`` branch is intentionally minimal: the generic
 validator only enforces the wire-shape contract (the kind is set
-and a parsed :class:`IssueCommandPayload` is present). The 5-type
+and a parsed :class:`IssueCommandPayload` is present). The 9-type
 allowlist and per-type param bounds are owned by
 :class:`openrecall_server.agent.validator_command.StrictCommandValidator`,
 which is the sole authority for command-type / param-bounds policy.

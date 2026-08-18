@@ -4,7 +4,7 @@ The Planner orchestrates the read path AND the command path:
 
   1. RETRIEVE — call :class:`Retriever` for relevant atoms.
   2. BUILD CONTEXT — call :class:`ContextBuilder` with the trigger,
-     retrieved atoms, and capabilities. The v2 system prompt (see
+     retrieved atoms, and capabilities. The v3 system prompt (see
      :mod:`agent.context`) carves out device actions from the
      empty-retrieval no-memory directive, so direct commands reach
      the LLM even on a cold index.
@@ -463,7 +463,7 @@ class Planner:
         """
         action = validated.action
         if self._atom_store is None:
-            return self._build_result(
+            result = self._build_result(
                 ctx, retrieved, outcome=PlannerOutcome.REFUSE,
                 guarded=GuardedAction(
                     outcome=_REFUSE, action=action,
@@ -473,6 +473,8 @@ class Planner:
                 retrieval_latency_ms=retrieval_latency_ms, llm_latency_ms=llm_latency_ms,
                 validator_latency_ms=validator_latency_ms, guardrails_latency_ms=guardrails_latency_ms,
             )
+            self._safe_audit(result, prompt=prompt, ctx=ctx)
+            return result
         atom = MemoryAtom(
             atom_id=self._ids.new(),
             session_id=ctx.session_id or "",
@@ -505,7 +507,7 @@ class Planner:
         """
         action = validated.action
         if self._atom_store is None or self._reminder_store is None:
-            return self._build_result(
+            result = self._build_result(
                 ctx, retrieved, outcome=PlannerOutcome.REFUSE,
                 guarded=GuardedAction(
                     outcome=_REFUSE, action=action,
@@ -515,9 +517,41 @@ class Planner:
                 retrieval_latency_ms=retrieval_latency_ms, llm_latency_ms=llm_latency_ms,
                 validator_latency_ms=validator_latency_ms, guardrails_latency_ms=guardrails_latency_ms,
             )
+            self._safe_audit(result, prompt=prompt, ctx=ctx)
+            return result
         due_at = action.due_at or self._clock.now()
+        atom_id = self._ids.new()
+        # Write the schedule row BEFORE the atom so a failure leaves no ghost
+        # atom (a kind='reminder' atom with no schedule row would never fire
+        # but still show on the /memory timeline — a silent partial failure).
+        # ReminderStore.add keys on atom_id but does not reference AtomStore,
+        # so schedule-first is feasible. AtomStore has no single-atom remove
+        # method (only delete_range by start_ms), so reverse order is cleaner
+        # than best-effort rollback of a just-appended atom. If add() raises,
+        # REFUSE with a clear reason and no dangling atom. If the atom append
+        # then fails, a schedule row with no atom remains — but the sweeper
+        # fires from the schedule row's text, so the reminder still nudges the
+        # user (less confusing than a ghost atom that never fires).
+        try:
+            self._reminder_store.add(
+                atom_id=atom_id, session_id=ctx.session_id or "",
+                text=action.text, due_at=due_at,
+            )
+        except Exception as exc:
+            result = self._build_result(
+                ctx, retrieved, outcome=PlannerOutcome.REFUSE,
+                guarded=GuardedAction(
+                    outcome=_REFUSE, action=action,
+                    refusal_reason=RejectionReason.UNKNOWN,
+                    refusal_message=f"failed to schedule reminder: {exc}",
+                ),
+                retrieval_latency_ms=retrieval_latency_ms, llm_latency_ms=llm_latency_ms,
+                validator_latency_ms=validator_latency_ms, guardrails_latency_ms=guardrails_latency_ms,
+            )
+            self._safe_audit(result, prompt=prompt, ctx=ctx)
+            return result
         atom = MemoryAtom(
-            atom_id=self._ids.new(),
+            atom_id=atom_id,
             session_id=ctx.session_id or "",
             source_event_id="",
             kind="reminder",
@@ -528,10 +562,6 @@ class Planner:
             source_pipeline_version="instruction",
         )
         self._atom_store.append(atom)
-        self._reminder_store.add(
-            atom_id=atom.atom_id, session_id=ctx.session_id or "",
-            text=action.text, due_at=due_at,
-        )
         result = self._build_result(
             ctx, retrieved, outcome=PlannerOutcome.CREATE_REMINDER, guarded=guarded,
             retrieval_latency_ms=retrieval_latency_ms, llm_latency_ms=llm_latency_ms,

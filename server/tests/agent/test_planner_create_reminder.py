@@ -109,3 +109,53 @@ async def test_create_reminder_low_confidence_refused_and_mints_nothing():
     assert result.outcome == PlannerOutcome.REFUSE
     assert atom_store.atoms("s1") == []
     assert reminder_store.list() == []
+
+
+class _FailingReminderStore:
+    """A ReminderStore fake whose add() always raises — simulates a DB
+    failure on the schedule-write so we can assert the planner does not
+    leave a ghost atom (Finding #2: non-atomic two-write)."""
+
+    def add(self, *, atom_id, session_id, text, due_at):
+        raise RuntimeError("schedule write failed (simulated)")
+
+    def due(self, now):
+        return []
+
+    def mark_fired(self, atom_id, *, fired_at):
+        pass
+
+    def mark_done(self, atom_id):
+        return False
+
+    def list(self, *, only_pending=True):
+        return []
+
+    def get(self, atom_id):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_create_reminder_schedule_write_failure_leaves_no_ghost_atom():
+    """Finding #2: if the schedule write fails, the planner must REFUSE
+    (not return CREATE_REMINDER success) and leave no ghost atom in the
+    AtomStore. A kind='reminder' atom with no matching schedule row would
+    show on the /memory timeline but never fire — a silent partial failure.
+    The fix writes the schedule row first and REFUSEs on failure, so no
+    atom is ever appended.
+    """
+    due = datetime(2026, 8, 18, 18, 0, tzinfo=timezone.utc)
+    parsed = AgentAction(
+        kind=AgentActionKind.CREATE_REMINDER, text="Call mom", due_at=due, confidence=0.9,
+    )
+    atom_store = InMemoryAtomStore()
+    reminder_store = _FailingReminderStore()
+    planner = _build(_ScriptedLLM(parsed), atom_store, reminder_store)
+    result = await planner.plan(_ctx())
+
+    # Must NOT claim a reminder was created.
+    assert result.outcome == PlannerOutcome.REFUSE
+    assert result.reminder_id is None
+    # No ghost atom left in the store.
+    assert atom_store.atoms("s1") == []
+    assert atom_store.stats().total == 0

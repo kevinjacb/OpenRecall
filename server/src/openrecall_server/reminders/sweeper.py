@@ -89,6 +89,16 @@ class ReminderSweeper:
             except asyncio.TimeoutError:
                 pass
             try:
-                await asyncio.to_thread(self.sweep_once)
+                # Run on the event loop thread, NOT via asyncio.to_thread.
+                # sweep_once does only fast indexed SQLite calls (store.due +
+                # store.mark_fired) — no blocking I/O that would justify
+                # offloading. Crucially, outbox.enqueue() calls
+                # asyncio.Event.set(), which is NOT thread-safe from a worker
+                # thread (it uses loop.call_soon, not call_soon_threadsafe,
+                # so it would not reliably wake the proactive send loop's
+                # await outbox.wait()). Contrast SegmentSweeper, which DOES
+                # use to_thread because its sweep_once calls a blocking LLM
+                # titler — that justification does not apply here.
+                self.sweep_once()
             except Exception:
                 log.exception("reminder_sweep_failed")
