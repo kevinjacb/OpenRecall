@@ -64,10 +64,14 @@ class InMemoryReminderStore:
     def due(self, now: datetime) -> list[Reminder]:
         now = _as_aware(now)
         with self._lock:
-            return [
+            rows = [
                 r for r in self._by_id.values()
                 if r.status == "pending" and _as_aware(r.due_at) <= now
             ]
+        # Sort ascending by due_at to match the SQLite twin's `ORDER BY due_at`.
+        # Dict insertion order would otherwise leak through (T9's sweeper fires
+        # in the order due() returns).
+        return sorted(rows, key=lambda r: r.due_at)
 
     def mark_fired(self, atom_id: str, *, fired_at: datetime) -> None:
         with self._lock:
@@ -88,10 +92,12 @@ class InMemoryReminderStore:
 
     def list(self, *, only_pending: bool = True) -> list[Reminder]:
         with self._lock:
-            return [
+            rows = [
                 r for r in self._by_id.values()
                 if not only_pending or r.status == "pending"
             ]
+        # Sort ascending by due_at to match the SQLite twin's `ORDER BY due_at`.
+        return sorted(rows, key=lambda r: r.due_at)
 
     def get(self, atom_id: str) -> Reminder | None:
         with self._lock:

@@ -61,6 +61,29 @@ def test_mark_done_returns_false_for_unknown(store):
     assert store.mark_done("nope") is False
 
 
+def test_due_returns_ascending_by_due_at(store):
+    # Insert in NON-chronological order: later-due first, earlier-due second.
+    now = _due(45)
+    _add(store, atom_id="later", due=_due(30))
+    _add(store, atom_id="earlier", due=_due(5))
+    due = store.due(now)
+    assert [r.atom_id for r in due] == ["earlier", "later"]
+
+
+def test_list_returns_ascending_by_due_across_statuses(store):
+    # Mixed statuses, inserted out of due_at order; both branches must
+    # return ascending by due_at, matching the SQLite twin's ORDER BY.
+    _add(store, atom_id="late_done", due=_due(40))
+    _add(store, atom_id="early_pending", due=_due(5))
+    _add(store, atom_id="mid_fired", due=_due(20))
+    store.mark_fired("mid_fired", fired_at=_due(25))
+    store.mark_done("late_done")
+    pending = store.list(only_pending=True)
+    assert [r.atom_id for r in pending] == ["early_pending"]
+    all_rows = store.list(only_pending=False)
+    assert [r.atom_id for r in all_rows] == ["early_pending", "mid_fired", "late_done"]
+
+
 @pytest.fixture(params=[InMemoryReminderStore, "sqlite"])
 def store(request, tmp_path):
     if request.param == "sqlite":
