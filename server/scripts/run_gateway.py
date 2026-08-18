@@ -152,6 +152,14 @@ def main() -> None:
     # recorder is process-wide so /metrics reflects the same numbers.
     metrics = InMemoryMetricsRecorder()
     atom_store = SqliteAtomStore(args.db.replace("events.db", "atoms.db"))
+    # P1 instruction processor: reminders side table + recent-transcript
+    # provider. The reminder store is a separate DB file (twin to atoms.db);
+    # the recent-transcript provider reads the event store the gateway
+    # already owns.
+    from openrecall_server.reminders.store import SqliteReminderStore
+    reminder_store = SqliteReminderStore(args.db.replace("events.db", "reminders.db"))
+    from openrecall_server.agent.context import EventBackedRecentTranscript
+    recent_transcript = EventBackedRecentTranscript(store)
     # Spec §1.1: give historical atoms their real conversation time, joined
     # from the source capture event. Idempotent and best-effort — a row that
     # can't be resolved keeps the created_at fallback.
@@ -290,6 +298,10 @@ def main() -> None:
             confidence_autonomous=agent_config.guardrails.confidence_autonomous,
         ),
         dispatcher=dispatcher,
+        # P1 instruction processor: server-side actions + recent transcript.
+        atom_store=atom_store,
+        reminder_store=reminder_store,
+        recent_transcript=recent_transcript,
     )
 
     # P3 proactive engine: the same Planner serves both inbound user
@@ -386,12 +398,20 @@ def main() -> None:
         reconciler=reconciler,
         capability_provider=ConstantCapabilityProvider(),
         memory_index=memory_index,
+        reminders=reminder_store,
         clock=SystemClock(),
     )
     # Tiered retention (spec D8): audio expires, derived text is kept. The
     # asymmetry must be stated plainly in the app's privacy copy.
     retention_sweeper = RetentionSweeper(
         audio_store=audio_store, settings_store=settings_store,
+    )
+    # P1: reminder sweeper fires due reminders through the process-wide
+    # proactive outbox (the same one the proactive engine uses). Tick-driven
+    # like the segment + retention sweepers.
+    from openrecall_server.reminders.sweeper import ReminderSweeper
+    reminder_sweeper = ReminderSweeper(
+        store=reminder_store, outbox=proactive_outbox, clock=SystemClock(),
     )
 
     async def main_loop() -> None:
@@ -405,6 +425,7 @@ def main() -> None:
             await worker.start()
             await segment_sweeper.start()
             await retention_sweeper.start()
+            await reminder_sweeper.start()
             # P3: register the proactive engine as a worker listener.
             # The engine is fire-and-forget from the worker's POV, so
             # this never blocks extraction.
@@ -459,6 +480,7 @@ def main() -> None:
             )
         finally:
             await retention_sweeper.stop()
+            await reminder_sweeper.stop()
             await segment_sweeper.stop()
             await worker.stop()
             await http_runner.cleanup()
