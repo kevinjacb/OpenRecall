@@ -39,19 +39,28 @@ class VisionPipeline:
 
     def capture(
         self,
-        session_id: str,
+        session_id: str | None,
         image: bytes,
         captured_at_ms: int,
         media_type: str = "image/jpeg",
+        *,
+        occurred_at: datetime | None = None,
     ) -> MemoryAtom | None:
-        """Caption and store an image as a scene atom; None if already captured."""
+        """Caption and store an image as a scene atom; None if already captured.
+
+        ``session_id`` is None for snapshots that could not be mapped to a
+        session (the atom is still useful — its caption is retrievable). The
+        caller may supply ``occurred_at`` (the upload route derives it from the
+        device rel_ts → session timeline); otherwise capture time is used.
+        """
         digest = sha256_hex(image)
-        atom_id = f"{session_id}:scene:{digest}"
+        atom_id = f"{session_id}:scene:{digest}" if session_id else f"scene:{digest}"
         if self._atoms.has(atom_id):
-            return None  # already captured for this session — don't re-call the model
+            return None  # already captured — don't re-call the model
 
         self._blobs.put(image)
         caption = self._vision.caption(image, media_type=media_type)
+        when = occurred_at if occurred_at is not None else self._clock()
         atom = MemoryAtom(
             atom_id=atom_id,
             session_id=session_id,
@@ -59,9 +68,9 @@ class VisionPipeline:
             kind="scene",
             text=caption,
             created_at=self._clock(),
-            # A scene is captioned as it is captured, so capture time and
-            # extraction time coincide — unlike the batched transcript path.
-            occurred_at=self._clock(),
+            # D10: a scene is a vision capture — report source_modality="vision".
+            source_pipeline_version="vision",
+            occurred_at=when,
             start_ms=captured_at_ms,
         )
         self._atoms.append(atom)

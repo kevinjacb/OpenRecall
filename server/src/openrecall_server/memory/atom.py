@@ -22,7 +22,7 @@ class MemoryAtom(BaseModel):
     model_config = ConfigDict(frozen=True)  # immutable once created
 
     atom_id: str  # idempotency key
-    session_id: str
+    session_id: str | None  # None for captures that couldn't be mapped to a session (e.g. vision snapshots)
     source_event_id: str  # provenance back into the §F event log
     kind: str
     text: str
