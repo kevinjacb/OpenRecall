@@ -22,14 +22,15 @@ Per-type schemas (per the spec §6.2):
   - ``stop_video``:      no params                   (P1)
   - ``flush_snapshots``: no params                   (P1)
   - ``sleep``:           no params                   (P2)
+  - ``set_snapshot_interval``: ``seconds in [0, 600]`` (P3; 0=off)
 
 The validator also enforces the command allowlist: the 5 P2 types
 plus the 4 P1 instruction-processor types plus the P2 ``sleep`` type
-are autonomously executable. ``display_text``, ``play_audio``, and
-``show_status`` are not allowlisted; they fail validation as
-``UNKNOWN_TYPE``. Adding them is a one-line change in
-:data:`_ALLOWLIST` once a future phase implements the corresponding
-firmware executors.
+plus the P3 ``set_snapshot_interval`` type are autonomously
+executable. ``display_text``, ``play_audio``, and ``show_status``
+are not allowlisted; they fail validation as ``UNKNOWN_TYPE``.
+Adding them is a one-line change in :data:`ALLOWLIST` once a future
+phase implements the corresponding firmware executors.
 
 The validator is stateless and dependency-free — every consumer can
 share one instance.
@@ -62,6 +63,9 @@ ALLOWLIST: frozenset[str] = frozenset({
     # P2 power/sleep: low-power mode (no params; reduces power, so always
     # available — no capability requirement in guardrails_command.py).
     "sleep",
+    # P3 video: ambient-snapshot cadence config (seconds, 0..600, 0=off).
+    # No capability requirement; no battery floor (quick config change).
+    "set_snapshot_interval",
 })
 
 
@@ -133,6 +137,14 @@ _TYPE_SCHEMAS: dict[str, dict] = {
     "flush_snapshots": {"required": (), "optional": (), "fields": {}},
     # P2 power/sleep: no params.
     "sleep": {"required": (), "optional": (), "fields": {}},
+    # P3 video: ambient-snapshot cadence. seconds in [0, 600]; 0 = off.
+    "set_snapshot_interval": {
+        "required": ("seconds",),
+        "optional": (),
+        "fields": {
+            "seconds": (_is_number, 0, 600),
+        },
+    },
 }
 
 

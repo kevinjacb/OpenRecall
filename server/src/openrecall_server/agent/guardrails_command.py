@@ -236,6 +236,10 @@ class StrictCommandGuardrails:
         # ensures the battery floor never blocks a sleep command.
         if command.command_type == "sleep":
             return 0.0
+        # set_snapshot_interval is a quick config change, not an energy op —
+        # it must be issuable even on a critically low battery.
+        if command.command_type == "set_snapshot_interval":
+            return 0.0
         long_ops = ("record_video", "request_buffer")
         if command.command_type in long_ops:
             seconds = command.params.get("duration_s") or command.params.get("seconds") or 0

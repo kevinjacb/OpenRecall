@@ -296,3 +296,27 @@ def test_sleep_is_issuable_on_critically_low_battery():
     g = StrictCommandGuardrails(_caps(), _resources(battery_pct=0.02))
     out = g.check(_command("sleep"))
     assert out.allowed is True
+
+
+# --- P3 video: set_snapshot_interval has no battery floor ---------------------
+
+
+def test_set_snapshot_interval_issuable_on_low_battery():
+    """set_snapshot_interval is a quick config change, not an energy op — it
+    must be issuable even on a critically low battery (like sleep). 0.02 is
+    below the 0.05 quick-op floor, so this isolates the _min_battery_for
+    early-return for set_snapshot_interval."""
+    g = StrictCommandGuardrails(_caps(), _resources(battery_pct=0.02))
+    out = g.check(_command("set_snapshot_interval", {"seconds": 120}))
+    assert out.allowed is True
+
+
+def test_set_snapshot_interval_has_no_capability_requirement():
+    """set_snapshot_interval needs no device capability (like sleep) — a
+    device with no camera/mic/buffer must still accept the cadence config."""
+    g = StrictCommandGuardrails(
+        _caps(camera=False, microphone=False, retrospective_buffer=False),
+        _resources(),
+    )
+    out = g.check(_command("set_snapshot_interval", {"seconds": 60}))
+    assert out.allowed is True

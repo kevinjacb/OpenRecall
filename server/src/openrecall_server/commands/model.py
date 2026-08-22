@@ -36,6 +36,9 @@ CommandType = Literal[
     # P2 power/sleep: low-power mode (no params; reduces power, so always
     # available — no capability requirement).
     "sleep",
+    # P3 video: ambient-snapshot cadence config (seconds, 0..600, 0=off).
+    # No capability requirement; no battery floor (quick config change).
+    "set_snapshot_interval",
 ]
 
 

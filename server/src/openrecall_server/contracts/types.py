@@ -90,6 +90,8 @@ class IssueCommandPayload(BaseModel):
         "record_audio", "start_video", "stop_video", "flush_snapshots",
         # P2 power/sleep: low-power mode (no params; no capability requirement).
         "sleep",
+        # P3 video: ambient-snapshot cadence config (seconds, 0..600, 0=off).
+        "set_snapshot_interval",
     ]
     params: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str

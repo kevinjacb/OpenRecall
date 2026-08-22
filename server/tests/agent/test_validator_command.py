@@ -322,3 +322,59 @@ def test_sleep_is_in_allowlist_and_has_schema():
     from openrecall_server.agent.validator_command import _TYPE_SCHEMAS
     assert "sleep" in ALLOWLIST
     assert "sleep" in _TYPE_SCHEMAS
+
+
+# --- P3 video: set_snapshot_interval (seconds, 0..600, 0=off) ----------------
+
+
+def test_set_snapshot_interval_validates_seconds():
+    v = StrictCommandValidator()
+    out = v.validate(_payload("set_snapshot_interval", {"seconds": 120}))
+    assert out.rejection is None
+    assert out.command.command_type == "set_snapshot_interval"
+    assert out.command.params["seconds"] == 120
+
+
+def test_set_snapshot_interval_accepts_zero_as_off():
+    """0 is the explicit 'off' sentinel — the lower bound is inclusive."""
+    v = StrictCommandValidator()
+    out = v.validate(_payload("set_snapshot_interval", {"seconds": 0}))
+    assert out.rejection is None
+    assert out.command.params["seconds"] == 0
+
+
+def test_set_snapshot_interval_accepts_max_boundary():
+    """600 is the slider max — the upper bound is inclusive."""
+    v = StrictCommandValidator()
+    out = v.validate(_payload("set_snapshot_interval", {"seconds": 600}))
+    assert out.rejection is None
+
+
+def test_set_snapshot_interval_rejects_out_of_range():
+    v = StrictCommandValidator()
+    out = v.validate(_payload("set_snapshot_interval", {"seconds": 601}))
+    assert out.rejection is RejectionReason.PARAM_OUT_OF_RANGE
+
+
+def test_set_snapshot_interval_requires_seconds():
+    v = StrictCommandValidator()
+    out = v.validate(_payload("set_snapshot_interval", {}))
+    assert out.rejection is RejectionReason.MISSING_REQUIRED_PARAM
+    assert "seconds" in (out.message or "")
+
+
+def test_set_snapshot_interval_rejects_unknown_param():
+    v = StrictCommandValidator()
+    out = v.validate(
+        _payload("set_snapshot_interval", {"duration_s": 5})
+    )
+    assert out.rejection is RejectionReason.UNKNOWN_PARAM
+
+
+def test_set_snapshot_interval_is_in_allowlist_and_has_schema():
+    """set_snapshot_interval must be lockstepped across ALLOWLIST and
+    _TYPE_SCHEMAS, mirroring the invariant
+    test_validator_schemas_match_allowlist pins for the other types."""
+    from openrecall_server.agent.validator_command import _TYPE_SCHEMAS
+    assert "set_snapshot_interval" in ALLOWLIST
+    assert "set_snapshot_interval" in _TYPE_SCHEMAS
