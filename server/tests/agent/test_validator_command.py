@@ -294,3 +294,31 @@ def test_start_video_rejects_unknown_param():
     )
     v = StrictCommandValidator()
     assert v.validate(_payload("start_video", {"duration_s": 5})).rejection == RejectionReason.UNKNOWN_PARAM
+
+
+# --- P2 power/sleep: sleep (no params; no capability requirement) ------------
+
+
+def test_sleep_is_allowed_with_no_params():
+    v = StrictCommandValidator()
+    out = v.validate(_payload("sleep", {}, idempotency_key="sleep-1"))
+    assert out.rejection is None
+    assert isinstance(out.command, ValidatedCommand)
+    assert out.command.command_type == "sleep"
+    assert out.command.params == {}
+
+
+def test_sleep_rejects_unexpected_params():
+    v = StrictCommandValidator()
+    out = v.validate(_payload("sleep", {"duration_s": 5}, idempotency_key="sleep-2"))
+    assert out.rejection is RejectionReason.UNKNOWN_PARAM
+    assert "duration_s" in (out.message or "")
+
+
+def test_sleep_is_in_allowlist_and_has_schema():
+    """sleep must be lockstepped across ALLOWLIST and _TYPE_SCHEMAS,
+    mirroring the invariant test_validator_schemas_match_allowlist
+    pins for the other command types."""
+    from openrecall_server.agent.validator_command import _TYPE_SCHEMAS
+    assert "sleep" in ALLOWLIST
+    assert "sleep" in _TYPE_SCHEMAS

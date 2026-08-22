@@ -33,6 +33,9 @@ CommandType = Literal[
     "start_video",
     "stop_video",
     "flush_snapshots",
+    # P2 power/sleep: low-power mode (no params; reduces power, so always
+    # available — no capability requirement).
+    "sleep",
 ]
 
 

@@ -21,13 +21,15 @@ Per-type schemas (per the spec §6.2):
   - ``start_video``:     no params                   (P1)
   - ``stop_video``:      no params                   (P1)
   - ``flush_snapshots``: no params                   (P1)
+  - ``sleep``:           no params                   (P2)
 
 The validator also enforces the command allowlist: the 5 P2 types
-plus the 4 P1 instruction-processor types are autonomously
-executable. ``display_text``, ``play_audio``, and ``show_status``
-are not allowlisted; they fail validation as ``UNKNOWN_TYPE``.
-Adding them is a one-line change in :data:`_ALLOWLIST` once a future
-phase implements the corresponding firmware executors.
+plus the 4 P1 instruction-processor types plus the P2 ``sleep`` type
+are autonomously executable. ``display_text``, ``play_audio``, and
+``show_status`` are not allowlisted; they fail validation as
+``UNKNOWN_TYPE``. Adding them is a one-line change in
+:data:`_ALLOWLIST` once a future phase implements the corresponding
+firmware executors.
 
 The validator is stateless and dependency-free — every consumer can
 share one instance.
@@ -57,6 +59,9 @@ ALLOWLIST: frozenset[str] = frozenset({
     "start_video",
     "stop_video",
     "flush_snapshots",
+    # P2 power/sleep: low-power mode (no params; reduces power, so always
+    # available — no capability requirement in guardrails_command.py).
+    "sleep",
 })
 
 
@@ -126,6 +131,8 @@ _TYPE_SCHEMAS: dict[str, dict] = {
     "start_video": {"required": (), "optional": (), "fields": {}},
     "stop_video": {"required": (), "optional": (), "fields": {}},
     "flush_snapshots": {"required": (), "optional": (), "fields": {}},
+    # P2 power/sleep: no params.
+    "sleep": {"required": (), "optional": (), "fields": {}},
 }
 
 

@@ -88,6 +88,8 @@ class IssueCommandPayload(BaseModel):
         "capture_photo", "record_video", "start_audio",
         "stop_audio", "request_buffer",
         "record_audio", "start_video", "stop_video", "flush_snapshots",
+        # P2 power/sleep: low-power mode (no params; no capability requirement).
+        "sleep",
     ]
     params: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str
