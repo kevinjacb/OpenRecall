@@ -135,3 +135,69 @@ def test_low_reported_battery_refuses_a_long_op_in_guardrails():
     )
     assert not out.allowed
     assert "battery" in (out.message or "").lower()
+
+
+def test_button_wake_clears_sleep_state_so_re_sleep_is_allowed():
+    """Full sleep -> ack -> button-wake -> re-arm -> reconcile cycle.
+
+    Without the F2 fix, the button-wake clears desired ``sleep_mode`` but
+    leaves ``SLEEP_STATE=True`` in device state, so the reconciler's storm
+    guard (``known_sleep is True``) blocks a legitimate re-sleep when the
+    user toggles ``sleep_mode`` back on. With the fix, button-wake also
+    clears ``SLEEP_STATE`` so the next reconcile re-issues ``sleep``.
+    """
+    clock = FakeClock()
+    dispatcher = CommandDispatcher(CommandSigner.generate(), clock=clock.now)
+    settings = InMemorySettingsStore(
+        SettingsDocument.model_validate(
+            {"capture": {"sleep_mode": True, "audio_enabled": True}},
+        ),
+    )
+    provider = ReportedCapabilityProvider()
+    core = GatewayCore(
+        pipeline_factory=lambda start_seq: _NoopPipeline(),
+        settings=settings,
+        capability_provider=provider,
+    )
+    rec = DeviceReconciler(
+        settings=settings,
+        dispatcher=dispatcher,
+        ids=DeterministicIdGenerator(),
+        clock=clock,
+        capability_provider=provider,
+    )
+
+    # 1. Drive the sleep -> ack: reconcile issues sleep, then the ack lands.
+    assert rec.reconcile() == "sleep"
+    rec.note_acked("sleep")
+    assert settings.get_device_state().get("sleep_mode") is True
+
+    # 2. Button wake: clears desired sleep_mode AND last-known sleep state.
+    core.on_control(
+        Telemetry(
+            session_id="s1",
+            battery_pct=0.9,
+            state="active",
+            wake_reason="button",
+        ),
+    )
+    assert settings.get().capture.sleep_mode is False
+    # The F2 assertion: device-state sleep_mode was also cleared, so the
+    # reconciler storm guard won't block a future re-sleep.
+    assert settings.get_device_state().get("sleep_mode") is False
+
+    # 3. Re-arm: user toggles desired sleep_mode back on.
+    settings.put(
+        settings.get().model_copy(
+            update={
+                "capture": settings.get().capture.model_copy(
+                    update={"sleep_mode": True},
+                ),
+            },
+        ),
+    )
+
+    # 4. Reconcile re-issues sleep. Without F2 this returns None (storm
+    #    guard); with the fix it re-issues sleep.
+    assert rec.reconcile() == "sleep"
+    assert any(c.command.type == "sleep" for c in dispatcher.pending())

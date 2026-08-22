@@ -43,6 +43,7 @@ from ..protocol.messages import (
     Telemetry,
     TranscriptMsg,
 )
+from ..settings.reconciler import SLEEP_STATE
 from ..sessions.index import SessionIndex
 from ..sessions.lifecycle import SessionLifecycle
 
@@ -244,6 +245,19 @@ class GatewayCore:
                     )
                     logger.info(
                         "button_wake cleared desired sleep_mode session=%s",
+                        msg.session_id,
+                    )
+                # A button wake means the device is now active — clear the
+                # last-known sleep state so the reconciler's storm guard
+                # (known_sleep is True) doesn't block a future re-sleep when
+                # the user toggles sleep_mode back to True. The key matches
+                # SLEEP_STATE in settings/reconciler.py.
+                dev_state = self._settings.get_device_state()
+                if dev_state.get(SLEEP_STATE) is True:
+                    dev_state[SLEEP_STATE] = False
+                    self._settings.put_device_state(dev_state)
+                    logger.info(
+                        "button_wake cleared last-known sleep state session=%s",
                         msg.session_id,
                     )
             except Exception:

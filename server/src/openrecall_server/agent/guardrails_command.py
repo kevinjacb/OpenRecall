@@ -231,6 +231,11 @@ class StrictCommandGuardrails:
 
     def _min_battery_for(self, command: ValidatedCommand) -> float:
         """Long-running operations need more battery headroom than quick ones."""
+        # Sleep is the path TO low power — it must be issuable even on a
+        # critically low battery (spec §2.1; plan T1 note). Returning 0.0
+        # ensures the battery floor never blocks a sleep command.
+        if command.command_type == "sleep":
+            return 0.0
         long_ops = ("record_video", "request_buffer")
         if command.command_type in long_ops:
             seconds = command.params.get("duration_s") or command.params.get("seconds") or 0

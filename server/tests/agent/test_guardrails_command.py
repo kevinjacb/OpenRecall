@@ -283,3 +283,16 @@ def test_start_video_passes_with_camera():
     g = StrictCommandGuardrails(_caps(), _resources())
     for t in ("start_video", "stop_video", "flush_snapshots"):
         assert g.check(_command(t)).allowed, t
+
+
+# --- P2 power/sleep: sleep must be issuable on a critically low battery --------
+
+
+def test_sleep_is_issuable_on_critically_low_battery():
+    """Sleep is the path TO low power — it must be issuable even when the
+    battery is below the 0.05 quick-op floor that previously refused it
+    (spec §2.1; plan T1 note). 0.02 is below that floor, so this isolates
+    the _min_battery_for early-return for sleep."""
+    g = StrictCommandGuardrails(_caps(), _resources(battery_pct=0.02))
+    out = g.check(_command("sleep"))
+    assert out.allowed is True

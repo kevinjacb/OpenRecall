@@ -297,11 +297,10 @@ def main() -> None:
         # confidence_autonomous is the only value we need to seed.
         # NOTE: ReportedCapabilityProvider.resources() returns
         # DeviceResourceStatus with relay_connected matching the
-        # DeviceResourceStatus default; the device-status characteristic
-        # that flips this flag lands in the P3 BLE bring-up slice. Until
-        # then, an issue_command with high confidence may still be
-        # refused with "device is not connected to the relay" — a
-        # documented accepted behavior for this slice.
+        # DeviceResourceStatus default (True). The device-status
+        # characteristic that flips this flag lands in a later BLE
+        # bring-up slice; until then the relay-connected check is inert
+        # — a documented accepted behavior for this slice.
         command_validator=StrictCommandValidator(),
         command_guardrails=StrictCommandGuardrails(
             confidence_autonomous=agent_config.guardrails.confidence_autonomous,
