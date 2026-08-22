@@ -26,7 +26,7 @@ decoder's output size.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from .audio_packet import AudioPacket
 from .reassembler import SessionReassembler
@@ -94,6 +94,7 @@ class AudioIngestPipeline:
         session_id: str | None = None,
         persist_audio: bool = True,
         audio_enabled=None,
+        rel_ts_sink: Callable[[str, int], None] | None = None,
     ) -> None:
         if window_ms % FRAME_MS != 0:
             raise ValueError(f"window_ms must be a multiple of {FRAME_MS}")
@@ -148,6 +149,12 @@ class AudioIngestPipeline:
         # case a user cares about: a device that ignores the command and
         # keeps streaming.
         self._audio_enabled = audio_enabled or (lambda: True)
+        # P3 §3.3: rel_ts->session sidecar sink. Called once per persisted
+        # packet so SessionTimelineIndex can track each session's min/max
+        # rel_ts. Fed from the packet (not CaptureEvent) — the event has no
+        # rel_ts_ms field. Wrapped in try/except in _persist so a sink
+        # failure never tears the audio path.
+        self._rel_ts_sink = rel_ts_sink
 
     def set_audio_target(self, session_id: str) -> None:
         """Bind this pipeline's audio log to a session id.
@@ -180,6 +187,11 @@ class AudioIngestPipeline:
             return
         if self._audio_anchor_ms is None:
             self._audio_anchor_ms = packet.rel_ts_ms
+        if self._rel_ts_sink is not None and self._audio_session is not None:
+            try:
+                self._rel_ts_sink(self._audio_session, packet.rel_ts_ms)
+            except Exception:
+                logger.exception("rel_ts_sink_failed session=%s", self._audio_session)
         slot = max(0, (packet.rel_ts_ms - self._audio_anchor_ms) // FRAME_MS)
         try:
             self._audio.write_at(
