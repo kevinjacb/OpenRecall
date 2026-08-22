@@ -32,6 +32,8 @@ log = logging.getLogger(__name__)
 
 # Key under which the device's last-known audio gate lives in device state.
 AUDIO_GATE = "audio_enabled"
+# Key under which the device's last-known sleep state lives in device state.
+SLEEP_STATE = "sleep_mode"
 
 
 class DeviceReconciler:
@@ -68,19 +70,48 @@ class DeviceReconciler:
         """
         if self._dispatcher is None or self._ids is None or self._clock is None:
             return None
-        desired = self._settings.get().capture.audio_enabled
+        desired = self._settings.get().capture
+
+        # Sleep takes precedence: if the device should be asleep, issue sleep
+        # and do NOT also issue start_audio (spec §2.6). The reconciler NEVER
+        # issues wake (D2 — wake is button-only; clearing desired sleep is the
+        # telemetry path in ``on_telemetry``).
+        if desired.sleep_mode:
+            known_sleep = self._settings.get_device_state().get(SLEEP_STATE)
+            if known_sleep is True:
+                return None  # already asleep — issuing here would be the storm
+            result = validate_and_issue(
+                command_type="sleep",
+                params={},
+                idempotency_key="reconcile:sleep:on",
+                dispatcher=self._dispatcher,
+                ids=self._ids,
+                clock=self._clock,
+                capability_provider=self._caps,
+            )
+            if not result.ok:
+                log.warning(
+                    "reconcile_failed type=sleep stage=%s reason=%s",
+                    result.stage, result.message,
+                )
+                return None
+            log.info("reconcile_issued type=sleep desired=True known=%s",
+                     known_sleep)
+            return "sleep"
+
+        # Awake path: converge audio as before.
         known = self._settings.get_device_state().get(AUDIO_GATE)
-        if known is not None and bool(known) == desired:
+        if known is not None and bool(known) == desired.audio_enabled:
             return None  # already converged — issuing here would be the storm
 
-        command_type = "start_audio" if desired else "stop_audio"
+        command_type = "start_audio" if desired.audio_enabled else "stop_audio"
         # The key encodes the *target state*, not the attempt. Two reconciles
         # racing toward the same state dedupe into one command; a reconcile
         # toward the opposite state does not.
         result = validate_and_issue(
             command_type=command_type,
             params={},
-            idempotency_key=f"reconcile:audio:{'on' if desired else 'off'}",
+            idempotency_key=f"reconcile:audio:{'on' if desired.audio_enabled else 'off'}",
             dispatcher=self._dispatcher,
             ids=self._ids,
             clock=self._clock,
@@ -93,7 +124,7 @@ class DeviceReconciler:
             )
             return None
         log.info("reconcile_issued type=%s desired=%s known=%s",
-                 command_type, desired, known)
+                 command_type, desired.audio_enabled, known)
         return command_type
 
     def note_acked(self, command_type: str) -> None:
@@ -103,6 +134,11 @@ class DeviceReconciler:
         desired state at *issue* time instead would mark an unreachable
         device as converged and stop the reconciler from ever retrying.
         """
+        if command_type == "sleep":
+            state = self._settings.get_device_state()
+            state[SLEEP_STATE] = True
+            self._settings.put_device_state(state)
+            return
         if command_type not in ("start_audio", "stop_audio"):
             return
         state = self._settings.get_device_state()

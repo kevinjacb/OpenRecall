@@ -16,9 +16,10 @@ from openrecall_server.settings.reconciler import DeviceReconciler
 from openrecall_server.settings.store import InMemorySettingsStore
 
 
-def _reconciler(*, audio_enabled=True, device_state=None):
+def _reconciler(*, audio_enabled=True, sleep_mode=False, device_state=None):
     settings = InMemorySettingsStore(
-        SettingsDocument.model_validate({"capture": {"audio_enabled": audio_enabled}}),
+        SettingsDocument.model_validate(
+            {"capture": {"audio_enabled": audio_enabled, "sleep_mode": sleep_mode}}),
     )
     if device_state is not None:
         settings.put_device_state(device_state)
@@ -136,3 +137,45 @@ def test_flipping_the_setting_after_convergence_issues_the_opposite():
     )
 
     assert rec.reconcile() == "stop_audio"
+
+
+def test_desired_sleep_issues_sleep_command():
+    rec, _settings, dispatcher = _reconciler(sleep_mode=True)
+    assert rec.reconcile() == "sleep"
+    assert [c.command.type for c in dispatcher.pending()] == ["sleep"]
+
+
+def test_already_sleeping_issues_nothing():
+    rec, _settings, dispatcher = _reconciler(
+        sleep_mode=True, device_state={"sleep_mode": True},
+    )
+    assert rec.reconcile() is None
+    assert dispatcher.pending() == []
+
+
+def test_sleep_takes_precedence_over_audio_resume():
+    """If the device should be asleep, do not also issue start_audio."""
+    rec, _settings, dispatcher = _reconciler(
+        audio_enabled=True, sleep_mode=True,
+    )
+    assert rec.reconcile() == "sleep"
+    assert [c.command.type for c in dispatcher.pending()] == ["sleep"]
+
+
+def test_reconciler_never_issues_wake():
+    """Wake is button-only (D2): clearing desired sleep is the telemetry path,
+    not a reconciler-issued wake command."""
+    rec, _settings, dispatcher = _reconciler(
+        sleep_mode=False, device_state={"sleep_mode": True},
+    )
+    # desired is awake but device known asleep — reconciler does NOT issue wake.
+    # It converges audio (the device will resume audio on its own activate path).
+    out = rec.reconcile()
+    assert out != "wake"
+    assert all(c.command.type != "wake" for c in dispatcher.pending())
+
+
+def test_note_acked_sleep_records_sleeping_state():
+    rec, settings, _dispatcher = _reconciler(sleep_mode=True)
+    rec.note_acked("sleep")
+    assert settings.get_device_state()["sleep_mode"] is True
