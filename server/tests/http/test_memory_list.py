@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from aiohttp.test_utils import TestClient, TestServer
 
+from openrecall_server.contracts.clock import FakeClock
 from openrecall_server.contracts.id_generator import DeterministicIdGenerator
 from openrecall_server.http.app import build_app
 from openrecall_server.memory.atom import MemoryAtom
@@ -35,6 +36,10 @@ def _client(atoms=()):
         get_pubkey=lambda: b"\x00" * 32,
         atom_store=store,
         id_generator=DeterministicIdGenerator(),
+        # Pin the clock at _NOW so added_24h in /memory/stats is evaluated
+        # against the same instant the test atoms' occurred_at is relative to
+        # (the route threads app["sense_clock"] into store.stats(now=...)).
+        clock=FakeClock(start=_NOW),
     )
     return TestClient(TestServer(app)), store
 

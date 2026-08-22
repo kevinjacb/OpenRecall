@@ -106,7 +106,10 @@ async def get_memory_stats(request: web.Request) -> web.Response:
     atom_store = request.app["sense_atom_store"]
     if atom_store is None:
         return _error("not_found", "no atom store", 404)
-    stats = atom_store.stats()
+    # Use the injected clock so added_24h is deterministic in tests (the
+    # store's stats() defaults to datetime.now() when no `now` is passed,
+    # which made the route a time-bomb relative to test-pinned created_at).
+    stats = atom_store.stats(now=request.app["sense_clock"].now())
     dto = MemoryStatsResponseDTO(
         total=stats.total, added_24h=stats.added_24h, by_kind=stats.by_kind,
     )
