@@ -45,8 +45,9 @@ async def test_get_returns_the_default_document():
         "capture": {
             "audio_enabled": True, "save_audio": True, "vision_enabled": False,
             "sleep_mode": False,
+            "snapshot_interval_s": 60,
         },
-        "retention": {"audio_days": 30},
+        "retention": {"audio_days": 30, "snapshot_days": 30},
     }
 
 
@@ -157,6 +158,50 @@ async def test_put_requires_a_token():
     async with client:
         resp = await client.put("/settings", json={})
     assert resp.status == 401
+
+
+# ---- P3: snapshot_interval_s + snapshot_days -------------------------------
+
+
+async def test_put_snapshot_interval_and_snapshot_days_round_trip():
+    client = _client()[0]
+    async with client:
+        resp = await client.put(
+            "/settings",
+            json={
+                "capture": {"snapshot_interval_s": 120},
+                "retention": {"snapshot_days": 7},
+            },
+            headers=_AUTH,
+        )
+        body = await resp.json()
+        assert resp.status == 200
+        assert body["capture"]["snapshot_interval_s"] == 120
+        assert body["retention"]["snapshot_days"] == 7
+        # unset fields are preserved
+        assert body["capture"]["sleep_mode"] is False
+
+
+async def test_put_rejects_snapshot_interval_s_out_of_range():
+    client, _store = _client()
+    async with client:
+        resp = await client.put(
+            "/settings",
+            json={"capture": {"snapshot_interval_s": 601}},
+            headers=_AUTH,
+        )
+    assert resp.status == 400
+
+
+async def test_put_rejects_snapshot_days_negative():
+    client, _store = _client()
+    async with client:
+        resp = await client.put(
+            "/settings",
+            json={"retention": {"snapshot_days": -1}},
+            headers=_AUTH,
+        )
+    assert resp.status == 400
 
 
 # ---- reconciliation on change (§4.2) ----------------------------------------

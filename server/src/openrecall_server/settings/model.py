@@ -38,6 +38,10 @@ class CaptureSettings(BaseModel):
     # reconciler converges it by issuing `sleep`. A button-wake telemetry
     # clears this (D2). Default False (awake) — see spec §2.6.
     sleep_mode: bool = False
+    # P3: ambient snapshot cadence in seconds (0 = off). The reconciler
+    # converges the device on it by issuing `set_snapshot_interval` (spec §3.4).
+    # Slider range 10–600 in the app; 0 disables ambient capture.
+    snapshot_interval_s: int = Field(default=60, ge=0, le=600)
 
 
 class RetentionSettings(BaseModel):
@@ -45,6 +49,10 @@ class RetentionSettings(BaseModel):
     # Days of *audio* to keep. Transcripts, atoms and vectors are not swept
     # (spec D8) — a deliberate tiered policy, not an oversight.
     audio_days: int = Field(default=30, ge=0, le=3650)
+    # P3 (D8 extended): days of scene *image blobs* to keep. Scene atoms
+    # (the caption text) are kept forever; only the bulky/sensitive image
+    # is swept. 0 = keep indefinitely.
+    snapshot_days: int = Field(default=30, ge=0, le=3650)
 
 
 class SettingsDocument(BaseModel):
@@ -62,11 +70,13 @@ class CapturePatch(BaseModel):
     save_audio: bool | None = None
     vision_enabled: bool | None = None
     sleep_mode: bool | None = None
+    snapshot_interval_s: int | None = Field(default=None, ge=0, le=600)
 
 
 class RetentionPatch(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     audio_days: int | None = Field(default=None, ge=0, le=3650)
+    snapshot_days: int | None = Field(default=None, ge=0, le=3650)
 
 
 class SettingsPatch(BaseModel):
