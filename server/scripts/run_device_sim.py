@@ -62,6 +62,9 @@ def main() -> None:
                     help="seconds to wait for server messages before finishing")
     ap.add_argument("--token", default=None,
                     help="bearer token to send on the WS handshake (gateway auth)")
+    ap.add_argument("--battery", type=float, default=0.85,
+                    help="battery charge 0.0-1.0 reported in the opening telemetry "
+                         "frame (P2); pass a value <= 0 to suppress telemetry")
     args = ap.parse_args()
 
     frames = synth_opus_frames(args.seconds)
@@ -69,9 +72,16 @@ def main() -> None:
         frames[i : i + args.frames_per_packet]
         for i in range(0, len(frames), args.frames_per_packet)
     ]
-    client = DeviceClient(args.session, bytes.fromhex(args.server_key))
+    # P2: a negative --battery suppresses the opening telemetry frame; otherwise
+    # the simulator emits a button-wake telemetry right after hello so the
+    # server clears desired sleep and reports the real battery.
+    initial_battery = args.battery if args.battery >= 0 else None
+    client = DeviceClient(args.session, bytes.fromhex(args.server_key),
+                          initial_battery=initial_battery)
 
     print(f"streaming {len(frames)} Opus frames in {len(packets)} packet(s) to {args.uri}")
+    if initial_battery is not None:
+        print(f"opening telemetry: button-wake battery={initial_battery:.2f}")
     # Generous idle timeout so we wait out the first window's MLX model warm-up
     # (cold start can be many seconds); after that, transcripts return quickly.
     print("waiting for transcripts (first one is slow — MLX model warm-up)…")

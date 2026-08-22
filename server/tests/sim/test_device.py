@@ -12,7 +12,14 @@ from datetime import datetime, timedelta, timezone
 from openrecall_server.commands.model import Command
 from openrecall_server.commands.signing import CommandSigner
 from openrecall_server.ingest.audio_packet import AudioPacket, PacketType, VadState
-from openrecall_server.protocol.messages import Ack, CommandMessage, Hello, TranscriptMsg
+from openrecall_server.protocol.messages import (
+    Ack,
+    CommandMessage,
+    Hello,
+    Telemetry,
+    TranscriptMsg,
+    parse_control,
+)
 from openrecall_server.sim.device import DeviceClient
 
 NOW = datetime.now(timezone.utc)
@@ -95,3 +102,14 @@ def test_forged_command_is_rejected_and_not_acked():
 def test_ack_message_from_server_is_accepted_silently():
     client = DeviceClient("s1", CommandSigner.generate().public_key_bytes)
     assert client.on_message(Ack(session_id="s1", next_seq=3).model_dump_json()) == []
+
+
+def test_device_client_telemetry_frame_parses():
+    """P2: DeviceClient.telemetry() emits a Telemetry frame the server parses."""
+    client = DeviceClient("s1", b"\x00" * 32)
+    frame = client.telemetry(battery_pct=0.85, state="active", wake_reason="button")
+    msg = parse_control(frame)
+    assert isinstance(msg, Telemetry)
+    assert msg.battery_pct == 0.85
+    assert msg.state == "active"
+    assert msg.wake_reason == "button"

@@ -35,6 +35,12 @@ async def run_session(
         headers["Authorization"] = f"Bearer {token}"
     async with websockets.connect(uri, additional_headers=headers) as ws:
         await ws.send(client.hello())
+        # P2: emit a button-wake telemetry so the server clears desired sleep
+        # and the provider reports a real battery — exercises the full P2
+        # server path in sim. Battery comes from the caller (default 0.85).
+        if getattr(client, "initial_battery", None) is not None:
+            await ws.send(client.telemetry(
+                battery_pct=client.initial_battery, state="active", wake_reason="button"))
         for frames in audio_frames:
             await ws.send(client.next_audio_packet(frames))
         await ws.send(client.bye())

@@ -17,17 +17,28 @@ import json
 from ..commands.model import Command
 from ..commands.signing import SignedCommand, verify_command
 from ..ingest.audio_packet import AudioPacket, PacketType, VadState
-from ..protocol.messages import Bye, CommandAck, Hello
+from ..protocol.messages import Bye, CommandAck, Hello, Telemetry
 
 
 class DeviceClient:
-    def __init__(self, session_id: str, server_public_key: bytes, start_seq: int = 0) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        server_public_key: bytes,
+        start_seq: int = 0,
+        *,
+        initial_battery: float | None = 0.85,
+    ) -> None:
         self.session_id = session_id
         self._server_public_key = server_public_key
         self._seq = start_seq
         self.transcripts: list[str] = []
         self.verified_commands: list[Command] = []
         self.rejected_commands = 0
+        # P2: when set, run_session emits one button-wake telemetry right after
+        # hello so the server clears desired sleep and the capability provider
+        # reports a real battery. Pass None to suppress (legacy audio-only tests).
+        self.initial_battery = initial_battery
 
     # --- outbound (device -> server) ---
 
@@ -36,6 +47,26 @@ class DeviceClient:
 
     def bye(self) -> str:
         return Bye(session_id=self.session_id).model_dump_json()
+
+    def telemetry(
+        self,
+        *,
+        battery_pct: float,
+        state: str = "active",
+        wake_reason: str | None = "button",
+    ) -> str:
+        """Build a §E telemetry frame (P2 §2.5, §2.6).
+
+        Mirrors :meth:`hello`/:meth:`bye`: construct the typed model and emit
+        its JSON wire form. The server's ``on_telemetry`` updates the reported
+        capability provider and, on a button wake, clears desired sleep mode.
+        """
+        return Telemetry(
+            session_id=self.session_id,
+            battery_pct=battery_pct,
+            state=state,
+            wake_reason=wake_reason,
+        ).model_dump_json()
 
     def next_audio_packet(
         self,
