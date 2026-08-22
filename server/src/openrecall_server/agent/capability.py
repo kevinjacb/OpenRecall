@@ -7,6 +7,8 @@ and the stub give a stable seam so P3-commands can drop in a real
 """
 from __future__ import annotations
 
+import threading
+
 from ..contracts.types import (
     CapabilityProvider,
     CapabilitySet,
@@ -41,3 +43,72 @@ class ConstantCapabilityProvider:
 
     def resources(self) -> DeviceResourceStatus:
         return self._resources
+
+
+class ReportedCapabilityProvider:
+    """CapabilityProvider backed by device telemetry (P2 power/sleep).
+
+    Replaces ``ConstantCapabilityProvider`` in the live wiring: the
+    gateway's ``on_telemetry`` calls :meth:`report` on each Telemetry
+    frame; routes and the command guardrails read :meth:`resources` for
+    the real ``battery_pct``. Defaults (``battery=1.0``, ``state='unknown'``)
+    are safe — guardrails clear all floors until the first telemetry
+    lands, so a freshly-booted device with no telemetry yet is not
+    refused.
+
+    Thread-safe: telemetry arrives on the gateway thread; routes and
+    guardrails read on the request/agent threads. A ``threading.Lock``
+    guards the reported-state read/write (matches the project's
+    SQLite-store thread-safety pattern).
+    """
+
+    def __init__(self, capabilities: CapabilitySet | None = None) -> None:
+        self._capabilities = capabilities or CapabilitySet(
+            camera=False,
+            microphone=True,
+            retrospective_buffer=True,
+            display=False,
+            speaker=False,
+        )
+        self._lock = threading.Lock()
+        self._battery_pct: float = 1.0
+        self._state: str = "unknown"
+        self._wake_reason: str | None = None
+
+    def report(
+        self,
+        *,
+        battery_pct: float,
+        state: str,
+        wake_reason: str | None,
+    ) -> None:
+        """Update the reported device resource snapshot.
+
+        Called from the gateway thread on each Telemetry frame. All three
+        fields are written together under the lock so a concurrent reader
+        never sees a torn snapshot.
+        """
+        with self._lock:
+            self._battery_pct = battery_pct
+            self._state = state
+            self._wake_reason = wake_reason
+
+    def state(self) -> str:
+        """Latest reported device power state (e.g. ``"active"``,
+        ``"sleep"``). ``"unknown"`` until the first telemetry lands."""
+        with self._lock:
+            return self._state
+
+    def last_wake_reason(self) -> str | None:
+        """Latest reported wake reason, or ``None`` if none has been
+        reported or the device has not woken since last reset."""
+        with self._lock:
+            return self._wake_reason
+
+    def capabilities(self) -> CapabilitySet:
+        return self._capabilities
+
+    def resources(self) -> DeviceResourceStatus:
+        with self._lock:
+            battery = self._battery_pct
+        return DeviceResourceStatus(battery_pct=battery)
