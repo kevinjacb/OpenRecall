@@ -40,17 +40,20 @@ from ..protocol.messages import (
     Inbound,
     ProactiveMessage,
     RequestChunks,
+    Telemetry,
     TranscriptMsg,
 )
 from ..sessions.index import SessionIndex
 from ..sessions.lifecycle import SessionLifecycle
 
 if TYPE_CHECKING:
+    from ..contracts.types import CapabilityProvider
     from ..memory.extraction_worker import ExtractionEnqueuer
     from ..memory.speaker_registry import SpeakerRegistry
     from ..memory.store import AtomStore
     from ..sessions.segments import SegmentIndex
     from ..settings.reconciler import DeviceReconciler
+    from ..settings.store import SettingsStore
     from .liveness import DeviceLiveness
 
 Outbound = Union[Ack, RequestChunks, TranscriptMsg, CommandMessage, ProactiveMessage]
@@ -162,6 +165,8 @@ class GatewayCore:
         segment_index: "SegmentIndex | None" = None,
         reconciler: "DeviceReconciler | None" = None,
         liveness: "DeviceLiveness | None" = None,
+        capability_provider: "CapabilityProvider | None" = None,
+        settings: "SettingsStore | None" = None,
     ) -> None:
         self._reconciler = reconciler
         self._liveness = liveness
@@ -175,6 +180,8 @@ class GatewayCore:
         self._proactive_outbox = proactive_outbox
         self._speaker_registry = speaker_registry
         self._atom_store = atom_store
+        self._caps = capability_provider
+        self._settings = settings
         self._session_id: str | None = None
         self._pipeline: AudioIngestPipeline | None = None
         self._event_seq = 0  # per-session monotonic event index
@@ -187,7 +194,63 @@ class GatewayCore:
             return self._on_bye(msg)
         if isinstance(msg, CommandAck):
             return self._on_command_ack(msg)
+        if isinstance(msg, Telemetry):
+            return self._on_telemetry(msg)
         raise GatewayError(f"unhandled control message: {msg!r}")  # pragma: no cover
+
+    def _on_telemetry(self, msg: Telemetry) -> list[Outbound]:
+        """Handle a device telemetry frame (P2 §2.5, §2.6).
+
+        (a) Forward battery_pct/state/wake_reason to the capability provider
+        so guardrails and routes read the real snapshot. A provider without
+        a ``report`` seam (e.g. ``ConstantCapabilityProvider``) is a no-op,
+        not an error — the capability seam stays optional.
+
+        (b) D2: a button wake is the authoritative "turn on" — clear desired
+        ``capture.sleep_mode`` so the reconciler does not immediately
+        re-issue ``sleep`` against the user's explicit press. Only mutates
+        if sleep_mode is currently True (avoids a spurious write and the
+        reconciler churn that follows).
+
+        Never raises on missing provider/settings — the no-op-when-None
+        discipline — so a misconfigured gateway still streams. Returns no
+        outbound messages: telemetry is an ingest, not a request.
+        """
+        if self._caps is not None:
+            report = getattr(self._caps, "report", None)
+            if report is not None:
+                try:
+                    report(
+                        battery_pct=msg.battery_pct,
+                        state=msg.state,
+                        wake_reason=msg.wake_reason,
+                    )
+                except Exception:
+                    logger.exception(
+                        "on_telemetry_report_failed session=%s", msg.session_id,
+                    )
+        if msg.wake_reason == "button" and self._settings is not None:
+            try:
+                current = self._settings.get()
+                if current.capture.sleep_mode:
+                    self._settings.put(
+                        current.model_copy(
+                            update={
+                                "capture": current.capture.model_copy(
+                                    update={"sleep_mode": False},
+                                ),
+                            },
+                        ),
+                    )
+                    logger.info(
+                        "button_wake cleared desired sleep_mode session=%s",
+                        msg.session_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "on_telemetry_clear_sleep_failed session=%s", msg.session_id,
+                )
+        return []
 
     def on_audio(self, data: bytes) -> list[Outbound]:
         if self._pipeline is None or self._session_id is None:
