@@ -34,6 +34,8 @@ if TYPE_CHECKING:
     from ..memory.store import AtomStore
     from ..sessions.segments import SegmentIndex
     from ..settings.reconciler import DeviceReconciler
+    from ..settings.store import SettingsStore
+    from ..contracts.types import CapabilityProvider
     from .core import ProactiveOutbox
     from .liveness import DeviceLiveness
 
@@ -276,6 +278,8 @@ async def serve(
     segment_index: "SegmentIndex | None" = None,
     reconciler: "DeviceReconciler | None" = None,
     liveness: "DeviceLiveness | None" = None,
+    capability_provider: "CapabilityProvider | None" = None,
+    settings: "SettingsStore | None" = None,
 ) -> None:
     """Run the gateway WebSocket server until cancelled.
 
@@ -334,6 +338,8 @@ async def serve(
             segment_index=segment_index,
             reconciler=reconciler,
             liveness=liveness,
+            capability_provider=capability_provider,
+            settings=settings,
         )
         # P3: rebind the engine's ws_sender to this per-connection core.
         # The engine is process-wide (one Planner, one set of listeners),

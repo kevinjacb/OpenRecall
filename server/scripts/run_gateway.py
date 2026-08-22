@@ -237,11 +237,20 @@ def main() -> None:
 
     # Cognitive read path (N3.4 wiring): construct the Planner with the
     # real components — async LLM, strict validator, confidence-gated
-    # guardrails, durable audit log, and a constant capability stub.
-    # The retriever and atoms store are the same ones the worker
-    # populates, so a freshly-extracted atom is immediately queryable.
+    # guardrails, durable audit log, and a capability provider backed by
+    # device telemetry. The retriever and atoms store are the same ones
+    # the worker populates, so a freshly-extracted atom is immediately
+    # queryable.
+    # P2 power/sleep: ONE shared ReportedCapabilityProvider feeds the
+    # Planner's command guardrails (reads reported battery per-call),
+    # the DeviceReconciler, build_app (/device/status), and GatewayCore
+    # (on_telemetry updates it). So the same reported battery/state is
+    # consistent across status, admission, and reconciliation. Defaults
+    # (battery=1.0, state="unknown") match ConstantCapabilityProvider,
+    # so guardrails clear all floors until the first telemetry lands.
     from openrecall_server.agent.audit import InMemoryAuditLogger
-    from openrecall_server.agent.capability import ConstantCapabilityProvider
+    from openrecall_server.agent.capability import ReportedCapabilityProvider
+    capability_provider = ReportedCapabilityProvider()
     from openrecall_server.agent.config import load_agent_config
     from openrecall_server.agent.context import ContextBuilder
     from openrecall_server.agent.guardrails import ConfidenceGateGuardrails
@@ -277,7 +286,7 @@ def main() -> None:
         ),
         audit=InMemoryAuditLogger(),
         metrics=metrics,
-        capability_provider=ConstantCapabilityProvider(),
+        capability_provider=capability_provider,
         clock=SystemClock(),
         ids=UuidIdGenerator(),
         # P2-commands command-path wiring. Without these three, the
@@ -286,13 +295,13 @@ def main() -> None:
         # StrictCommandGuardrails reads the live capability + resource
         # snapshot at check-time (per-call inside the Planner), so
         # confidence_autonomous is the only value we need to seed.
-        # NOTE: ConstantCapabilityProvider returns
-        # DeviceResourceStatus(relay_connected=False) by default; the
-        # device-status characteristic that flips this flag lands in
-        # the P3 BLE bring-up slice. Until then, an issue_command with
-        # high confidence will still be refused with
-        # "device is not connected to the relay" — a documented
-        # accepted behavior for this slice.
+        # NOTE: ReportedCapabilityProvider.resources() returns
+        # DeviceResourceStatus with relay_connected matching the
+        # DeviceResourceStatus default; the device-status characteristic
+        # that flips this flag lands in the P3 BLE bring-up slice. Until
+        # then, an issue_command with high confidence may still be
+        # refused with "device is not connected to the relay" — a
+        # documented accepted behavior for this slice.
         command_validator=StrictCommandValidator(),
         command_guardrails=StrictCommandGuardrails(
             confidence_autonomous=agent_config.guardrails.confidence_autonomous,
@@ -341,7 +350,7 @@ def main() -> None:
         dispatcher=dispatcher,
         ids=UuidIdGenerator(),
         clock=SystemClock(),
-        capability_provider=ConstantCapabilityProvider(),
+        capability_provider=capability_provider,
     )
 
     token = load_or_create_token(args.token_file)
@@ -396,7 +405,7 @@ def main() -> None:
         settings_store=settings_store,
         liveness=liveness,
         reconciler=reconciler,
-        capability_provider=ConstantCapabilityProvider(),
+        capability_provider=capability_provider,
         memory_index=memory_index,
         reminders=reminder_store,
         clock=SystemClock(),
@@ -477,6 +486,12 @@ def main() -> None:
                 segment_index=segment_index,
                 liveness=liveness,
                 reconciler=reconciler,
+                # P2 power/sleep: forward the shared capability provider
+                # (on_telemetry reports battery/state into it) and the
+                # settings store (on_telemetry clears desired sleep_mode
+                # on a button wake) into every per-connection GatewayCore.
+                capability_provider=capability_provider,
+                settings=settings_store,
             )
         finally:
             await retention_sweeper.stop()
