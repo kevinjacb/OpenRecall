@@ -29,6 +29,10 @@ class BlobStore(Protocol):
 
     def has(self, digest: str) -> bool: ...
 
+    def delete(self, digest: str) -> None:
+        """Remove a blob. Idempotent: no error if the digest is absent."""
+        ...
+
 
 class InMemoryBlobStore:
     def __init__(self) -> None:
@@ -47,6 +51,9 @@ class InMemoryBlobStore:
 
     def has(self, digest: str) -> bool:
         return digest in self._blobs
+
+    def delete(self, digest: str) -> None:
+        self._blobs.pop(digest, None)
 
 
 class FilesystemBlobStore:
@@ -72,3 +79,9 @@ class FilesystemBlobStore:
 
     def has(self, digest: str) -> bool:
         return self._path(digest).exists()
+
+    def delete(self, digest: str) -> None:
+        try:
+            self._path(digest).unlink(missing_ok=True)
+        except IsADirectoryError:
+            pass

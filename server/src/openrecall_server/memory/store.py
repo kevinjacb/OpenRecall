@@ -28,6 +28,12 @@ _ONE_DAY = timedelta(days=1)
 LIST_LIMIT_DEFAULT = 20
 LIST_LIMIT_MAX = 100
 
+# SqliteAtomStore stores a sessionless atom (session_id=None, e.g. an unmatched
+# vision snapshot) as "" — the memory_atoms table has `session_id TEXT NOT NULL`,
+# so NULL would crash. "" satisfies NOT NULL; real session ids are server-
+# generated and never empty. Decoded back to None on read.
+_SESSIONLESS = ""
+
 
 @dataclass(frozen=True)
 class AtomStats:
@@ -62,7 +68,7 @@ _TIMELINE = "COALESCE(occurred_at, created_at)"
 def _row_to_atom(r) -> MemoryAtom:
     return MemoryAtom(
         atom_id=r[0],
-        session_id=r[1],
+        session_id=(None if r[1] == _SESSIONLESS else r[1]),
         source_event_id=r[2],
         kind=r[3],
         text=r[4],
@@ -108,6 +114,13 @@ class AtomStore(Protocol):
 
     def atoms(self, session_id: str) -> list[MemoryAtom]:
         """All atoms for a session, ordered by start_ms."""
+        ...
+
+    def iter_atoms(self):
+        """Yield every atom in the store (no order guarantee). Used by the
+        vision retention sweep, which must scan all scene atoms regardless of
+        session. For SQLite this is one unfiltered SELECT; for the in-memory
+        store it is the flat list. Returns an iterator; callers may list() it."""
         ...
 
     def get_cursor(self, session_id: str, *, extractor_version: str | None = None) -> int:
@@ -218,6 +231,9 @@ class InMemoryAtomStore:
         with self._lock:
             return sorted(self._by_session.get(session_id, []), key=lambda a: a.start_ms)
 
+    def iter_atoms(self):
+        return iter(self._all())
+
     def get_cursor(self, session_id: str, *, extractor_version: str | None = None) -> int:
         with self._lock:
             stamped = self._cursor.get(session_id)
@@ -236,7 +252,7 @@ class InMemoryAtomStore:
 
     def sessions(self) -> list[str]:
         with self._lock:
-            return list(self._by_session.keys())
+            return [s for s in self._by_session.keys() if s is not None]
 
     def relabel_speaker(self, *, from_id, to_id, session_id, scope):
         rows = self._by_session.get(session_id, [])
@@ -369,7 +385,7 @@ class SqliteAtomStore:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     atom.atom_id,
-                    atom.session_id,
+                    atom.session_id if atom.session_id is not None else _SESSIONLESS,
                     atom.source_event_id,
                     atom.kind,
                     atom.text,
@@ -404,6 +420,13 @@ class SqliteAtomStore:
                 (session_id,),
             ).fetchall()
         return [_row_to_atom(r) for r in rows]
+
+    def iter_atoms(self):
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {_ATOM_COLUMNS} FROM memory_atoms ORDER BY start_ms"
+            ).fetchall()
+        return iter([_row_to_atom(r) for r in rows])
 
     def list(self, *, kind=None, session_id=None, limit=LIST_LIMIT_DEFAULT, before=None):
         if limit <= 0:
@@ -514,7 +537,7 @@ class SqliteAtomStore:
             rows = self._conn.execute(
                 "SELECT DISTINCT session_id FROM memory_atoms"
             ).fetchall()
-        return [r[0] for r in rows]
+        return [r[0] for r in rows if r[0] != _SESSIONLESS]
 
     def relabel_speaker(self, *, from_id, to_id, session_id, scope):
         with self._lock:
