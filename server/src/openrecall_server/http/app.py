@@ -50,6 +50,9 @@ def build_app(
     reconciler=None,
     memory_index=None,
     reminders=None,
+    blob_store=None,
+    vision=None,
+    session_timeline=None,
 ):
     """Build the OpenRecall HTTP control API.
 
@@ -96,6 +99,9 @@ def build_app(
     app["sense_reconciler"] = reconciler
     app["sense_memory_index"] = memory_index
     app["sense_reminders"] = reminders
+    app["sense_blob_store"] = blob_store
+    app["sense_vision"] = vision
+    app["sense_session_timeline"] = session_timeline
 
     from openrecall_server.http.routes.provisioning import add_routes as add_provisioning
     from openrecall_server.http.routes.sessions import add_routes as add_sessions
@@ -109,6 +115,7 @@ def build_app(
     from openrecall_server.http.routes.settings import add_routes as add_settings
     from openrecall_server.http.routes.device import add_routes as add_device
     from openrecall_server.http.routes.reminders import add_routes as add_reminders
+    from openrecall_server.http.routes.media import add_routes as add_media
 
     add_provisioning(app)
     add_sessions(app)
@@ -120,6 +127,7 @@ def build_app(
     add_speakers(app)
     add_settings(app)
     add_device(app)
+    add_media(app)
     if command_store is not None and command_dispatcher is not None:
         add_commands(app)
     if reminders is not None:
