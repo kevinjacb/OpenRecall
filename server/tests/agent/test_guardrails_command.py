@@ -153,6 +153,18 @@ def test_low_battery_refuses_command():
     assert "battery" in (out.message or "").lower()
 
 
+def test_low_battery_refuses_a_long_op_on_the_long_op_floor():
+    """A long op (record_video >10s, floor 0.10) is refused on a battery that
+    clears the quick-op floor (0.05) but not the long-op floor (0.10) — pinning
+    that the floor reads resources().battery_pct and that the >10s branch of
+    _min_battery_for applies. T9 wires ReportedCapabilityProvider.resources()
+    into here, so this pin trusts that wiring."""
+    g = StrictCommandGuardrails(_caps(), _resources(battery_pct=0.07))
+    out = g.check(_command("record_video", {"duration_s": 30}))
+    assert not out.allowed
+    assert "battery" in (out.message or "").lower()
+
+
 def test_disconnected_relay_refuses_command():
     g = StrictCommandGuardrails(
         _caps(),
