@@ -34,6 +34,10 @@ class CaptureSettings(BaseModel):
     audio_enabled: bool = True
     save_audio: bool = True
     vision_enabled: bool = False
+    # P2: desired power state. True = the user wants the device asleep; the
+    # reconciler converges it by issuing `sleep`. A button-wake telemetry
+    # clears this (D2). Default False (awake) — see spec §2.6.
+    sleep_mode: bool = False
 
 
 class RetentionSettings(BaseModel):
@@ -57,6 +61,7 @@ class CapturePatch(BaseModel):
     audio_enabled: bool | None = None
     save_audio: bool | None = None
     vision_enabled: bool | None = None
+    sleep_mode: bool | None = None
 
 
 class RetentionPatch(BaseModel):

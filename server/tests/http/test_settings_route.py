@@ -44,9 +44,37 @@ async def test_get_returns_the_default_document():
         "schema_version": "v1",
         "capture": {
             "audio_enabled": True, "save_audio": True, "vision_enabled": False,
+            "sleep_mode": False,
         },
         "retention": {"audio_days": 30},
     }
+
+
+async def test_sleep_mode_defaults_false_in_get():
+    client, _store = _client()
+    async with client:
+        resp = await client.get("/settings", headers=_AUTH)
+        body = await resp.json()
+
+    assert resp.status == 200
+    assert body["capture"]["sleep_mode"] is False
+
+
+async def test_put_sleep_mode_persists_and_round_trips():
+    client, store = _client()
+    async with client:
+        resp = await client.put(
+            "/settings", json={"capture": {"sleep_mode": True}}, headers=_AUTH,
+        )
+        body = await resp.json()
+        assert resp.status == 200
+        assert body["capture"]["sleep_mode"] is True
+
+        resp = await client.get("/settings", headers=_AUTH)
+        body = await resp.json()
+        assert body["capture"]["sleep_mode"] is True
+
+    assert store.get().capture.sleep_mode is True
 
 
 async def test_get_requires_a_token():
