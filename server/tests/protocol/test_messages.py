@@ -14,6 +14,7 @@ from openrecall_server.protocol.messages import (
     Bye,
     Hello,
     RequestChunks,
+    Telemetry,
     TranscriptMsg,
     parse_control,
 )
@@ -72,3 +73,45 @@ def test_outbound_messages_serialize_with_their_type_tag():
         "speaker_name": None,
         "is_wearer": False,
     }
+
+
+def test_telemetry_parses():
+    msg = parse_control(
+        '{"type":"telemetry","session_id":"s1",'
+        '"battery_pct":0.82,"state":"active","wake_reason":"button"}'
+    )
+    assert isinstance(msg, Telemetry)
+    assert msg.session_id == "s1"
+    assert msg.battery_pct == 0.82
+    assert msg.state == "active"
+    assert msg.wake_reason == "button"
+
+
+def test_telemetry_rejects_extra_fields():
+    with pytest.raises(ValidationError):
+        parse_control(
+            '{"type":"telemetry","session_id":"s1",'
+            '"battery_pct":0.82,"state":"active","wake_reason":"none","oops":1}'
+        )
+
+
+def test_telemetry_wake_reason_optional():
+    msg = parse_control(
+        '{"type":"telemetry","session_id":"s1","battery_pct":0.5,"state":"sleeping"}'
+    )
+    assert isinstance(msg, Telemetry)
+    assert msg.wake_reason is None
+
+
+def test_telemetry_rejects_battery_out_of_range():
+    with pytest.raises(ValidationError):
+        parse_control(
+            '{"type":"telemetry","session_id":"s1","battery_pct":1.5,"state":"active"}'
+        )
+
+
+def test_telemetry_rejects_unknown_state():
+    with pytest.raises(ValidationError):
+        parse_control(
+            '{"type":"telemetry","session_id":"s1","battery_pct":0.5,"state":"idle"}'
+        )

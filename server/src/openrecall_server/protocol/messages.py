@@ -46,8 +46,24 @@ class CommandAck(_Strict):
     command_id: str
 
 
+class Telemetry(_Strict):
+    """Device-reported power/battery telemetry (P2 §2.5, §2.6).
+
+    Pushed by the device on activate, on sleep, and every sample interval
+    while active. The relay forwards it as a §E ``telemetry`` frame; the
+    gateway's ``on_telemetry`` updates the ReportedCapabilityProvider and, on
+    a button wake, clears desired capture.sleep_mode (D2).
+    """
+
+    type: Literal["telemetry"] = "telemetry"
+    session_id: str
+    battery_pct: float = Field(ge=0.0, le=1.0)
+    state: Literal["active", "sleeping"]
+    wake_reason: Literal["button", "none"] | None = None
+
+
 Inbound = Annotated[
-    Union[Hello, Bye, CommandAck],
+    Union[Hello, Bye, CommandAck, Telemetry],
     Field(discriminator="type"),
 ]
 _INBOUND = TypeAdapter(Inbound)
