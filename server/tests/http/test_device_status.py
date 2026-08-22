@@ -26,13 +26,15 @@ class Ticker:
         self.t += seconds
 
 
-def _client(*, liveness=None, lifecycle=None, capabilities=None):
+def _client(*, liveness=None, lifecycle=None, capabilities=None, capability_provider=None):
+    if capability_provider is None:
+        capability_provider = ConstantCapabilityProvider(capabilities=capabilities)
     app = build_app(
         token="t",
         get_pubkey=lambda: b"\x00" * 32,
         liveness=liveness,
         session_lifecycle=lifecycle,
-        capability_provider=ConstantCapabilityProvider(capabilities=capabilities),
+        capability_provider=capability_provider,
     )
     return TestClient(TestServer(app))
 
@@ -186,3 +188,38 @@ async def test_device_status_requires_a_token():
         resp = await client.get("/device/status")
 
     assert resp.status == 401
+
+
+# ---- P2: real battery + state from telemetry (Task 7) -----------------------
+
+
+async def test_status_shows_real_battery_and_state_after_telemetry():
+    from openrecall_server.agent.capability import ReportedCapabilityProvider
+
+    provider = ReportedCapabilityProvider()
+    provider.report(battery_pct=0.73, state="active", wake_reason="button")
+    status, body = await _get(capability_provider=provider)
+
+    assert status == 200
+    assert body["source"] == "device"
+    assert body["battery_pct"] == 0.73
+    assert body["state"] == "active"
+
+
+async def test_status_falls_back_to_static_when_no_telemetry():
+    from openrecall_server.agent.capability import ReportedCapabilityProvider
+
+    status, body = await _get(capability_provider=ReportedCapabilityProvider())
+
+    assert status == 200
+    assert body["source"] == "static"
+    assert body["battery_pct"] == 0.45
+    assert body["state"] == "unknown"
+
+
+async def test_status_static_fallback_with_constant_provider():
+    # The constant provider (no telemetry) keeps the legacy static surface.
+    status, body = await _get()  # default ConstantCapabilityProvider
+
+    assert body["source"] == "static"
+    assert body["state"] == "unknown"

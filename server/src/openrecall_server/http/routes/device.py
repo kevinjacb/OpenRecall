@@ -66,13 +66,27 @@ async def get_device_status(request: web.Request) -> web.Response:
 
     recording = _safe(lambda: len(lifecycle) > 0, False) if lifecycle is not None else False
 
+    # P2: real battery + state from telemetry if the provider reports it.
+    # ``ConstantCapabilityProvider`` has no ``state()`` method, so ``_safe``
+    # swallows the ``AttributeError`` and returns ``"unknown"`` — that keeps
+    # the legacy constant-provider path on ``source="static"`` automatically.
+    state = _safe(lambda: provider.state(), "unknown") if provider is not None else "unknown"
+    has_telemetry = state not in ("unknown", None)
+    if has_telemetry:
+        source = "device"
+        battery = _safe(lambda: provider.resources().battery_pct, _PLACEHOLDER_BATTERY_PCT)
+    else:
+        source = "static"
+        battery = _PLACEHOLDER_BATTERY_PCT
+
     return web.json_response({
         "schema_version": "v1",
         # "static" means the device-reported numbers are not measured. When
         # real telemetry lands this becomes "device" and the placeholder is
         # deleted rather than kept as a fallback.
-        "source": "static",
-        "battery_pct": _PLACEHOLDER_BATTERY_PCT,
+        "source": source,
+        "battery_pct": battery,
+        "state": state,
         "storage_free_bytes": None,
         "firmware_version": None,
         # --- genuinely measured from here down ---
