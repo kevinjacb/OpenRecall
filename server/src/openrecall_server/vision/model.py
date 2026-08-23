@@ -97,3 +97,14 @@ class OpenAICompatibleVisionModel:
         )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"].strip()
+
+
+class DummyVisionModel:
+    """Offline stand-in for tests/CI: captions everything with a constant.
+
+    Selected when ``OPENRECALL_VLM_MODEL == "dummy"`` (mirrors the dummy
+    LLM/embed convention) so the gateway boots vision without an Ollama server.
+    """
+
+    def caption(self, image: bytes, *, media_type: str = "image/jpeg") -> str:
+        return "[dummy scene caption]"

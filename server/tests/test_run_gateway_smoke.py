@@ -72,3 +72,42 @@ def test_run_gateway_source_uses_reported_provider():
     # clear desired sleep_mode on a button wake.
     assert "settings=settings_store" in src
     assert "capability_provider=capability_provider" in src
+
+
+def test_run_gateway_source_wires_vision_pipeline():
+    """Source-level guard: run_gateway.py must construct the P3 vision deps
+    (blob store, vision pipeline, session timeline, rel_ts_sink, provider
+    vision_enabled, retention sweep) and pass them to build_app. Reads the
+    file as text since the script isn't importable from pytest."""
+    from pathlib import Path
+
+    server_root = Path(__file__).resolve().parents[1]
+    src = (server_root / "scripts" / "run_gateway.py").read_text()
+    assert "FilesystemBlobStore" in src
+    assert "VisionPipeline" in src
+    assert "SessionTimelineIndex" in src
+    assert "rel_ts_sink=session_timeline.record" in src
+    assert "vision_enabled=" in src
+    assert "sweep_vision_retention" in src
+    # the new build_app kwargs are passed
+    assert "vision=vision_pipeline" in src
+    assert "session_timeline=session_timeline" in src
+    assert "blob_store=blob_store" in src
+
+
+def test_build_app_stashes_vision_deps(tmp_path):
+    """build_app must accept + stash the P3 deps on the app (the route reads
+    them via sense_* keys)."""
+    from openrecall_server.media.blob import InMemoryBlobStore
+    from openrecall_server.sessions.timeline import SessionTimelineIndex
+    from openrecall_server.http.app import build_app
+
+    blobs = InMemoryBlobStore()
+    tl = SessionTimelineIndex()
+    app = build_app(
+        token="t", get_pubkey=lambda: b"\x00" * 32,
+        blob_store=blobs, vision=None, session_timeline=tl,
+    )
+    assert app["sense_blob_store"] is blobs
+    assert app["sense_session_timeline"] is tl
+    assert app["sense_vision"] is None   # None when no model configured

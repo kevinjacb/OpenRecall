@@ -152,6 +152,31 @@ def main() -> None:
     # recorder is process-wide so /metrics reflects the same numbers.
     metrics = InMemoryMetricsRecorder()
     atom_store = SqliteAtomStore(args.db.replace("events.db", "atoms.db"))
+    # P3 vision: content-addressed image blobs + the rel_ts->session sidecar.
+    from openrecall_server.media.blob import FilesystemBlobStore
+    blob_store = FilesystemBlobStore(Path(args.db).parent / "blobs")
+    from openrecall_server.sessions.timeline import SessionTimelineIndex
+    session_timeline = SessionTimelineIndex()
+    # Vision pipeline is None when no VLM is configured (the upload route 503s);
+    # DummyVisionModel for tests/CI; else the OpenAI-compatible VLM from env.
+    vision_pipeline = None
+    vlm_model = __import__("os").environ.get("OPENRECALL_VLM_MODEL")
+    if vlm_model:
+        from openrecall_server.vision.model import (
+            DummyVisionModel, OpenAICompatibleVisionModel,
+        )
+        from openrecall_server.vision.pipeline import VisionPipeline
+        if vlm_model == "dummy":
+            vision_model = DummyVisionModel()
+        else:
+            vision_model = OpenAICompatibleVisionModel.from_env(__import__("os").environ)
+        vision_pipeline = VisionPipeline(
+            blob_store, vision_model, atom_store, clock=SystemClock())
+        logging.info("vision pipeline enabled (model=%s)", vlm_model)
+    else:
+        logging.warning(
+            "OPENRECALL_VLM_MODEL unset — vision disabled "
+            "(POST /media/snapshots will 503)")
     # P1 instruction processor: reminders side table + recent-transcript
     # provider. The reminder store is a separate DB file (twin to atoms.db);
     # the recent-transcript provider reads the event store the gateway
@@ -250,7 +275,9 @@ def main() -> None:
     # so guardrails clear all floors until the first telemetry lands.
     from openrecall_server.agent.audit import InMemoryAuditLogger
     from openrecall_server.agent.capability import ReportedCapabilityProvider
-    capability_provider = ReportedCapabilityProvider()
+    capability_provider = ReportedCapabilityProvider(
+        vision_enabled=lambda: settings_store.get().capture.vision_enabled,
+    )
     from openrecall_server.agent.config import load_agent_config
     from openrecall_server.agent.context import ContextBuilder
     from openrecall_server.agent.guardrails import ConfidenceGateGuardrails
@@ -370,6 +397,7 @@ def main() -> None:
             # user can flip while the device is streaming (spec §4.1).
             persist_audio=settings_store.get().capture.save_audio,
             audio_enabled=lambda: settings_store.get().capture.audio_enabled,
+            rel_ts_sink=session_timeline.record,
         )
     factory = _make_factory()
     app = build_app(
@@ -402,6 +430,9 @@ def main() -> None:
         segment_meta=segment_meta,
         audio_store=audio_store,
         settings_store=settings_store,
+        blob_store=blob_store,
+        vision=vision_pipeline,
+        session_timeline=session_timeline,
         liveness=liveness,
         reconciler=reconciler,
         capability_provider=capability_provider,
@@ -421,6 +452,22 @@ def main() -> None:
     reminder_sweeper = ReminderSweeper(
         store=reminder_store, outbox=proactive_outbox, clock=SystemClock(),
     )
+    # P3 vision retention: sweep old image blobs hourly (scene atoms kept).
+    from openrecall_server.vision.retention import sweep_vision_retention
+
+    async def _retention_loop():
+        while True:
+            try:
+                deleted = sweep_vision_retention(
+                    atom_store, blob_store,
+                    snapshot_days=settings_store.get().retention.snapshot_days,
+                    now=SystemClock().now(),
+                )
+                if deleted:
+                    logging.info("vision retention swept %d image blobs", deleted)
+            except Exception:
+                logging.exception("vision_retention_sweep_failed")
+            await asyncio.sleep(3600)
 
     async def main_loop() -> None:
         http_runner = aiohttp.web.AppRunner(app)
@@ -434,6 +481,7 @@ def main() -> None:
             await segment_sweeper.start()
             await retention_sweeper.start()
             await reminder_sweeper.start()
+            asyncio.create_task(_retention_loop())
             # P3: register the proactive engine as a worker listener.
             # The engine is fire-and-forget from the worker's POV, so
             # this never blocks extraction.

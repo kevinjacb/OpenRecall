@@ -115,6 +115,7 @@ def build_pipeline_factory(
     audio_store=None,
     persist_audio: bool = True,
     audio_enabled=None,
+    rel_ts_sink=None,
 ) -> PipelineFactory:
     """Factory wiring the real Opus decoder + MLX-whisper transcriber per session.
 
@@ -255,6 +256,7 @@ def build_pipeline_factory(
             audio_store=audio_store,
             persist_audio=persist_audio,
             audio_enabled=audio_enabled,
+            rel_ts_sink=rel_ts_sink,
         )
 
     return factory
