@@ -8,6 +8,7 @@ and the stub give a stable seam so P3-commands can drop in a real
 from __future__ import annotations
 
 import threading
+from typing import Callable
 
 from ..contracts.types import (
     CapabilityProvider,
@@ -62,7 +63,11 @@ class ReportedCapabilityProvider:
     SQLite-store thread-safety pattern).
     """
 
-    def __init__(self, capabilities: CapabilitySet | None = None) -> None:
+    def __init__(
+        self,
+        capabilities: CapabilitySet | None = None,
+        vision_enabled: Callable[[], bool] | None = None,
+    ) -> None:
         self._capabilities = capabilities or CapabilitySet(
             camera=False,
             microphone=True,
@@ -70,6 +75,7 @@ class ReportedCapabilityProvider:
             display=False,
             speaker=False,
         )
+        self._vision_enabled = vision_enabled  # None → follow base capabilities
         self._lock = threading.Lock()
         self._battery_pct: float = 1.0
         self._state: str = "unknown"
@@ -106,7 +112,20 @@ class ReportedCapabilityProvider:
             return self._wake_reason
 
     def capabilities(self) -> CapabilitySet:
-        return self._capabilities
+        caps = self._capabilities
+        if self._vision_enabled is None:
+            return caps
+        # P3 §3.3: when the vision_enabled seam is present, camera availability
+        # FOLLOWS the toggle (override, not AND). The live wiring constructs this
+        # provider with the default base (camera=False) and vision_enabled as the
+        # camera-available signal — ANDing would keep camera False forever. One
+        # seam flips /device/status.camera_available AND gates the camera
+        # commands via the existing _needs_camera guardrail (which reads
+        # capabilities().camera) — no guardrails signature change.
+        on = bool(self._vision_enabled())
+        if caps.camera == on:
+            return caps
+        return caps.model_copy(update={"camera": on})
 
     def resources(self) -> DeviceResourceStatus:
         with self._lock:

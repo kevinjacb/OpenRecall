@@ -223,3 +223,22 @@ async def test_status_static_fallback_with_constant_provider():
 
     assert body["source"] == "static"
     assert body["state"] == "unknown"
+
+
+async def test_camera_available_follows_vision_enabled():
+    from openrecall_server.agent.capability import ReportedCapabilityProvider
+    from openrecall_server.contracts.types import CapabilitySet
+    # vision_enabled=False flips camera_available off even with base camera=True
+    p_off = ReportedCapabilityProvider(
+        capabilities=CapabilitySet(camera=True), vision_enabled=lambda: False)
+    async with _client(capability_provider=p_off) as client:
+        resp = await client.get("/device/status", headers=_AUTH)
+        assert resp.status == 200
+        assert (await resp.json())["camera_available"] is False
+    # vision_enabled=True keeps it on
+    p_on = ReportedCapabilityProvider(
+        capabilities=CapabilitySet(camera=True), vision_enabled=lambda: True)
+    async with _client(capability_provider=p_on) as client:
+        resp = await client.get("/device/status", headers=_AUTH)
+        assert resp.status == 200
+        assert (await resp.json())["camera_available"] is True

@@ -84,3 +84,23 @@ def test_reported_provider_custom_capabilities():
     p = ReportedCapabilityProvider(capabilities=caps)
     assert p.capabilities().camera is True
     assert p.capabilities().microphone is True
+
+
+def test_reported_provider_camera_follows_vision_enabled():
+    p = ReportedCapabilityProvider(vision_enabled=lambda: True)
+    assert p.capabilities().camera is True
+
+
+def test_reported_provider_camera_off_when_vision_disabled():
+    p = ReportedCapabilityProvider(vision_enabled=lambda: False)
+    assert p.capabilities().camera is False
+
+
+def test_reported_provider_camera_follows_base_when_seam_absent():
+    # back-compat: no vision_enabled → camera follows the base CapabilitySet
+    from openrecall_server.contracts.types import CapabilitySet
+    p = ReportedCapabilityProvider()  # base camera=False by default
+    assert p.capabilities().camera is False
+    # a provider constructed with camera=True and no seam keeps it
+    p2 = ReportedCapabilityProvider(capabilities=CapabilitySet(camera=True))
+    assert p2.capabilities().camera is True
