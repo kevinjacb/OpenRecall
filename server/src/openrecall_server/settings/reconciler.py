@@ -34,6 +34,9 @@ log = logging.getLogger(__name__)
 AUDIO_GATE = "audio_enabled"
 # Key under which the device's last-known sleep state lives in device state.
 SLEEP_STATE = "sleep_mode"
+# Key under which the device's last-acked snapshot cadence lives in device state
+# (an int seconds value, NOT a bool — 0 means "off").
+SNAPSHOT_INTERVAL = "snapshot_interval"
 
 
 class DeviceReconciler:
@@ -99,6 +102,39 @@ class DeviceReconciler:
                      known_sleep)
             return "sleep"
 
+        # Snapshot cadence is independent of audio but subordinate to sleep
+        # (a sleeping device ignores cadence until it wakes). One command per
+        # cycle — audio converges on the next cycle after this is acked.
+        desired_interval = desired.snapshot_interval_s
+        known_interval = self._settings.get_device_state().get(SNAPSHOT_INTERVAL)
+        # The device boots at its factory-default cadence; with no ack on
+        # record we assume the device is still at that default rather than
+        # issuing a spurious set_snapshot_interval on every fresh device whose
+        # desired happens to be the default (which would preempt start_audio).
+        if known_interval is None:
+            known_interval = type(desired).model_fields["snapshot_interval_s"].default
+        if known_interval != desired_interval:
+            result = validate_and_issue(
+                command_type="set_snapshot_interval",
+                params={"seconds": desired_interval},
+                idempotency_key="reconcile:snapshot_interval",
+                dispatcher=self._dispatcher,
+                ids=self._ids,
+                clock=self._clock,
+                capability_provider=self._caps,
+            )
+            if not result.ok:
+                log.warning(
+                    "reconcile_failed type=set_snapshot_interval stage=%s reason=%s",
+                    result.stage, result.message,
+                )
+                return None
+            log.info(
+                "reconcile_issued type=set_snapshot_interval desired=%s known=%s",
+                desired_interval, known_interval,
+            )
+            return "set_snapshot_interval"
+
         # Awake path: converge audio as before.
         known = self._settings.get_device_state().get(AUDIO_GATE)
         if known is not None and bool(known) == desired.audio_enabled:
@@ -137,6 +173,11 @@ class DeviceReconciler:
         if command_type == "sleep":
             state = self._settings.get_device_state()
             state[SLEEP_STATE] = True
+            self._settings.put_device_state(state)
+            return
+        if command_type == "set_snapshot_interval":
+            state = self._settings.get_device_state()
+            state[SNAPSHOT_INTERVAL] = self._settings.get().capture.snapshot_interval_s
             self._settings.put_device_state(state)
             return
         if command_type not in ("start_audio", "stop_audio"):

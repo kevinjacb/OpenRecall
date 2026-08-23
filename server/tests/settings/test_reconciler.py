@@ -16,10 +16,13 @@ from openrecall_server.settings.reconciler import DeviceReconciler
 from openrecall_server.settings.store import InMemorySettingsStore
 
 
-def _reconciler(*, audio_enabled=True, sleep_mode=False, device_state=None):
+def _reconciler(*, audio_enabled=True, sleep_mode=False, snapshot_interval_s=None,
+                device_state=None):
+    capture = {"audio_enabled": audio_enabled, "sleep_mode": sleep_mode}
+    if snapshot_interval_s is not None:
+        capture["snapshot_interval_s"] = snapshot_interval_s
     settings = InMemorySettingsStore(
-        SettingsDocument.model_validate(
-            {"capture": {"audio_enabled": audio_enabled, "sleep_mode": sleep_mode}}),
+        SettingsDocument.model_validate({"capture": capture}),
     )
     if device_state is not None:
         settings.put_device_state(device_state)
@@ -179,3 +182,52 @@ def test_note_acked_sleep_records_sleeping_state():
     rec, settings, _dispatcher = _reconciler(sleep_mode=True)
     rec.note_acked("sleep")
     assert settings.get_device_state()["sleep_mode"] is True
+
+
+def test_desired_snapshot_interval_issues_set_snapshot_interval():
+    # audio already converged (device_state) so snapshot_interval is the only mismatch
+    rec, _settings, dispatcher = _reconciler(
+        audio_enabled=True, snapshot_interval_s=120,
+        device_state={"audio_enabled": True},
+    )
+    assert rec.reconcile() == "set_snapshot_interval"
+    [cmd] = dispatcher.pending()
+    assert cmd.command.type == "set_snapshot_interval"
+    assert cmd.command.params == {"seconds": 120}
+
+
+def test_snapshot_interval_storm_guard_after_ack():
+    # 0 = off is still issued (it's a real command); after ack, no storm
+    rec, _settings, dispatcher = _reconciler(
+        audio_enabled=True, snapshot_interval_s=0,
+        device_state={"audio_enabled": True},
+    )
+    assert rec.reconcile() == "set_snapshot_interval"   # 0=off, still issued
+    rec.note_acked("set_snapshot_interval")
+    assert rec.reconcile() is None
+    # the first command is still pending (not re-issued); no NEW command appended
+    assert [c.command.type for c in dispatcher.pending()] == ["set_snapshot_interval"]
+
+
+def test_snapshot_interval_change_re_issues():
+    rec, settings, dispatcher = _reconciler(
+        audio_enabled=True, snapshot_interval_s=60,
+        device_state={"audio_enabled": True, "snapshot_interval": 60},
+    )
+    assert rec.reconcile() is None          # converged
+    # change desired to 120
+    settings.put(SettingsDocument.model_validate(
+        {"capture": {"audio_enabled": True, "sleep_mode": False,
+                     "snapshot_interval_s": 120}}))
+    assert rec.reconcile() == "set_snapshot_interval"
+    [cmd] = dispatcher.pending()
+    assert cmd.command.params == {"seconds": 120}
+
+
+def test_sleep_precedence_over_snapshot_interval():
+    # sleep_mode=True -> reconcile issues sleep, NOT set_snapshot_interval
+    rec, _settings, dispatcher = _reconciler(
+        sleep_mode=True, snapshot_interval_s=120,
+    )
+    assert rec.reconcile() == "sleep"
+    assert [c.command.type for c in dispatcher.pending()] == ["sleep"]
