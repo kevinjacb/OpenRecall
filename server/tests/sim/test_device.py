@@ -113,3 +113,18 @@ def test_device_client_telemetry_frame_parses():
     assert msg.battery_pct == 0.85
     assert msg.state == "active"
     assert msg.wake_reason == "button"
+
+
+def test_device_client_upload_snapshot_request_builds_request():
+    """P3: DeviceClient.upload_snapshot_request builds a raw-body JPEG POST."""
+    client = DeviceClient("sim-1", b"\x00" * 32)
+    req = client.upload_snapshot_request(
+        "http://127.0.0.1:8080/media/snapshots",
+        rel_ts_ms=3000, session_id="sim-1", image=b"\xff\xd8img", token="tok",
+    )
+    assert req["url"].startswith("http://127.0.0.1:8080/media/snapshots?")
+    assert "rel_ts_ms=3000" in req["url"]
+    assert "session_id=sim-1" in req["url"]
+    assert req["body"] == b"\xff\xd8img"
+    assert req["headers"]["Authorization"] == "Bearer tok"
+    assert req["headers"]["Content-Type"] == "image/jpeg"

@@ -90,6 +90,36 @@ class DeviceClient:
         self._seq += 1
         return packet.encode()
 
+    def upload_snapshot_request(
+        self,
+        http_url: str,
+        *,
+        rel_ts_ms: int,
+        session_id: str | None = None,
+        image: bytes = b"\xff\xd8sim-frame",
+        media_type: str = "image/jpeg",
+        token: str = "",
+    ) -> dict:
+        """Build a POST /media/snapshots request (P3 §3.3).
+
+        The JPEG is the raw body; metadata is query params. In real life the
+        phone relays the upload; in sim the device posts directly to exercise
+        the route end-to-end. Returns a request dict — the runner/script does
+        the actual HTTP POST so the sim stays importable without a network.
+        """
+        from urllib.parse import urlencode
+
+        params = {"rel_ts_ms": rel_ts_ms, "media_type": media_type}
+        if session_id is not None:
+            params["session_id"] = session_id
+        url = f"{http_url}?{urlencode(params)}"
+        return {
+            "url": url,
+            "body": image,
+            "headers": {"Authorization": f"Bearer {token}",
+                        "Content-Type": media_type},
+        }
+
     # --- inbound (server -> device) ---
 
     def on_message(self, message: str | bytes) -> list[str]:

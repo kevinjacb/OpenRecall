@@ -65,6 +65,10 @@ def main() -> None:
     ap.add_argument("--battery", type=float, default=0.85,
                     help="battery charge 0.0-1.0 reported in the opening telemetry "
                          "frame (P2); pass a value <= 0 to suppress telemetry")
+    ap.add_argument("--snapshot", type=int, default=0,
+                    help="emit N synthetic snapshot uploads to the HTTP API after the WS session (P3)")
+    ap.add_argument("--http-uri", default="http://127.0.0.1:8080",
+                    help="HTTP API base URL for snapshot uploads")
     args = ap.parse_args()
 
     frames = synth_opus_frames(args.seconds)
@@ -94,6 +98,30 @@ def main() -> None:
     print(f"verified commands: {[c.command_id for c in client.verified_commands]}")
     if client.rejected_commands:
         print(f"REJECTED (bad signature): {client.rejected_commands}")
+
+    # P3: after the WS session, optionally POST N synthetic snapshots to the
+    # HTTP API so the full P3 server path (route + blob store + timeline) runs
+    # in sim. Gated on --snapshot > 0 and a bearer token. Uses stdlib
+    # urllib.request so no new dependency is introduced.
+    if args.snapshot and args.token:
+        import urllib.request
+        snap_client = client  # reuse the same session id
+        print(f"\nuploading {args.snapshot} snapshot(s) to {args.http_uri}/media/snapshots…")
+        for i in range(args.snapshot):
+            req = snap_client.upload_snapshot_request(
+                f"{args.http_uri}/media/snapshots",
+                rel_ts_ms=1000 * (i + 1), session_id=args.session,
+                image=b"\xff\xd8" + bytes([i]), token=args.token,
+            )
+            try:
+                http_req = urllib.request.Request(
+                    req["url"], data=req["body"], headers=req["headers"],
+                    method="POST")
+                with urllib.request.urlopen(http_req, timeout=10) as resp:
+                    body = resp.read().decode()
+                    print(f"  snapshot {i}: HTTP {resp.status} {body}")
+            except Exception as exc:
+                print(f"  snapshot {i}: FAILED {exc}")
 
 
 if __name__ == "__main__":
