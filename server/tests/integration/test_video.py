@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
 
+import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from openrecall_server.agent.capability import ReportedCapabilityProvider
@@ -178,3 +179,78 @@ async def test_camera_available_follows_vision_enabled():
         on["v"] = False
         resp = await client.get("/device/status", headers=_AUTH)
         assert (await resp.json())["camera_available"] is False
+
+
+# ---- P4b: clip -> scene atoms + retrieval (binding) ------------------------
+
+def _clip(segments):
+    """Deterministic MJPEG clip: list of (grayscale_color, n_frames). Pillow-gated."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+    import io
+    out = b""
+    for color, n in segments:
+        for _ in range(n):
+            buf = io.BytesIO()
+            Image.new("L", (8, 8), color).save(buf, format="JPEG")
+            out += buf.getvalue()
+    return out
+
+
+class _AnyVision:
+    """Vision backend that captions any image (keyframe-agnostic)."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def caption(self, image, *, media_type="image/jpeg"):
+        self.calls += 1
+        return "a scene"
+
+
+async def test_video_clip_creates_scene_atoms_with_vision_provenance():
+    blobs = InMemoryBlobStore(); atoms = InMemoryAtomStore()
+    pipe = VisionPipeline(blobs, _AnyVision(), atoms, clock=lambda: FIXED)
+    store = InMemorySettingsStore(SettingsDocument.model_validate(
+        {"capture": {"vision_enabled": True}}))
+    app = build_app(token="t", get_pubkey=lambda: b"\x00" * 32,
+                    settings_store=store, vision=pipe,
+                    blob_store=blobs, session_timeline=SessionTimelineIndex(),
+                    session_index=SessionIndex(), clock=FakeClock())
+    # 6-frame segments: cuts at frames 6 and 12, both >=5 (keyframe_min_gap)
+    # from the prior keyframe -> 3 keyframes: 0, 6, 12. (3-frame segments would
+    # put the first cut at frame 3, below the cooldown, yielding only 2.)
+    clip = _clip([(60, 6), (200, 6), (0, 6)])
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/media/videos", data=clip,
+                                 params={"rel_ts_ms": "1000"}, headers=_AUTH)
+        body = await resp.json()
+    assert resp.status == 201
+    scenes = [a for a in atoms.iter_atoms() if a.kind == "scene"]
+    assert len(scenes) == 3
+    # Assert source_pipeline_version (not to_provenance().source_modality): the
+    # sessionless atoms here have session_id=None, and Provenance.session_id is
+    # typed non-optional str, so to_provenance() would raise. The pipeline-version
+    # field is what source_modality is derived from, preserving the intent.
+    assert all(a.source_pipeline_version == "vision" for a in scenes)
+    # each keyframe's blob is retrievable
+    for entry in body["atoms"]:
+        async with TestClient(TestServer(app)) as c:
+            r = await c.get(f"/media/blob/{entry['digest']}", headers=_AUTH)
+            assert r.status == 200
+            assert r.headers["Content-Type"] == "image/jpeg"
+
+
+async def test_video_clip_no_change_yields_one_atom():
+    blobs = InMemoryBlobStore(); atoms = InMemoryAtomStore()
+    pipe = VisionPipeline(blobs, _AnyVision(), atoms, clock=lambda: FIXED)
+    store = InMemorySettingsStore(SettingsDocument.model_validate(
+        {"capture": {"vision_enabled": True}}))
+    app = build_app(token="t", get_pubkey=lambda: b"\x00" * 32,
+                    settings_store=store, vision=pipe,
+                    blob_store=blobs, clock=FakeClock())
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/media/videos", data=_clip([(128, 8)]),
+                                 params={"rel_ts_ms": "1"}, headers=_AUTH)
+        assert resp.status == 201
+    assert len([a for a in atoms.iter_atoms() if a.kind == "scene"]) == 1
