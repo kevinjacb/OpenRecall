@@ -112,8 +112,13 @@ class AtomStore(Protocol):
         """Whether an atom with this id is already stored."""
         ...
 
-    def atoms(self, session_id: str) -> list[MemoryAtom]:
-        """All atoms for a session, ordered by start_ms."""
+    def atoms(self, session_id: str | None) -> list[MemoryAtom]:
+        """All atoms for a session, ordered by start_ms.
+
+        ``None`` retrieves sessionless atoms (P3 vision: snapshots whose
+        ``rel_ts`` matched no session). The SQLite store maps ``None`` to the
+        ``_SESSIONLESS`` sentinel at this boundary so the round-trip is
+        transparent — callers never see the sentinel."""
         ...
 
     def iter_atoms(self):
@@ -227,7 +232,7 @@ class InMemoryAtomStore:
         with self._lock:
             return atom_id in self._seen
 
-    def atoms(self, session_id: str) -> list[MemoryAtom]:
+    def atoms(self, session_id: str | None) -> list[MemoryAtom]:
         with self._lock:
             return sorted(self._by_session.get(session_id, []), key=lambda a: a.start_ms)
 
@@ -412,12 +417,16 @@ class SqliteAtomStore:
             ).fetchone()
         return row is not None
 
-    def atoms(self, session_id: str) -> list[MemoryAtom]:
+    def atoms(self, session_id: str | None) -> list[MemoryAtom]:
+        # Map None→_SESSIONLESS at this boundary so sessionless atoms (stored
+        # as "") are retrievable — SQL `WHERE session_id = NULL` matches
+        # nothing, so without this atoms(None) would silently return [].
+        key = _SESSIONLESS if session_id is None else session_id
         with self._lock:
             rows = self._conn.execute(
                 f"SELECT {_ATOM_COLUMNS} FROM memory_atoms "
                 "WHERE session_id = ? ORDER BY start_ms",
-                (session_id,),
+                (key,),
             ).fetchall()
         return [_row_to_atom(r) for r in rows]
 

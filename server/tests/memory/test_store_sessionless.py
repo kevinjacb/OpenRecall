@@ -50,3 +50,24 @@ def test_inmemory_store_sessions_excludes_none():
     ))
     assert store.sessions() == ["s1"]            # None excluded
     assert [a for a in store.iter_atoms() if a.session_id is None][0].atom_id == "scene:d1"
+
+
+def test_sqlite_store_atoms_none_retrieves_sessionless(tmp_path):
+    # The _SESSIONLESS="" sentinel round-trips None↔"" at append/_row_to_atom;
+    # atoms(None) must map None→"" at the query boundary too, else
+    # `WHERE session_id = NULL` matches nothing (the sentinel contract).
+    when = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    store = SqliteAtomStore(tmp_path / "atoms.db")
+    store.append(_sceneless("d1", when))
+    store.append(MemoryAtom(
+        atom_id="s1:scene:d2", session_id="s1", source_event_id="blob:d2",
+        kind="scene", text="x", created_at=when, source_pipeline_version="vision",
+        occurred_at=when, start_ms=0,
+    ))
+    # atoms(None) returns ONLY the sessionless atom, decoded back to None.
+    none_atoms = store.atoms(None)
+    assert len(none_atoms) == 1
+    assert none_atoms[0].session_id is None
+    assert none_atoms[0].atom_id == "scene:d1"
+    # atoms("s1") still returns only the sessioned atom (no sentinel leak).
+    assert [a.atom_id for a in store.atoms("s1")] == ["s1:scene:d2"]
