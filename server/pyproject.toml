@@ -52,6 +52,12 @@ parakeet = [
 llm = [
     "httpx>=0.27",
 ]
+# Video clip keyframe extraction (scene-change detection). Lazy-imported
+# inside vision.clip.select_keyframes so the unit suite and a default install
+# run without it; install to enable POST /media/videos (pip install -e '.[video]').
+video = [
+    "pillow>=10",
+]
 
 [build-system]
 requires = ["hatchling"]
