@@ -51,6 +51,26 @@ def synth_opus_frames(seconds: int) -> list[bytes]:
     return frames
 
 
+def _synthetic_clip() -> bytes:
+    """A deterministic 4-scene MJPEG clip (5 red, 5 blue, 5 green, 5 red) for
+    the P4b sim. Built with Pillow if available; else a stub of SOI-delimited
+    bytes so the route still exercises split_mjpeg without the video extra."""
+    try:
+        from PIL import Image
+        import io
+        out = b""
+        for color in (60, 200, 0, 60):
+            for _ in range(5):
+                buf = io.BytesIO()
+                Image.new("L", (8, 8), color).save(buf, format="JPEG")
+                out += buf.getvalue()
+        return out
+    except ImportError:
+        # No Pillow in the dev env — 4 distinct SOI-delimited stubs.
+        return b"".join(b"\xff\xd8" + bytes([c]) * 4 + b"\xff\xd9"
+                        for c in (60, 200, 0, 60) for _ in range(5))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--uri", default="ws://127.0.0.1:8765")
@@ -67,6 +87,8 @@ def main() -> None:
                          "frame (P2); pass a value <= 0 to suppress telemetry")
     ap.add_argument("--snapshot", type=int, default=0,
                     help="emit N synthetic snapshot uploads to the HTTP API after the WS session (P3)")
+    ap.add_argument("--video", type=int, default=0,
+                    help="emit N synthetic MJPEG clip uploads to /media/videos after the WS session (P4b)")
     ap.add_argument("--http-uri", default="http://127.0.0.1:8080",
                     help="HTTP API base URL for snapshot uploads")
     args = ap.parse_args()
@@ -122,6 +144,29 @@ def main() -> None:
                     print(f"  snapshot {i}: HTTP {resp.status} {body}")
             except Exception as exc:
                 print(f"  snapshot {i}: FAILED {exc}")
+
+    # P4b: after the WS session, optionally POST N synthetic MJPEG clips to
+    # /media/videos so the full P4b server path (split -> keyframes -> scene
+    # atoms) runs in sim. Gated on --video > 0 and a bearer token. Uses stdlib
+    # urllib.request so no new dependency is introduced.
+    if args.video and args.token:
+        import urllib.request
+        print(f"\nuploading {args.video} video clip(s) to {args.http_uri}/media/videos…")
+        for i in range(args.video):
+            clip = _synthetic_clip()  # deterministic 4-scene MJPEG
+            req = client.upload_video_request(
+                f"{args.http_uri}/media/videos",
+                rel_ts_ms=1000 * (i + 1), session_id=args.session,
+                clip=clip, token=args.token,
+            )
+            try:
+                http_req = urllib.request.Request(
+                    req["url"], data=req["body"], headers=req["headers"],
+                    method="POST")
+                with urllib.request.urlopen(http_req, timeout=10) as resp:
+                    print(f"  video {i}: HTTP {resp.status} {resp.read().decode()}")
+            except Exception as exc:
+                print(f"  video {i}: FAILED {exc}")
 
 
 if __name__ == "__main__":

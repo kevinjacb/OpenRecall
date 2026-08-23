@@ -111,3 +111,14 @@ def test_build_app_stashes_vision_deps(tmp_path):
     assert app["sense_blob_store"] is blobs
     assert app["sense_session_timeline"] is tl
     assert app["sense_vision"] is None   # None when no model configured
+
+
+def test_run_device_sim_source_wires_video_upload():
+    """Source guard: run_device_sim.py wires --video to POST /media/videos."""
+    from pathlib import Path
+    server_root = Path(__file__).resolve().parents[1]
+    src = (server_root / "scripts" / "run_device_sim.py").read_text()
+    assert '"--video"' in src
+    assert "upload_video_request" in src
+    assert "/media/videos" in src
+    assert "args.video" in src
