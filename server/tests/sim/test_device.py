@@ -128,3 +128,18 @@ def test_device_client_upload_snapshot_request_builds_request():
     assert req["body"] == b"\xff\xd8img"
     assert req["headers"]["Authorization"] == "Bearer tok"
     assert req["headers"]["Content-Type"] == "image/jpeg"
+
+
+def test_device_client_upload_video_request_builds_request():
+    """P4b: DeviceClient.upload_video_request builds a raw-body MJPEG POST."""
+    client = DeviceClient("sim-1", b"\x00" * 32)
+    req = client.upload_video_request(
+        "http://127.0.0.1:8080/media/videos",
+        rel_ts_ms=3000, session_id="sim-1", clip=b"\xff\xd8clip", token="tok",
+    )
+    assert req["url"].startswith("http://127.0.0.1:8080/media/videos?")
+    assert "rel_ts_ms=3000" in req["url"]
+    assert "session_id=sim-1" in req["url"]
+    assert req["body"] == b"\xff\xd8clip"
+    assert req["headers"]["Authorization"] == "Bearer tok"
+    assert req["headers"]["Content-Type"] == "video/x-mjpeg"

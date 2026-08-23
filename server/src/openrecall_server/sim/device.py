@@ -120,6 +120,35 @@ class DeviceClient:
                         "Content-Type": media_type},
         }
 
+    def upload_video_request(
+        self,
+        http_url: str,
+        *,
+        rel_ts_ms: int,
+        session_id: str | None = None,
+        clip: bytes = b"\xff\xd8sim-clip",
+        media_type: str = "video/x-mjpeg",
+        token: str = "",
+    ) -> dict:
+        """Build a POST /media/videos request (P4b).
+
+        The MJPEG clip is the raw body; metadata is query params. Returns a
+        request dict — the runner/script does the actual HTTP POST so the sim
+        stays importable without a network (mirrors upload_snapshot_request).
+        """
+        from urllib.parse import urlencode
+
+        params = {"rel_ts_ms": rel_ts_ms, "media_type": media_type}
+        if session_id is not None:
+            params["session_id"] = session_id
+        url = f"{http_url}?{urlencode(params)}"
+        return {
+            "url": url,
+            "body": clip,
+            "headers": {"Authorization": f"Bearer {token}",
+                        "Content-Type": media_type},
+        }
+
     # --- inbound (server -> device) ---
 
     def on_message(self, message: str | bytes) -> list[str]:
