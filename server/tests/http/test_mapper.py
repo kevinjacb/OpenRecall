@@ -61,6 +61,26 @@ def test_mapper_return_outcome_carries_answer_and_atoms():
     assert dto.audit_id == "audit-1"
 
 
+def test_mapper_sessionless_scored_atom_carries_none_session():
+    """A retrieved sessionless atom (session_id=None) must map to a chip
+    DTO without raising; the chip carries session_id=None on the wire.
+    """
+    sessionless = ScoredAtom(
+        atom_id="scene:abc",
+        session_id=None,
+        kind="scene",
+        text="a cat on the desk",
+        created_at=datetime(2026, 7, 7, tzinfo=timezone.utc),
+        start_ms=0,
+        score=0.5,
+    )
+    result = _result(atoms=(sessionless,), atom_ids=("scene:abc",))
+    dto = map_planner_result_to_dto(result)
+    assert len(dto.atoms) == 1
+    assert dto.atoms[0].atom_id == "scene:abc"
+    assert dto.atoms[0].session_id is None
+
+
 def test_mapper_refuse_outcome_carries_refusal_message():
     result = _result(
         outcome=PlannerOutcome.REFUSE,

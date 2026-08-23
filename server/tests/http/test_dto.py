@@ -105,6 +105,22 @@ def test_atom_chip_dto_is_frozen():
         chip.text = "mutated"  # type: ignore[misc]
 
 
+def test_atom_chip_dto_accepts_none_session():
+    """Sessionless atoms (vision snapshots with no session) surface as
+    chips with session_id=None on the wire — not a validation error.
+    """
+    chip = AtomChipDTO(
+        atom_id="scene:abc",
+        session_id=None,
+        kind="scene",
+        text="a cat on the desk",
+        created_at=datetime(2026, 7, 7, tzinfo=timezone.utc),
+        start_ms=0,
+        score=0.5,
+    )
+    assert chip.session_id is None
+
+
 def test_memory_atom_dto_round_trip():
     m = MemoryAtomDTO(
         atom_id="a1",
@@ -121,6 +137,27 @@ def test_memory_atom_dto_round_trip():
     )
     assert m.schema_version == "v1"
     assert m.embedding_model == "bge-small"
+
+
+def test_memory_atom_dto_accepts_none_session():
+    """Sessionless atoms (vision snapshots with no session) serialize to
+    the memory list/detail DTO with session_id=None — not a validation error.
+    """
+    m = MemoryAtomDTO(
+        atom_id="scene:abc",
+        session_id=None,
+        kind="scene",
+        text="a cat on the desk",
+        created_at=datetime(2026, 7, 7, tzinfo=timezone.utc),
+        start_ms=0,
+        source_event_id="blob:abc",
+        source_modality="vision",
+        extraction_version="v1",
+        embedding_model="",
+        extractor_prompt_version="v1",
+    )
+    assert m.session_id is None
+    assert m.source_modality == "vision"
 
 
 def test_memory_search_response_dto_minimal():

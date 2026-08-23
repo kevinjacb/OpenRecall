@@ -37,7 +37,9 @@ class AtomChipDTO(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     atom_id: str
-    session_id: str
+    # str | None: a sessionless cited atom (vision snapshot with no session)
+    # surfaces as a chip with session_id=None on the wire.
+    session_id: str | None
     kind: str
     text: str
     created_at: datetime
@@ -102,7 +104,9 @@ class MemoryAtomDTO(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     schema_version: Literal["v1"] = "v1"
     atom_id: str
-    session_id: str
+    # str | None: a sessionless atom (vision snapshot with no session) is
+    # listed/detailed with session_id=None on the wire.
+    session_id: str | None
     kind: str
     text: str
     created_at: datetime

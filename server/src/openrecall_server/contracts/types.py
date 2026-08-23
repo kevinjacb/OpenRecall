@@ -31,7 +31,10 @@ class Provenance(BaseModel):
     """
 
     model_config = ConfigDict(frozen=True)
-    session_id: str
+    # str | None: a sessionless atom (e.g. a vision snapshot that couldn't be
+    # mapped to a session) produces a Provenance with session_id=None rather
+    # than raising — so the read/wire path can carry sessionless atoms.
+    session_id: str | None
     source_event_id: str
     source_modality: Literal["transcript", "vision", "ocr", "sensor", "bluetooth"]
     extraction_version: str
@@ -219,7 +222,9 @@ class ScoredAtom(BaseModel):
 
     model_config = ConfigDict(frozen=True)
     atom_id: str
-    session_id: str
+    # str | None: a sessionless atom retrieved globally surfaces here with
+    # session_id=None (mirrors MemoryAtom.session_id and Provenance.session_id).
+    session_id: str | None
     kind: str
     text: str
     created_at: datetime

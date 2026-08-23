@@ -45,3 +45,21 @@ def test_atom_to_provenance():
     assert prov.source_event_id == "e1"
     assert prov.extraction_version == "v2"
     assert prov.embedding_model == "bge-small"
+
+
+def test_atom_to_provenance_sessionless():
+    """A sessionless atom (vision snapshot that couldn't be mapped to a
+    session) must produce a valid Provenance with ``session_id=None`` — not
+    raise. ``Provenance.session_id`` is ``str | None`` so the read/wire path
+    (retrieval -> ScoredAtom -> DTO) can carry sessionless atoms.
+    """
+    atom = MemoryAtom(
+        atom_id="scene:abc", session_id=None, source_event_id="blob:abc",
+        kind="scene", text="a cat on the desk",
+        created_at=datetime(2026, 7, 7, tzinfo=timezone.utc),
+        start_ms=0, source_pipeline_version="vision",
+    )
+    prov = atom.to_provenance()
+    assert prov.session_id is None
+    assert prov.source_modality == "vision"
+    assert prov.source_pipeline_version == "vision"

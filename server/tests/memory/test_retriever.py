@@ -134,6 +134,29 @@ def test_retriever_canonical_metadata():
     assert rc.top_score > 0
 
 
+def test_retriever_sessionless_atom_global_keeps_none_session():
+    """A sessionless atom (session_id=None, e.g. an unmatched vision
+    snapshot) indexed and retrieved globally must flow through ScoredAtom
+    and to_provenance() without raising — both carry session_id=None.
+    """
+    idx = InMemoryMemoryIndex()
+    scene = MemoryAtom(
+        atom_id="scene:abc", session_id=None, source_event_id="blob:abc",
+        kind="scene", text="a cat on the desk",
+        created_at=datetime(2026, 7, 7, tzinfo=timezone.utc),
+        start_ms=0, source_pipeline_version="vision",
+    )
+    idx.add(scene, FakeDeterministicEmbedder().embed(["a cat on the desk"])[0])
+    r = _retriever(idx)
+    rc = r.retrieve(RetrieverContext(query_text="a cat on the desk", limit=10, session_id=None))
+    assert rc.returned_count == 1
+    [sa] = rc.atoms
+    assert sa.session_id is None
+    assert sa.provenance is not None
+    assert sa.provenance.session_id is None
+    assert sa.provenance.source_modality == "vision"
+
+
 def test_retriever_respects_limit():
     idx = InMemoryMemoryIndex()
     for i in range(20):
