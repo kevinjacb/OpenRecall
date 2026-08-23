@@ -99,9 +99,10 @@ async def get_blob(request: web.Request) -> web.Response:
     if blob_store is None:
         return _error("unavailable", "blob store not configured", 503)
     digest = request.match_info["digest"]
-    if not blob_store.has(digest):
+    try:
+        data = blob_store.get(digest)
+    except KeyError:
         return _error("not_found", "no blob for digest", 404)
-    data = blob_store.get(digest)
     return web.Response(body=data, content_type=sniff_media_type(data))
 
 
@@ -149,7 +150,11 @@ async def post_video(request: web.Request) -> web.Response:
 
     rel_ts_ms = _int_param(request, "rel_ts_ms")
     session_id_param = request.query.get("session_id")
-    media_type = request.query.get("media_type", "image/jpeg")
+    # The keyframes split from an MJPEG stream are JPEGs — caption them as
+    # image/jpeg regardless of the clip's container media_type (the sim sends
+    # video/x-mjpeg; a real VLM would malform the request given the container
+    # type). The media_type query param is still accepted (aiohttp ignores
+    # unused query params) but no longer drives the captioner.
     timeline = request.app.get("sense_session_timeline")
     sidx = request.app.get("sense_session_index")
     clock = request.app.get("sense_clock")
@@ -176,7 +181,7 @@ async def post_video(request: web.Request) -> web.Response:
         frame = frames[idx]
         atom = pipe.capture(
             session_id, frame, captured_at_ms=captured_at_ms,
-            media_type=media_type, occurred_at=occurred_at,
+            media_type="image/jpeg", occurred_at=occurred_at,
         )
         digest = sha256_hex(frame)
         atom_id = (f"{session_id}:scene:{digest}" if session_id else f"scene:{digest}")

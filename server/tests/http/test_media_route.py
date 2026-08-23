@@ -40,9 +40,11 @@ class FakeAnyVision:
     def __init__(self, caption: str = "a scene") -> None:
         self.caption_text = caption
         self.calls = 0
+        self.seen_media_types: list[str] = []
 
     def caption(self, image: bytes, *, media_type: str = "image/jpeg") -> str:
         self.calls += 1
+        self.seen_media_types.append(media_type)
         return self.caption_text
 
 
@@ -364,3 +366,21 @@ async def test_post_video_no_change_yields_one_atom():
         assert resp.status == 201
     scenes = [a for a in atoms.iter_atoms() if a.kind == "scene"]
     assert len(scenes) == 1
+
+
+async def test_post_video_captions_keyframes_as_image_jpeg_regardless_of_container_media_type():
+    blobs = InMemoryBlobStore(); atoms = InMemoryAtomStore()
+    clip = _mjpeg_clip([(60, 6), (200, 6), (0, 6)])
+    vision = FakeAnyVision()
+    pipe = VisionPipeline(blobs, vision, atoms, clock=lambda: FIXED)
+    store = InMemorySettingsStore(SettingsDocument.model_validate({"capture": {"vision_enabled": True}}))
+    app = build_app(token="t", get_pubkey=lambda: b"\x00"*32, settings_store=store, vision=pipe,
+                    blob_store=blobs, clock=FakeClock())
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/media/videos", data=clip,
+                                 params={"rel_ts_ms": "1000", "media_type": "video/x-mjpeg"},
+                                 headers=_AUTH)
+        assert resp.status == 201
+    # keyframes captioned as image/jpeg, NOT video/x-mjpeg
+    assert vision.calls == 3
+    assert vision.seen_media_types == ["image/jpeg", "image/jpeg", "image/jpeg"]

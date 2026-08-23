@@ -239,6 +239,7 @@ async def test_video_clip_creates_scene_atoms_with_vision_provenance():
             r = await c.get(f"/media/blob/{entry['digest']}", headers=_AUTH)
             assert r.status == 200
             assert r.headers["Content-Type"] == "image/jpeg"
+            assert await r.read()
 
 
 async def test_video_clip_no_change_yields_one_atom():
