@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 from aiohttp import web
 
-from openrecall_server.media.blob import sha256_hex
+from openrecall_server.media.blob import sha256_hex, sniff_media_type
 
 
 def _error(code: str, message: str, status: int) -> web.Response:
@@ -84,5 +84,24 @@ async def post_snapshot(request: web.Request) -> web.Response:
     )
 
 
+async def get_blob(request: web.Request) -> web.Response:
+    """Serve a stored blob by digest (P4b — the master spec's deferred-v1.1).
+
+    Content-Type is sniffed from magic bytes (no media_type sidecar). 404 if
+    the blob is absent — including blobs already swept by retention (the
+    tiered policy: scene atoms are kept forever, image blobs for
+    ``retention_days``). Bearer auth is enforced by the global middleware.
+    """
+    blob_store = request.app.get("sense_blob_store")
+    if blob_store is None:
+        return _error("unavailable", "blob store not configured", 503)
+    digest = request.match_info["digest"]
+    if not blob_store.has(digest):
+        return _error("not_found", "no blob for digest", 404)
+    data = blob_store.get(digest)
+    return web.Response(body=data, content_type=sniff_media_type(data))
+
+
 def add_routes(app: web.Application) -> None:
     app.router.add_post("/media/snapshots", post_snapshot)
+    app.router.add_get("/media/blob/{digest}", get_blob)

@@ -229,3 +229,31 @@ async def test_post_snapshot_unmatched_rel_ts_is_sessionless():
     assert len(scene_atoms) == 1
     assert scene_atoms[0].session_id is None
     assert scene_atoms[0].occurred_at == upload_when
+
+
+async def test_get_blob_serves_snapshot_image_with_sniffed_content_type():
+    blobs = InMemoryBlobStore()
+    atoms = InMemoryAtomStore()
+    image = b"\xff\xd8\xff\xe0jpeg bytes"
+    pipe = VisionPipeline(blobs, FakeVision({image: "x"}), atoms, clock=lambda: FIXED)
+    # ingest a snapshot so the blob exists
+    app = build_app(token="t", get_pubkey=lambda: b"\x00" * 32,
+                    settings_store=InMemorySettingsStore(
+                        SettingsDocument.model_validate({"capture": {"vision_enabled": True}})),
+                    vision=pipe, blob_store=blobs, session_timeline=SessionTimelineIndex(),
+                    session_index=SessionIndex(), clock=FakeClock())
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/media/snapshots", data=image, params={"rel_ts_ms": "100"},
+                           headers=_AUTH)
+        resp = await client.get(f"/media/blob/{sha256_hex(image)}", headers=_AUTH)
+        assert resp.status == 200
+        assert resp.headers["Content-Type"] == "image/jpeg"
+        assert await resp.read() == image
+
+
+async def test_get_blob_404_for_missing_digest():
+    app = build_app(token="t", get_pubkey=lambda: b"\x00" * 32,
+                    blob_store=InMemoryBlobStore())
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/media/blob/" + "0" * 64, headers=_AUTH)
+        assert resp.status == 404

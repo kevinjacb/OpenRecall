@@ -85,3 +85,21 @@ class FilesystemBlobStore:
             self._path(digest).unlink(missing_ok=True)
         except IsADirectoryError:
             pass
+
+
+def sniff_media_type(data: bytes) -> str:
+    """Infer a Content-Type from the first bytes (magic numbers).
+
+    Used by ``GET /media/blob/{digest}`` to serve stored blobs without a
+    media_type sidecar. Covers JPEG/PNG/GIF/WebP; falls back to
+    ``application/octet-stream``.
+    """
+    if data.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "application/octet-stream"
