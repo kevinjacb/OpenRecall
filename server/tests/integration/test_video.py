@@ -228,11 +228,11 @@ async def test_video_clip_creates_scene_atoms_with_vision_provenance():
     assert resp.status == 201
     scenes = [a for a in atoms.iter_atoms() if a.kind == "scene"]
     assert len(scenes) == 3
-    # Assert source_pipeline_version (not to_provenance().source_modality): the
-    # sessionless atoms here have session_id=None, and Provenance.session_id is
-    # typed non-optional str, so to_provenance() would raise. The pipeline-version
-    # field is what source_modality is derived from, preserving the intent.
-    assert all(a.source_pipeline_version == "vision" for a in scenes)
+    # These are sessionless atoms (session_id=None — the clip's rel_ts didn't
+    # fall in any session). to_provenance() now supports sessionless atoms
+    # (Provenance.session_id is str | None), so assert the real provenance
+    # field rather than the underlying source_pipeline_version it's derived from.
+    assert all(a.to_provenance().source_modality == "vision" for a in scenes)
     # each keyframe's blob is retrievable
     for entry in body["atoms"]:
         async with TestClient(TestServer(app)) as c:

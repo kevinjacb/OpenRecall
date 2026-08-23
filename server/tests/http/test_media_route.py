@@ -302,7 +302,7 @@ async def test_post_video_creates_scene_atom_per_keyframe():
     assert resp.status == 201
     scenes = [a for a in atoms.iter_atoms() if a.kind == "scene"]
     assert len(scenes) == 3
-    assert all(a.source_pipeline_version == "vision" for a in scenes)
+    assert all(a.to_provenance().source_modality == "vision" for a in scenes)
     assert len(body["atoms"]) == 3
 
 
