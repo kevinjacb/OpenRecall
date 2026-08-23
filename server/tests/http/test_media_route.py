@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from openrecall_server.contracts.clock import FakeClock
@@ -32,6 +33,31 @@ class FakeVision:
     def caption(self, image: bytes, *, media_type: str = "image/jpeg") -> str:
         self.calls += 1
         return self.mapping[image]
+
+
+class FakeAnyVision:
+    """Captions any image with a constant — for video keyframe tests."""
+    def __init__(self, caption: str = "a scene") -> None:
+        self.caption_text = caption
+        self.calls = 0
+
+    def caption(self, image: bytes, *, media_type: str = "image/jpeg") -> str:
+        self.calls += 1
+        return self.caption_text
+
+
+def _mjpeg_clip(segments):
+    """Build an MJPEG clip: segments is a list of (color, n_frames). Skip if Pillow absent."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+    import io
+    out = b""
+    for color, n in segments:
+        for _ in range(n):
+            buf = io.BytesIO()
+            Image.new("L", (8, 8), color).save(buf, format="JPEG")
+            out += buf.getvalue()
+    return out
 
 
 def _vision_store(image_bytes: bytes, caption: str = "a scene"):
@@ -257,3 +283,84 @@ async def test_get_blob_404_for_missing_digest():
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/media/blob/" + "0" * 64, headers=_AUTH)
         assert resp.status == 404
+
+
+async def test_post_video_creates_scene_atom_per_keyframe():
+    blobs = InMemoryBlobStore()
+    atoms = InMemoryAtomStore()
+    clip = _mjpeg_clip([(60, 6), (200, 6), (0, 6)])  # 3 scenes -> keyframes 0,6,12
+    pipe = VisionPipeline(blobs, FakeAnyVision(), atoms, clock=lambda: FIXED)
+    store = InMemorySettingsStore(SettingsDocument.model_validate({"capture": {"vision_enabled": True}}))
+    app = build_app(token="t", get_pubkey=lambda: b"\x00" * 32, settings_store=store,
+                    vision=pipe, blob_store=blobs, session_timeline=SessionTimelineIndex(),
+                    session_index=SessionIndex(), clock=FakeClock())
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/media/videos", data=clip, params={"rel_ts_ms": "1000"}, headers=_AUTH)
+        body = await resp.json()
+    assert resp.status == 201
+    scenes = [a for a in atoms.iter_atoms() if a.kind == "scene"]
+    assert len(scenes) == 3
+    assert all(a.source_pipeline_version == "vision" for a in scenes)
+    assert len(body["atoms"]) == 3
+
+
+async def test_post_video_403_when_vision_disabled():
+    store = InMemorySettingsStore(SettingsDocument.model_validate({"capture": {"vision_enabled": False}}))
+    app = build_app(token="t", get_pubkey=lambda: b"\x00" * 32, settings_store=store,
+                    vision=VisionPipeline(InMemoryBlobStore(), FakeAnyVision(), InMemoryAtomStore()),
+                    blob_store=InMemoryBlobStore(), clock=FakeClock())
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/media/videos", data=_mjpeg_clip([(60, 2)]),
+                                 params={"rel_ts_ms": "1"}, headers=_AUTH)
+        assert resp.status == 403
+
+
+async def test_post_video_503_when_no_vision_pipeline():
+    store = InMemorySettingsStore(SettingsDocument.model_validate({"capture": {"vision_enabled": True}}))
+    app = build_app(token="t", get_pubkey=lambda: b"\x00" * 32, settings_store=store,
+                    vision=None, blob_store=InMemoryBlobStore(), clock=FakeClock())
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/media/videos", data=_mjpeg_clip([(60, 2)]),
+                                 params={"rel_ts_ms": "1"}, headers=_AUTH)
+        assert resp.status == 503
+
+
+async def test_post_video_400_on_non_jpeg_body():
+    store = InMemorySettingsStore(SettingsDocument.model_validate({"capture": {"vision_enabled": True}}))
+    pipe = VisionPipeline(InMemoryBlobStore(), FakeAnyVision(), InMemoryAtomStore())
+    app = build_app(token="t", get_pubkey=lambda: b"\x00" * 32, settings_store=store, vision=pipe,
+                    blob_store=InMemoryBlobStore(), clock=FakeClock())
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/media/videos", data=b"not a jpeg",
+                                 params={"rel_ts_ms": "1"}, headers=_AUTH)
+        assert resp.status == 400
+
+
+async def test_post_video_idempotent_replay():
+    blobs = InMemoryBlobStore(); atoms = InMemoryAtomStore()
+    clip = _mjpeg_clip([(60, 3), (200, 3)])
+    pipe = VisionPipeline(blobs, FakeAnyVision(), atoms, clock=lambda: FIXED)
+    store = InMemorySettingsStore(SettingsDocument.model_validate({"capture": {"vision_enabled": True}}))
+    app = build_app(token="t", get_pubkey=lambda: b"\x00" * 32, settings_store=store, vision=pipe,
+                    blob_store=blobs, session_timeline=SessionTimelineIndex(),
+                    session_index=SessionIndex(), clock=FakeClock())
+    async with TestClient(TestServer(app)) as client:
+        r1 = await client.post("/media/videos", data=clip, params={"rel_ts_ms": "1"}, headers=_AUTH)
+        r2 = await client.post("/media/videos", data=clip, params={"rel_ts_ms": "1"}, headers=_AUTH)
+        assert r1.status == 201 and r2.status == 200
+        scenes = [a for a in atoms.iter_atoms() if a.kind == "scene"]
+        assert len(scenes) == 2  # not doubled by replay
+
+
+async def test_post_video_no_change_yields_one_atom():
+    blobs = InMemoryBlobStore(); atoms = InMemoryAtomStore()
+    clip = _mjpeg_clip([(128, 8)])  # one flat scene
+    pipe = VisionPipeline(blobs, FakeAnyVision(), atoms, clock=lambda: FIXED)
+    store = InMemorySettingsStore(SettingsDocument.model_validate({"capture": {"vision_enabled": True}}))
+    app = build_app(token="t", get_pubkey=lambda: b"\x00" * 32, settings_store=store, vision=pipe,
+                    blob_store=blobs, clock=FakeClock())
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/media/videos", data=clip, params={"rel_ts_ms": "1"}, headers=_AUTH)
+        assert resp.status == 201
+    scenes = [a for a in atoms.iter_atoms() if a.kind == "scene"]
+    assert len(scenes) == 1
