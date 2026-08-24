@@ -33,6 +33,7 @@
 #include "provisioning.h"
 #include "provisioning_core.h"
 #include "ring_buffer.h"
+#include "sd_store.h"
 #include "snapshot.h"
 #include "vad.h"
 
@@ -200,8 +201,17 @@ void app_main(void) {
     ESP_LOGE(TAG, "executor_init failed");
   }
 
+  /* P4b: mount the SD store up front so the first capture isn't delayed by the
+   * sdspi init. sd_store_mount() is idempotent — the lazy mounts inside
+   * snapshot_capture_one/video_start/transfer_flush stay as belt-and-suspenders
+   * for the no-card-at-boot case. A failure here is non-fatal: the device still
+   * boots, and captures will just fail to write until the card is present. */
+  if (sd_store_mount() != ESP_OK) {
+    ESP_LOGW(TAG, "sd_store_mount failed — captures will retry lazily on card insert");
+  }
+
   /* P4b camera + ambient snapshot. camera_init configures the OV2640; the SD
-   * store mounts lazily inside snapshot_capture_one. snapshot_init creates and
+   * store is already mounted above (not lazily here). snapshot_init creates and
    * starts the auto-reload timer at SNAPSHOT_INTERVAL_S (the server can override
    * via snapshot_set_interval through the executor). */
   if (camera_init() != ESP_OK) {

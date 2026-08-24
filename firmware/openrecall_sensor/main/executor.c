@@ -3,6 +3,9 @@
 #include "audio_gate.h"
 #include "ble_drain.h"
 #include "config.h"
+#include "snapshot.h"
+#include "transfer.h"
+#include "video_capture.h"
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -44,10 +47,22 @@ static void executor_task(void *arg) {
         break;
       }
       case CMD_CAPTURE_PHOTO:
-        ESP_LOGI(TAG, "capture_photo not implemented (P4b)");
+        snapshot_capture_one(rel_ts_ms_now());
         break;
       case CMD_RECORD_VIDEO:
-        ESP_LOGI(TAG, "record_video not implemented (P4b) dur=%u", (unsigned)req.duration_s);
+        video_record(req.duration_s, rel_ts_ms_now());
+        break;
+      case CMD_START_VIDEO:
+        video_start(rel_ts_ms_now());
+        break;
+      case CMD_STOP_VIDEO:
+        video_stop();
+        break;
+      case CMD_FLUSH_SNAPSHOTS:
+        transfer_flush();
+        break;
+      case CMD_SET_SNAPSHOT_INTERVAL:
+        snapshot_set_interval(req.snapshot_interval_s);
         break;
       default:
         ESP_LOGW(TAG, "unknown cmd type=%d", req.type);

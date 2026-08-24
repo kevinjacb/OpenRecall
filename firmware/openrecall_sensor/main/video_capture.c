@@ -215,6 +215,11 @@ esp_err_t video_start(uint32_t rel_ts_ms) {
   s_recording = true;
   s_stop_waiter = NULL;
 
+  /* Pinned to core 0 at priority 4 — BELOW the BLE audio drainer (the hard
+   * real-time constraint). The video task's vTaskDelay(1000/VIDEO_FPS) yields
+   * each frame so the drainer's BLE notify deadline can be met. If a real
+   * collision shows up as audio chunk_seq gaps during a recording in the final
+   * smoke, TODO: lower VIDEO_FPS or raise the drainer priority. */
   BaseType_t ok = xTaskCreatePinnedToCore(video_task, "video", 8192, NULL,
                                           4, &s_task, 0);
   if (ok != pdPASS) {
