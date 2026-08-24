@@ -30,6 +30,7 @@ idf_component_register(
         "camera.c"
         "snapshot.c"
         "video_capture.c"
+        "transfer.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_timer
@@ -43,4 +44,7 @@ idf_component_register(
         fatfs
         sdmmc
         esp32-camera
+        esp_wifi
+        esp_http_server
+        esp_netif
 )
