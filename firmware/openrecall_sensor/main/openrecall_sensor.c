@@ -24,6 +24,7 @@
 #include "audio_gate.h"
 #include "ble_drain.h"
 #include "boot_id.h"
+#include "camera.h"
 #include "ble_link.h"
 #include "commands.h"
 #include "config.h"
@@ -32,6 +33,7 @@
 #include "provisioning.h"
 #include "provisioning_core.h"
 #include "ring_buffer.h"
+#include "snapshot.h"
 #include "vad.h"
 
 #include "esp_log.h"
@@ -43,6 +45,14 @@
 #include <stdbool.h>   // bool / true / false for the DSP adapt gate
 
 static const char *TAG = "sense";
+
+/* Monotonic ms clock shared with the snapshot/video code (core 0). The audio
+ * task (core 1) updates this each frame from its local rel_ts_ms; a 32-bit
+ * aligned volatile write is atomic on Xtensa, so the timer-task reader
+ * (rel_ts_ms_now) needs no lock. See snapshot.h. */
+static volatile uint32_t s_rel_ts_ms = 0;
+
+uint32_t rel_ts_ms_now(void) { return s_rel_ts_ms; }
 
 // Core-1 audio task: capture -> single-mic energy VAD -> Opus encode
 // -> ring_buffer push. rel_ts_ms is a monotonic per-device millisecond counter
@@ -124,6 +134,7 @@ static void audio_task(void *arg) {
   frame_tail:
     frames++;
     rel_ts_ms += FRAME_MS;
+    s_rel_ts_ms = rel_ts_ms;   /* publish to the shared clock (snapshot/video) */
 
     if (frames == stack_report_at) {
       // UBaseType_t is unsigned; cast to uint32_t for the format string.
@@ -187,6 +198,16 @@ void app_main(void) {
 
   if (executor_init() != ESP_OK) {
     ESP_LOGE(TAG, "executor_init failed");
+  }
+
+  /* P4b camera + ambient snapshot. camera_init configures the OV2640; the SD
+   * store mounts lazily inside snapshot_capture_one. snapshot_init creates and
+   * starts the auto-reload timer at SNAPSHOT_INTERVAL_S (the server can override
+   * via snapshot_set_interval through the executor). */
+  if (camera_init() != ESP_OK) {
+    ESP_LOGE(TAG, "camera_init failed — snapshots disabled");
+  } else if (snapshot_init() != ESP_OK) {
+    ESP_LOGE(TAG, "snapshot_init failed");
   }
 
   // Audio pinned to core 1; NimBLE host task + drainer on core 0.
