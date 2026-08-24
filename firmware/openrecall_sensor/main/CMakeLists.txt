@@ -25,6 +25,7 @@ idf_component_register(
         "provisioning.c"
         "provisioning_core.c"
         "boot_id.c"
+        "media_index.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_timer
