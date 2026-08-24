@@ -27,6 +27,7 @@ idf_component_register(
         "boot_id.c"
         "media_index.c"
         "sd_store.c"
+        "camera.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_timer
@@ -39,4 +40,5 @@ idf_component_register(
         opus
         fatfs
         sdmmc
+        esp32-camera
 )

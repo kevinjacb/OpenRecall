@@ -6,3 +6,5 @@ dependencies:
   idf: ">=5.0"
   espressif/libsodium: "*"   # Ed25519 verification (mbedTLS here has no Ed25519)
   espressif/cjson: "*"       # parse the canonical §D command payload (cJSON left core IDF)
+  espressif/esp32-camera:
+    version: "^2.0.0"         # OV2640 DVP driver (P4b); verify 5.1.6 compat on first build
