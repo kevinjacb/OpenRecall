@@ -23,6 +23,7 @@
 #include "audio_capture.h"
 #include "audio_gate.h"
 #include "ble_drain.h"
+#include "boot_id.h"
 #include "ble_link.h"
 #include "commands.h"
 #include "config.h"
@@ -163,6 +164,9 @@ void app_main(void) {
     nv = nvs_flash_init();
   }
   ESP_ERROR_CHECK(nv);
+
+  // Per-activate counter (disambiguates rel_ts_ms across boots; SoftAP SSID).
+  boot_id_init();
 
   ESP_ERROR_CHECK(ring_buffer_init());
   ESP_ERROR_CHECK(audio_capture_init());

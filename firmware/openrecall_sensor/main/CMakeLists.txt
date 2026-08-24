@@ -24,6 +24,7 @@ idf_component_register(
         "audio_gate.c"
         "provisioning.c"
         "provisioning_core.c"
+        "boot_id.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_timer
