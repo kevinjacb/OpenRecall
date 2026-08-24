@@ -10,12 +10,17 @@
  *
  * Stop synchronization: FreeRTOS has no xTaskJoin. video_stop sets s_recording
  * = false, stores its own task handle in s_stop_waiter, and blocks on
- * ulTaskNotifyTake(pdTRUE, portMAX_DELAY) — a binary-semaphore-style wait that
- * clears the notification value on exit. The video task, after it observes
- * s_recording == false, does its final flush + fclose(s_file) + manifest append,
- * then calls xTaskNotifyGive(s_stop_waiter) to release video_stop, clears
- * s_task = NULL, and vTaskDelete(NULL). This guarantees the clip is finalized
- * before video_stop returns (a transfer can never read a half-written file).
+ * ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000)) — a bounded binary-semaphore-
+ * style wait that clears the notification value on exit. The video task, after
+ * it observes s_recording == false, does its final flush + fclose(s_file) +
+ * manifest append, then calls xTaskNotifyGive(s_stop_waiter) to release
+ * video_stop, clears s_task = NULL, and vTaskDelete(NULL). The wait is BOUNDED
+ * (not portMAX_DELAY) because camera_capture_jpeg is an unbounded blocking call
+ * (esp32-camera waits on a frame-buffer semaphore with no timeout; an SCCB/I2C
+ * bus hang is a known failure mode) — if the task is stuck inside it when stop
+ * fires, an unbounded wait here would hang the system silently. On 5 s timeout
+ * video_stop logs and returns anyway (the clip may be incomplete, which is
+ * acceptable; the system stays responsive). Normally finalization takes ~100 ms.
  *
  * Thread-safety: s_recording is volatile bool — single producer (video_stop sets
  * it false) and one reader (the video task loop) on a core-0-pinned task; no
@@ -47,7 +52,7 @@ static const char *TAG = "video";
 /* ---- State (see header comment for the synchronization model) ---- */
 static volatile bool s_recording = false;
 static TaskHandle_t   s_task = NULL;        /* the video_task handle */
-static TaskHandle_t   s_stop_waiter = NULL; /* video_stop's task, signaled on completion */
+static volatile TaskHandle_t s_stop_waiter = NULL; /* video_stop's task, signaled on completion */
 static FILE          *s_file = NULL;        /* kept open for the whole clip */
 static char           s_path[NAME_MAX_LEN];
 static uint32_t       s_seq = 0;            /* monotonic per-boot clip counter */
@@ -75,12 +80,18 @@ static void video_task(void *arg) {
     size_t   n = 0;
     esp_err_t err = camera_capture_jpeg(&jpg, &n);
     if (err != ESP_OK || jpg == NULL || n == 0) {
-      /* A dropped frame is acceptable; a corrupt clip is not. Log and continue. */
+      /* A dropped frame is acceptable; a corrupt clip is not. Log and continue.
+       * free(jpg) unconditionally: camera_capture_jpeg's contract does not
+       * guarantee *out_buf==NULL on error, and an ESP_OK + n==0 frame can still
+       * carry a non-NULL buffer. free(NULL) is well-defined, so this is safe
+       * regardless of which sub-condition fired — and it prevents PSRAM leaking
+       * across repeated dropped frames (which would eventually crash the device). */
       if (err != ESP_OK) {
         ESP_LOGE(TAG, "camera_capture_jpeg: %s", esp_err_to_name(err));
       } else if (n == 0) {
         ESP_LOGW(TAG, "camera_capture_jpeg: empty frame, skipping");
       }
+      free(jpg);
       vTaskDelay(pdMS_TO_TICKS(frame_period_ms));
       continue;
     }
@@ -185,9 +196,11 @@ esp_err_t video_start(uint32_t rel_ts_ms) {
   video_path(s_path, sizeof s_path, boot, rel_ts_ms, seq);
   s_start_rel_ts_ms = rel_ts_ms;
 
-  /* Ensure the per-boot video subdir exists before opening the clip. */
+  /* Ensure the per-boot video subdir exists before opening the clip. Uses the
+   * SD_VIDEO_DIR macro (single source of truth in config.h) with C string-literal
+   * concatenation; matches what video_path() in media_index.c emits. */
   char dir[NAME_MAX_LEN];
-  snprintf(dir, sizeof dir, "/sdcard/video/%" PRIu32, (uint32_t)boot);
+  snprintf(dir, sizeof dir, SD_VIDEO_DIR "/%" PRIu32, boot);
   (void)ensure_dir(dir);
 
   /* Open the clip ONCE and keep the handle for the whole recording. sd_store_write
@@ -229,12 +242,24 @@ void video_stop(void) {
   s_stop_waiter = xTaskGetCurrentTaskHandle();
   s_recording = false;
 
+  /* Drain any stale notification already pending on this task so a stray
+   * xTaskNotifyGive from elsewhere can't make video_stop return prematurely. */
+  (void)ulTaskNotifyTake(pdTRUE, 0);
+
   /* Block until the video task has flushed, closed the file, and appended the
-   * manifest line. ulTaskNotifyTake(pdTRUE, ...) clears the notification value
-   * on exit so a subsequent stop sees a clean state. portMAX_DELAY is fine here:
-   * the video task will always exit (its loop condition is s_recording, which we
-   * just set false; the only per-frame blocking is a bounded vTaskDelay). */
-  (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+   * manifest line. Bounded wait (NOT portMAX_DELAY): camera_capture_jpeg is an
+   * UNBOUNDED blocking call — the esp32-camera driver waits on a frame-buffer
+   * semaphore with no timeout, and an SCCB/I2C bus hang is a known failure mode.
+   * If the video task is stuck inside camera_capture_jpeg when we flip
+   * s_recording=false, it never finalizes, never notifies, and an unbounded
+   * wait here would hang the system silently (only a watchdog reboot recovers).
+   * 5 s is far longer than normal finalization (~one frame period + flush +
+   * fclose + manifest ≈ 100 ms). On timeout we log and return anyway — the
+   * system stays responsive; the clip may be incomplete, which is acceptable. */
+  uint32_t got = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000));
+  if (got == 0) {
+    ESP_LOGE(TAG, "video_stop: video task did not finalize within 5000 ms — clip may be incomplete");
+  }
   s_stop_waiter = NULL;
 }
 
