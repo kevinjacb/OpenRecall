@@ -35,6 +35,12 @@ static const ble_uuid128_t s_prov_key_uuid   = OPENRECALL_UUID128(0x12);
 static const ble_uuid128_t s_prov_reset_uuid = OPENRECALL_UUID128(0x13);
 
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+// True while BLE is suspended for the WiFi transfer window (spec §3.2). Set by
+// ble_link_suspend() before requesting the async disconnect so the gap-event
+// callback sees it; cleared by ble_link_resume() before re-advertising. Suppresses
+// the disconnect handler's unconditional re-advertise so advertising stays down
+// for the whole window, not just until the terminate callback fires.
+static bool s_suspended = false;
 static uint16_t s_audio_handle;  // value handle for the audio notify char
 static uint16_t s_ack_handle;    // value handle for the ack notify char
 static uint16_t s_prov_state_handle;  // value handle for the provisioning STATE char
@@ -44,7 +50,7 @@ static bool s_prov_state_subscribed;
 static uint8_t s_addr_type;
 static ble_command_handler_t s_on_command;
 
-static esp_err_t start_advertising(void);
+static int start_advertising(void);
 
 // Notify chars are write-from-server-only; reads return empty.
 static int chr_noop_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt,
@@ -134,7 +140,11 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
         s_conn_handle = event->connect.conn_handle;
         ESP_LOGI(TAG, "phone connected (handle %" PRIu16 ")", s_conn_handle);
       } else {
-        start_advertising();  // failed; advertise again
+        // A connect attempt that was in flight when ble_link_suspend() stopped
+        // advertising can still fail and land here mid-window; respect the flag.
+        if (!s_suspended) {
+          start_advertising();  // failed; advertise again
+        }
       }
       return 0;
     case BLE_GAP_EVENT_DISCONNECT:
@@ -143,7 +153,13 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
       s_audio_subscribed = false;
       s_ack_subscribed = false;
       s_prov_state_subscribed = false;
-      start_advertising();
+      // Only re-advertise if we're not in a suspend window; otherwise the async
+      // disconnect from ble_link_suspend()'s terminate would bring advertising
+      // back up mid-transfer. ble_link_resume() is the sole re-advertise path
+      // out of a suspend.
+      if (!s_suspended) {
+        start_advertising();
+      }
       return 0;
     case BLE_GAP_EVENT_SUBSCRIBE:
       if (event->subscribe.attr_handle == s_audio_handle) {
@@ -159,7 +175,7 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
   }
 }
 
-static esp_err_t start_advertising(void) {
+static int start_advertising(void) {
   struct ble_hs_adv_fields fields = {0};
   fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
   fields.name = (uint8_t *)"OpenRecall";
@@ -171,7 +187,7 @@ static esp_err_t start_advertising(void) {
   int rc = ble_gap_adv_set_fields(&fields);
   if (rc != 0) {
     ESP_LOGE(TAG, "adv_set_fields rc=%d", rc);
-    return ESP_FAIL;
+    return rc;
   }
   struct ble_gap_adv_params adv_params = {0};
   adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
@@ -179,10 +195,10 @@ static esp_err_t start_advertising(void) {
   rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &adv_params, gap_event, NULL);
   if (rc != 0) {
     ESP_LOGE(TAG, "adv_start rc=%d", rc);
-    return ESP_FAIL;
+    return rc;
   }
   ESP_LOGI(TAG, "advertising as \"OpenRecall\"");
-  return ESP_OK;
+  return 0;
 }
 
 static void on_sync(void) {
@@ -267,6 +283,12 @@ esp_err_t ble_link_start(ble_command_handler_t on_command) {
 // adv_stop returns non-zero (treated as success) and no conn means no terminate.
 
 void ble_link_suspend(void) {
+  // Set the flag FIRST, before any NimBLE call. ble_gap_terminate is async —
+  // the BLE_GAP_EVENT_DISCONNECT callback fires later on the host task — so the
+  // flag must already be true whenever that callback runs, or it would
+  // re-advertise mid-transfer. Setting it first guarantees the callback sees it.
+  s_suspended = true;
+
   // Stop advertising. NimBLE returns a non-zero status if we're not currently
   // advertising — that's an expected no-op, not an error.
   int rc = ble_gap_adv_stop();
@@ -290,11 +312,27 @@ void ble_link_suspend(void) {
 }
 
 void ble_link_resume(void) {
-  // Re-advertise after the WiFi transfer window (spec §3.2). Reuses the same
-  // start_advertising() helper that ble_link_start reaches via on_sync — no
-  // full BLE stack re-init, just a fresh advertise.
-  esp_err_t err = start_advertising();
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "resume: start_advertising failed: %s", esp_err_to_name(err));
+  // Clear the flag FIRST, before re-advertising, so the disconnect handler's
+  // guard is open again and resume is the sole re-advertise path out of suspend.
+  s_suspended = false;
+
+  // Re-advertise after the WiFi transfer window (spec §3.2). The adv fields
+  // (name/UUID/flags) were set by the initial start_advertising() at sync and
+  // persist in the controller across adv stop/start, so we only need to restart
+  // advertising — no full BLE stack re-init, no re-set_fields. Calling
+  // ble_gap_adv_start directly (rather than the start_advertising() helper) lets
+  // us inspect the raw NimBLE status and tolerate benign races: EALREADY means
+  // we're already advertising (the goal), EBUSY means a prior terminate is still
+  // in flight (transient, not a hard fault).
+  struct ble_gap_adv_params adv_params = {0};
+  adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
+  adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+  int rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &adv_params, gap_event, NULL);
+  if (rc == 0 || rc == BLE_HS_EALREADY) {
+    ESP_LOGI(TAG, "advertising as \"OpenRecall\"");
+  } else if (rc == BLE_HS_EBUSY) {
+    ESP_LOGW(TAG, "resume: adv_start EBUSY (terminate still in flight)");
+  } else {
+    ESP_LOGE(TAG, "resume: adv_start rc=%d", rc);
   }
 }
