@@ -26,6 +26,7 @@ idf_component_register(
         "provisioning_core.c"
         "boot_id.c"
         "media_index.c"
+        "sd_store.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_timer
@@ -36,4 +37,6 @@ idf_component_register(
         libsodium
         cjson
         opus
+        fatfs
+        sdmmc
 )
