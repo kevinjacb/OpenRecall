@@ -29,6 +29,7 @@ idf_component_register(
         "sd_store.c"
         "camera.c"
         "snapshot.c"
+        "video_capture.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_timer
