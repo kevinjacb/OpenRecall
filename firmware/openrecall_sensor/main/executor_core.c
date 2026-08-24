@@ -70,6 +70,36 @@ void executor_parse_and_validate(const char *type, const cJSON *params, cmd_requ
     out->seconds = (uint32_t)s;
     return;
   }
+  if (strcmp(type, "start_video") == 0) {
+    out->type = CMD_START_VIDEO;
+    static const char *const allowed[] = { NULL };
+    if (!params_only_allowed(params, allowed)) out->status = EXEC_BAD_PARAMS;
+    return;
+  }
+  if (strcmp(type, "stop_video") == 0) {
+    out->type = CMD_STOP_VIDEO;
+    static const char *const allowed[] = { NULL };
+    if (!params_only_allowed(params, allowed)) out->status = EXEC_BAD_PARAMS;
+    return;
+  }
+  if (strcmp(type, "flush_snapshots") == 0) {
+    out->type = CMD_FLUSH_SNAPSHOTS;
+    static const char *const allowed[] = { NULL };
+    if (!params_only_allowed(params, allowed)) out->status = EXEC_BAD_PARAMS;
+    return;
+  }
+  if (strcmp(type, "set_snapshot_interval") == 0) {
+    out->type = CMD_SET_SNAPSHOT_INTERVAL;
+    static const char *const allowed[] = { "seconds", NULL };
+    if (!params_only_allowed(params, allowed)) { out->status = EXEC_BAD_PARAMS; return; }
+    double s;
+    if (!get_number(params, "seconds", &s)) { out->status = EXEC_BAD_PARAMS; return; }
+    if (s < (double)SNAPSHOT_INTERVAL_MIN || s > (double)SNAPSHOT_INTERVAL_MAX) {
+      out->status = EXEC_BAD_PARAMS; return;
+    }
+    out->snapshot_interval_s = (uint32_t)s;
+    return;
+  }
   /* play_audio / display_text / show_status / anything else */
   out->type = CMD_UNKNOWN;
   out->status = EXEC_UNKNOWN_TYPE;

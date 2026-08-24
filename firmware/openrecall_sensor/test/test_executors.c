@@ -71,6 +71,28 @@ static void test_photo_video_classify(void) {
   r = parse("record_video", "{\"duration_s\":5,\"y\":1}"); check("video unknown -> bad", r.status==EXEC_BAD_PARAMS);
 }
 
+static void test_video_commands(void) {
+  printf("test_video_commands\n");
+  cmd_request_t r;
+  /* start_video / stop_video / flush_snapshots: no params */
+  r = parse("start_video", NULL);       check("start_video ok", r.status==EXEC_OK && r.type==CMD_START_VIDEO);
+  r = parse("start_video", "{\"x\":1}");check("start_video unknown -> bad", r.status==EXEC_BAD_PARAMS);
+  r = parse("stop_video", NULL);        check("stop_video ok", r.status==EXEC_OK && r.type==CMD_STOP_VIDEO);
+  r = parse("stop_video", "{\"a\":1}"); check("stop_video unknown -> bad", r.status==EXEC_BAD_PARAMS);
+  r = parse("flush_snapshots", NULL);   check("flush ok", r.status==EXEC_OK && r.type==CMD_FLUSH_SNAPSHOTS);
+  r = parse("flush_snapshots", "{\"z\":1}"); check("flush unknown -> bad", r.status==EXEC_BAD_PARAMS);
+  /* set_snapshot_interval: {seconds} required, bounded 0..600 */
+  r = parse("set_snapshot_interval", "{\"seconds\":30}"); check("interval 30 ok", r.status==EXEC_OK && r.type==CMD_SET_SNAPSHOT_INTERVAL && r.snapshot_interval_s==30);
+  r = parse("set_snapshot_interval", "{\"seconds\":0}");  check("interval 0 (off) ok", r.status==EXEC_OK && r.snapshot_interval_s==0);
+  r = parse("set_snapshot_interval", "{\"seconds\":600}"); check("interval 600 ok", r.status==EXEC_OK && r.snapshot_interval_s==600);
+  r = parse("set_snapshot_interval", "{}");               check("interval missing -> bad", r.status==EXEC_BAD_PARAMS);
+  r = parse("set_snapshot_interval", NULL);                check("interval null -> bad", r.status==EXEC_BAD_PARAMS);
+  r = parse("set_snapshot_interval", "{\"seconds\":601}"); check("interval above -> bad", r.status==EXEC_BAD_PARAMS);
+  r = parse("set_snapshot_interval", "{\"seconds\":-1}");  check("interval below -> bad", r.status==EXEC_BAD_PARAMS);
+  r = parse("set_snapshot_interval", "{\"seconds\":true}");check("interval bool -> bad", r.status==EXEC_BAD_PARAMS);
+  r = parse("set_snapshot_interval", "{\"seconds\":30,\"x\":1}"); check("interval unknown -> bad", r.status==EXEC_BAD_PARAMS);
+}
+
 static void test_unknown_type(void) {
   printf("test_unknown_type\n");
   cmd_request_t r;
@@ -95,6 +117,7 @@ int main(void) {
   test_request_buffer();
   test_start_stop_audio();
   test_photo_video_classify();
+  test_video_commands();
   test_unknown_type();
   test_replay_window();
   if (failures) { printf("FAIL: %d check(s)\n", failures); return 1; }

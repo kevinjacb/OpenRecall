@@ -36,13 +36,18 @@ typedef enum {
   CMD_REQUEST_BUFFER,
   CMD_CAPTURE_PHOTO,
   CMD_RECORD_VIDEO,
+  CMD_START_VIDEO,            /* P4b: begin continuous video to SD */
+  CMD_STOP_VIDEO,             /* P4b: stop continuous video, close clip */
+  CMD_FLUSH_SNAPSHOTS,        /* P4b: bring up SoftAP transfer window */
+  CMD_SET_SNAPSHOT_INTERVAL,  /* P4b: ambient snapshot cadence (0=off) */
 } cmd_type_t;
 
 typedef struct {
   cmd_type_t        type;
   executor_status_t status;
-  uint32_t          seconds;     /* request_buffer (validated)        */
-  uint32_t          duration_s;  /* record_video   (validated; P4b)   */
+  uint32_t          seconds;             /* request_buffer (validated)        */
+  uint32_t          duration_s;          /* record_video   (validated; P4b)   */
+  uint32_t          snapshot_interval_s; /* set_snapshot_interval (validated) */
 } cmd_request_t;
 
 /* Parse `type` + `params` (may be NULL) into `out`, setting out->status.
