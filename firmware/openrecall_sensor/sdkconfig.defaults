@@ -5,6 +5,13 @@
 # --- Flash + PSRAM (8 MB flash; 8 MB Octal PSRAM on the Sense) ---
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+
+# --- Partition table: custom single-app, 3 MB factory ---
+# P4b adds esp_wifi + esp_http_server to the ~1 MB audio/BLE image; the built-in
+# single-app table (1 MB factory) overflows. Custom partitions.csv gives a 3 MB
+# factory app (~2 MB headroom). 8 MB flash, no OTA in this project.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
