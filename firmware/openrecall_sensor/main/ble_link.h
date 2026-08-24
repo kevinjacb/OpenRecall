@@ -27,6 +27,11 @@ typedef void (*ble_command_handler_t)(const uint8_t *data, size_t len);
 // Initialise NimBLE, register the GATT service, and start advertising as "OpenRecall".
 esp_err_t ble_link_start(ble_command_handler_t on_command);
 
+// Suspend BLE for the bounded WiFi transfer window (spec §3.2): stop advertising
+// + disconnect the phone. Resume re-advertises. The phone is busy on WiFi anyway.
+void ble_link_suspend(void);
+void ble_link_resume(void);
+
 // Notify a §C.6 audio packet to the subscribed phone. Returns 0 on success, <0 if
 // not connected/subscribed or on error. Non-blocking; drops if the link is down.
 int ble_link_notify_audio(const uint8_t *data, size_t len);

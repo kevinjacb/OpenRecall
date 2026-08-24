@@ -44,7 +44,7 @@ static bool s_prov_state_subscribed;
 static uint8_t s_addr_type;
 static ble_command_handler_t s_on_command;
 
-static void start_advertising(void);
+static esp_err_t start_advertising(void);
 
 // Notify chars are write-from-server-only; reads return empty.
 static int chr_noop_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt,
@@ -159,7 +159,7 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
   }
 }
 
-static void start_advertising(void) {
+static esp_err_t start_advertising(void) {
   struct ble_hs_adv_fields fields = {0};
   fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
   fields.name = (uint8_t *)"OpenRecall";
@@ -171,7 +171,7 @@ static void start_advertising(void) {
   int rc = ble_gap_adv_set_fields(&fields);
   if (rc != 0) {
     ESP_LOGE(TAG, "adv_set_fields rc=%d", rc);
-    return;
+    return ESP_FAIL;
   }
   struct ble_gap_adv_params adv_params = {0};
   adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
@@ -179,9 +179,10 @@ static void start_advertising(void) {
   rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &adv_params, gap_event, NULL);
   if (rc != 0) {
     ESP_LOGE(TAG, "adv_start rc=%d", rc);
-  } else {
-    ESP_LOGI(TAG, "advertising as \"OpenRecall\"");
+    return ESP_FAIL;
   }
+  ESP_LOGI(TAG, "advertising as \"OpenRecall\"");
+  return ESP_OK;
 }
 
 static void on_sync(void) {
@@ -258,4 +259,42 @@ esp_err_t ble_link_start(ble_command_handler_t on_command) {
   nimble_port_freertos_init(ble_host_task);
   ESP_LOGI(TAG, "NimBLE started");
   return ESP_OK;
+}
+
+// --- Suspend / resume: pause BLE for the bounded WiFi transfer window (spec §3.2).
+// Task 10 (SoftAP transfer) calls ble_link_suspend() before the transfer and
+// ble_link_resume() after. These are safe to call when BLE was never started:
+// adv_stop returns non-zero (treated as success) and no conn means no terminate.
+
+void ble_link_suspend(void) {
+  // Stop advertising. NimBLE returns a non-zero status if we're not currently
+  // advertising — that's an expected no-op, not an error.
+  int rc = ble_gap_adv_stop();
+  if (rc != 0) {
+    ESP_LOGD(TAG, "adv_stop rc=%d (not advertising — ok)", rc);
+  }
+
+  // Disconnect the connected phone so the 2.4 GHz radio is free for WiFi. We do
+  // NOT clear s_conn_handle here: the gap event callback resets it on the
+  // resulting BLE_GAP_EVENT_DISCONNECT. Clearing it ourselves could race the
+  // callback and leave a stale handle; letting the callback own it is safe.
+  if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+    rc = ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+    if (rc != 0) {
+      // A non-zero status here (e.g. already disconnected, busy) is expected —
+      // the peer may have gone between the check and the call. Log at info, not
+      // error, so this doesn't look like a fault during a normal transfer.
+      ESP_LOGI(TAG, "terminate rc=%d (peer may already be gone)", rc);
+    }
+  }
+}
+
+void ble_link_resume(void) {
+  // Re-advertise after the WiFi transfer window (spec §3.2). Reuses the same
+  // start_advertising() helper that ble_link_start reaches via on_sync — no
+  // full BLE stack re-init, just a fresh advertise.
+  esp_err_t err = start_advertising();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "resume: start_advertising failed: %s", esp_err_to_name(err));
+  }
 }
