@@ -110,6 +110,12 @@ static esp_err_t item_handler(httpd_req_t *req) {
     path[1 + name_len] = '\0';
   }
 
+  /* Reject traversal — the /sdcard/ prefix check alone does NOT stop
+   * "/sdcard/../" because such a path starts with "/sdcard/". */
+  if (strstr(path, "..") != NULL) {
+    httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "invalid path");
+    return ESP_OK;
+  }
   /* Only serve files under /sdcard/. */
   if (strncmp(path, "/sdcard/", 8) != 0) {
     httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "outside sdcard");
@@ -148,6 +154,9 @@ static esp_err_t item_handler(httpd_req_t *req) {
       ESP_LOGE(TAG, "chunk send failed for %s", path);
       break;
     }
+  }
+  if (ferror(f)) {
+    ESP_LOGE(TAG, "fread error streaming %s", path);
   }
   fclose(f);
   free(chunk);
@@ -252,7 +261,12 @@ static esp_err_t consumed_handler(httpd_req_t *req) {
       if (!nl) break;
       p = nl + 1;
     }
-    sd_store_write(SD_MANIFEST, (const uint8_t *)new_manifest, new_len);
+    if (sd_store_write(SD_MANIFEST, (const uint8_t *)new_manifest, new_len) != ESP_OK) {
+      free(manifest);
+      free(new_manifest);
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "manifest rewrite failed");
+      return ESP_OK;
+    }
   } else {
     ESP_LOGW(TAG, "manifest truncated (%zu bytes) — skip trim", man_len);
     new_len = man_len;  /* don't trigger early teardown on a truncated read */
@@ -300,13 +314,18 @@ static void transfer_task(void *arg) {
     goto teardown;
   }
 
-  /* 4. Init WiFi once (the audio/BLE path never uses WiFi). */
+  /* 4. Init WiFi once (the audio/BLE path never uses WiFi). Init WiFi first,
+   *    then create the netif — if wifi_init fails, no netif is leaked. */
   if (!s_wifi_inited) {
-    esp_netif_create_default_wifi_ap();
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     err = esp_wifi_init(&cfg);
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "esp_wifi_init: %s", esp_err_to_name(err));
+      goto teardown;
+    }
+    esp_netif_t *netif = esp_netif_create_default_wifi_ap();
+    if (!netif) {
+      ESP_LOGE(TAG, "esp_netif_create_default_wifi_ap failed");
       goto teardown;
     }
     s_wifi_inited = true;
