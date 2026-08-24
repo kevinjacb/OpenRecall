@@ -151,3 +151,54 @@ static const uint8_t SERVER_ED25519_PUBKEY[32] = {0};
 #define REQ_BUFFER_MIN_SECONDS 1
 #define REQ_BUFFER_MAX_SECONDS 60
 #define DRAIN_REPLAY_QUEUE_DEPTH 4 /* SPSC; replays serialize in the drain task */
+
+/* ---- P4b video: OV2640 camera (XIAO ESP32S3 Sense, DVP) ----
+ * Pinmap verified against the Seeed wiki + esp32-camera commit 9befde1
+ * (CAMERA_MODEL_XIAO_ESP32S3). NO collision with I2S mics (4/5/6),
+ * SD SPI (7/8/9/21), or strapping (0/3/45/46). GPIO21 is the camera
+ * LED-flash AND the SD CS — leave the LED unused (CAM_PIN_LED = -1). */
+#define CAM_PIN_XCLK    10
+#define CAM_PIN_SIOD    40   /* SCCB SDA */
+#define CAM_PIN_SIOC    39   /* SCCB SCL */
+#define CAM_PIN_D7      48
+#define CAM_PIN_D6      11
+#define CAM_PIN_D5      12
+#define CAM_PIN_D4      14
+#define CAM_PIN_D3      16
+#define CAM_PIN_D2      18
+#define CAM_PIN_D1      17
+#define CAM_PIN_D0      15
+#define CAM_PIN_VSYNC   38
+#define CAM_PIN_HREF    47
+#define CAM_PIN_PCLK    13
+#define CAM_PIN_PWDN    -1
+#define CAM_PIN_RESET   -1
+#define CAM_PIN_LED     -1   /* GPIO21 is SD CS — do NOT drive the camera LED */
+#define CAM_XCLK_FREQ_HZ 20000000
+#define VIDEO_WIDTH    640   /* VGA */
+#define VIDEO_HEIGHT   480
+#define VIDEO_FPS      10   /* target; Spike-2 measured ~34 fps headroom at VGA */
+#define VIDEO_JPEG_QUALITY 12   /* 0-63, lower = better; OV2640 quantization */
+
+/* ---- P4b video: ambient snapshot cadence ---- */
+#define SNAPSHOT_INTERVAL_S 30          /* default; 0 = off. Server overrides via set_snapshot_interval */
+#define SNAPSHOT_INTERVAL_MIN 0         /* 0 = off */
+#define SNAPSHOT_INTERVAL_MAX 600       /* mirror server _TYPE_SCHEMAS */
+
+/* ---- P4b video: bounded SoftAP transfer (spec D5 / §3.2) ---- */
+#define WIFI_TRANSFER_WINDOW_S 600      /* hard max SoftAP up-time; protects battery */
+#define SOFTAP_SSID_PREFIX "OpenRecall-" /* SSID = prefix + boot_id (e.g. OpenRecall-7) */
+#define SOFTAP_CHANNEL 1
+#define TRANSFER_HTTP_PORT 80
+#define TRANSFER_TASK_STACK 6144        /* esp_http_server + fatfs reads on core 0 */
+#define TRANSFER_TASK_PRIO 4            /* below audio/BLE real-time */
+
+/* ---- P4b video: boot_id (NVS counter per activate) ---- */
+#define BOOT_NVS_NAMESPACE "sense_boot"
+#define BOOT_NVS_KEY "boot_id"
+
+/* ---- P4b video: SD layout ---- */
+#define SD_MOUNT_POINT "/sdcard"
+#define SD_SNAPSHOT_DIR "/sdcard/snapshots"
+#define SD_VIDEO_DIR "/sdcard/video"
+#define SD_MANIFEST "/sdcard/manifest.txt"
