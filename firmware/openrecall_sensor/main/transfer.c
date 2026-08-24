@@ -326,6 +326,11 @@ static void transfer_task(void *arg) {
     esp_netif_t *netif = esp_netif_create_default_wifi_ap();
     if (!netif) {
       ESP_LOGE(TAG, "esp_netif_create_default_wifi_ap failed");
+      /* esp_wifi_init already succeeded above; deinit so the WiFi state is
+       * clean for a retry. Without this, s_wifi_inited stays false (set only
+       * after both succeed) but WiFi is init'd — the next transfer_flush would
+       * re-call esp_wifi_init on already-init'd WiFi → ESP_ERR_INVALID_STATE. */
+      esp_wifi_deinit();
       goto teardown;
     }
     s_wifi_inited = true;

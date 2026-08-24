@@ -56,7 +56,7 @@ static void executor_task(void *arg) {
         video_start(rel_ts_ms_now());
         break;
       case CMD_STOP_VIDEO:
-        video_stop();
+        video_stop_async();
         break;
       case CMD_FLUSH_SNAPSHOTS:
         transfer_flush();

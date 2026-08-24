@@ -17,6 +17,7 @@
 #include <stdint.h>
 
 esp_err_t video_start(uint32_t rel_ts_ms);   /* start_video handler body */
-void      video_stop(void);                   /* stop_video handler body */
+void      video_stop(void);                   /* stop_video handler body (blocking, ≤5 s) */
+void      video_stop_async(void);             /* stop_video handler body (non-blocking) */
 esp_err_t video_record(uint32_t duration_s, uint32_t rel_ts_ms); /* record_video */
 bool      video_is_recording(void);

@@ -146,9 +146,16 @@ static void video_task(void *arg) {
   /* Release video_stop (it is blocked on ulTaskNotifyTake), then self-delete.
    * s_stop_waiter is read here only after video_stop set it and then blocked,
    * so the read is safe. Clear s_task before deleting so video_stop's NULL
-   * check and a subsequent video_start see a clean slate. */
+   * check and a subsequent video_start see a clean slate.
+   *
+   * Guard the clear with a handle check: a stale task whose handle no longer
+   * matches s_task (because video_start's s_task != NULL guard was bypassed by
+   * an older code path and s_task was overwritten) must NOT NULL out the
+   * current task's handle. Only the task that OWNS s_task may clear it. */
   TaskHandle_t waiter = s_stop_waiter;
-  s_task = NULL;
+  if (s_task == xTaskGetCurrentTaskHandle()) {
+    s_task = NULL;
+  }
   s_recording = false;  /* belt-and-braces; video_stop already set this */
   if (waiter) {
     xTaskNotifyGive(waiter);
@@ -183,6 +190,21 @@ esp_err_t video_start(uint32_t rel_ts_ms) {
   if (s_recording) {
     ESP_LOGW(TAG, "start while already recording — ignored");
     return ESP_OK;
+  }
+  /* Refuse to start a new video task while a previous one is still alive.
+   * This happens when video_stop timed out (5 s) waiting for the video task
+   * to finalize — typically because the task is stuck inside
+   * camera_capture_jpeg (an SCCB/I2C bus hang, a known OV2640 failure mode).
+   * If we created a second task now, it would overwrite s_task and the stuck
+   * old task — when it eventually unsticks — would run its teardown against
+   * the NEW recording's s_file/s_task, corrupting the new clip and NULLing the
+   * new handle. A camera I2C hang requires a reboot to recover; keeping video
+   * disabled until then is the accepted tradeoff (two tasks corrupting each
+   * other is worse). */
+  if (s_task != NULL) {
+    ESP_LOGW(TAG, "video_start: previous video task still alive (stop timed "
+                   "out? camera hung?) — reboot to recover");
+    return ESP_FAIL;
   }
 
   esp_err_t err = sd_store_mount();
@@ -266,6 +288,29 @@ void video_stop(void) {
     ESP_LOGE(TAG, "video_stop: video task did not finalize within 5000 ms — clip may be incomplete");
   }
   s_stop_waiter = NULL;
+}
+
+/* ---- video_stop_async: non-blocking stop on a short-lived task ----
+ * video_stop blocks up to 5 s (the camera-hang bound). The executor's
+ * CMD_STOP_VIDEO handler must not block the executor task that long — no other
+ * command would process during the wait. video_stop_async spawns a short-lived
+ * task that calls video_stop (which finalizes the clip: flush/fclose/manifest)
+ * then self-deletes, mirroring video_record's record_task helper pattern (same
+ * stack 4096, priority 4, core 0). video_stop itself stays blocking —
+ * video_record still calls it synchronously inside its own helper task and
+ * needs the clip closed before returning. */
+static void stop_task(void *arg) {
+  (void)arg;
+  video_stop();
+  vTaskDelete(NULL);
+}
+
+void video_stop_async(void) {
+  BaseType_t ok = xTaskCreatePinnedToCore(stop_task, "vstop", 4096, NULL,
+                                          4, NULL, 0);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "xTaskCreatePinnedToCore(vstop) failed");
+  }
 }
 
 esp_err_t video_record(uint32_t duration_s, uint32_t rel_ts_ms) {
