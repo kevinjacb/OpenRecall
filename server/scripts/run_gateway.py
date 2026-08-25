@@ -77,7 +77,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--window-ms", type=int, default=5000, help="transcription window")
+    ap.add_argument("--window-ms", type=int, default=2000, help="transcription window")
+    ap.add_argument("--hop-ms", type=int, default=234,
+                    help="transcription hop (output granularity); derived from Parakeet RTF (spec §6)")
     ap.add_argument("--model", default=None, help="override the MLX-whisper model repo")
     ap.add_argument("--db", default="data/events.db", help="durable capture-event store path")
     ap.add_argument("--key-file", default="data/server_ed25519.key",
@@ -386,7 +388,7 @@ def main() -> None:
     def _make_factory():
         return _bpf(
             window_ms=args.window_ms,
-            hop_ms=1000,
+            hop_ms=args.hop_ms,
             model=args.model,
             whisper_config=agent_config.whisper,
             asr_config=agent_config.asr,
