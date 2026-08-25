@@ -335,12 +335,16 @@ class FakeSpeakerRegistry:
 
 
 class FakeLoop:
-    """Records call_soon_threadsafe callbacks without running them."""
+    """Records call_soon_threadsafe callbacks AND invokes them, so the
+    monkey-patched ``_launch_stage2`` lambda actually populates ``_launched``.
+    Tests that expect no scheduling assert ``loop.calls == []`` (feed returns
+    before ever calling this)."""
     def __init__(self):
         self.calls = []
 
     def call_soon_threadsafe(self, fn, *args):
         self.calls.append((fn, args))
+        fn(*args)
 
 
 def _event(text, speaker=None, assignment=None, event_id="s:0", start_ms=0, session_id="s"):
@@ -376,8 +380,8 @@ def test_feed_confirmed_wearer_schedules_stage2():
     d._speaker_registry = reg
     d.feed("s", _event("take a photo", speaker="spk-1", assignment="confirmed"))
     assert len(loop.calls) == 1
-    _, (ev, ctype, ctx) = d._launched[0][1], d._launched[0][2], d._launched[0][3]
-    assert d._launched[0][2] == "capture_photo"
+    _sid, _ev, ctype, _ctx = d._launched[0]
+    assert ctype == "capture_photo"
 
 
 def test_feed_non_wearer_does_not_schedule():
@@ -769,39 +773,31 @@ def _stage2_detector(reply, reject=False):
     return d, loop
 
 
-async def _run(d, sid, ev, ctype, ctx):
-    await d._run_stage2(sid, ev, ctype, ctx)
-
-
-def test_stage2_confirmed_command_dispatches():
+async def test_stage2_confirmed_command_dispatches():
     d, _ = _stage2_detector('{"command":{"type":"capture_photo","params":{}},"confidence":0.9}')
     ev = _event("take a photo", event_id="s:7")
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(_run(d, "s", ev, "capture_photo", "take a photo"))
+    await d._run_stage2("s", ev, "capture_photo", "take a photo")
     assert len(d._dispatcher.issued) == 1
     assert d._dispatcher.issued[0].type == "capture_photo"
     assert d._provenance["cmd-1"] == "s:7"
     assert d._inflight.get("s", 0) == 0  # decremented after completion
 
 
-def test_stage2_null_command_does_not_dispatch():
+async def test_stage2_null_command_does_not_dispatch():
     d, _ = _stage2_detector('{"command":null,"confidence":0.1}')
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(_run(d, "s", _event("take a photo"), "capture_photo", "take a photo"))
+    await d._run_stage2("s", _event("take a photo"), "capture_photo", "take a photo")
     assert d._dispatcher.issued == []
 
 
-def test_stage2_low_confidence_does_not_dispatch():
+async def test_stage2_low_confidence_does_not_dispatch():
     d, _ = _stage2_detector('{"command":{"type":"capture_photo","params":{}},"confidence":0.5}')
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(_run(d, "s", _event("take a photo"), "capture_photo", "take a photo"))
+    await d._run_stage2("s", _event("take a photo"), "capture_photo", "take a photo")
     assert d._dispatcher.issued == []
 
 
-def test_stage2_validator_rejection_does_not_dispatch():
+async def test_stage2_validator_rejection_does_not_dispatch():
     d, _ = _stage2_detector('{"command":{"type":"capture_photo","params":{}},"confidence":0.9}', reject=True)
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(_run(d, "s", _event("take a photo"), "capture_photo", "take a photo"))
+    await d._run_stage2("s", _event("take a photo"), "capture_photo", "take a photo")
     assert d._dispatcher.issued == []
 
 
