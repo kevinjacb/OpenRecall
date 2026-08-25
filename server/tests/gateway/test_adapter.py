@@ -9,11 +9,34 @@ async socket loop around it does nothing but move bytes.
 import json
 import struct
 
+import pytest
+
 from openrecall_server.gateway.adapter import handle_message
 from openrecall_server.gateway.core import GatewayCore
 from openrecall_server.ingest.audio_packet import PacketType, VadState
 from openrecall_server.ingest.pipeline import AudioIngestPipeline
 from openrecall_server.ingest.reassembler import SessionReassembler
+
+
+@pytest.fixture(autouse=True)
+def _reset_shared_asr_cache():
+    """Clear the process-wide ASR model cache before and after each test so
+    a cached model from one test doesn't leak into another."""
+    from openrecall_server.ingest.shared_asr_model import reset
+    reset()
+    yield
+    reset()
+
+
+@pytest.fixture
+def fake_parakeet_loader(monkeypatch):
+    """Patch load_model+warmup_model so parakeet factory tests don't download
+    the real model from HuggingFace. Tests that need to count loads (e.g. the
+    sharing test) do their own monkeypatch and don't use this fixture."""
+    import openrecall_server.ingest.parakeet_streaming as ps
+
+    monkeypatch.setattr(ps, "load_model", lambda name: object())
+    monkeypatch.setattr(ps, "warmup_model", lambda model: None)
 
 
 class FakeDecoder:
@@ -149,7 +172,7 @@ def test_default_factory_builds_the_whisper_backend():
     assert isinstance(_streamer_backend(factory), WhisperStreamingBackend)
 
 
-def test_parakeet_backend_is_built_when_selected():
+def test_parakeet_backend_is_built_when_selected(fake_parakeet_loader):
     from openrecall_server.agent.config import load_agent_config
     from openrecall_server.gateway.adapter import build_pipeline_factory
     from openrecall_server.ingest.parakeet_streaming import ParakeetStreamingBackend
@@ -159,11 +182,12 @@ def test_parakeet_backend_is_built_when_selected():
 
     backend = _streamer_backend(factory)
     assert isinstance(backend, ParakeetStreamingBackend)
-    # Selecting it must not load the model (no mlx/parakeet_mlx import).
-    assert backend._model is None
+    # The model is now injected from the shared cache (S4), not None as in
+    # the old lazy-load path.
+    assert backend._model is not None
 
 
-def test_parakeet_model_override_reaches_the_backend():
+def test_parakeet_model_override_reaches_the_backend(fake_parakeet_loader):
     from openrecall_server.agent.config import load_agent_config
     from openrecall_server.gateway.adapter import build_pipeline_factory
 
@@ -176,7 +200,7 @@ def test_parakeet_model_override_reaches_the_backend():
     assert _streamer_backend(factory)._model_name == "mlx-community/parakeet-tdt-1.1b"
 
 
-def test_whisper_model_flag_is_not_reused_for_parakeet():
+def test_whisper_model_flag_is_not_reused_for_parakeet(fake_parakeet_loader):
     """--model overrides the mlx-whisper repo; handing it to the Parakeet
     loader would fail confusingly, so the flag must be ignored there."""
     from openrecall_server.agent.config import load_agent_config
@@ -208,7 +232,7 @@ def test_switching_back_to_whisper_restores_the_filters():
     assert backend._no_speech_threshold == 0.7
 
 
-def test_vad_gate_applies_to_the_parakeet_backend_too():
+def test_vad_gate_applies_to_the_parakeet_backend_too(fake_parakeet_loader):
     """The backend-agnostic defenses live above the seam, so they must still
     be wired when Parakeet is selected."""
     from openrecall_server.agent.config import load_agent_config
@@ -221,3 +245,59 @@ def test_vad_gate_applies_to_the_parakeet_backend_too():
     factory = build_pipeline_factory(whisper_config=cfg.whisper, asr_config=cfg.asr)
 
     assert factory(0)._streamer._vad is not None
+
+
+# --- S4: shared singleton ASR model (process-wide load-once cache) -----------
+
+
+def test_factory_shares_one_parakeet_model_across_sessions(monkeypatch):
+    """Two factory(start_seq) calls must receive the SAME model object, and
+    the loader must be called exactly once total (the shared cache loads on
+    the first call, hits on the second). Reconnects must not reload."""
+    import openrecall_server.ingest.parakeet_streaming as ps
+
+    loads: list[str] = []
+
+    class FakeModel:
+        def generate(self, mel):
+            return []
+
+    # Monkeypatch the loader so from_pretrained is never called (no
+    # parakeet_mlx needed); the warmup is a no-op to avoid mlx imports.
+    monkeypatch.setattr(ps, "load_model", lambda name: loads.append(name) or FakeModel())
+    monkeypatch.setattr(ps, "warmup_model", lambda model: None)
+
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+
+    cfg = load_agent_config({"OPENRECALL_ASR_BACKEND": "parakeet"})
+    factory = build_pipeline_factory(whisper_config=cfg.whisper, asr_config=cfg.asr)
+
+    backend1 = _streamer_backend(factory)  # factory(0) — first session, loads
+    backend2 = _streamer_backend(factory)  # factory(1000) — reconnect, cache hit
+
+    assert backend1._model is not None
+    assert backend1._model is backend2._model  # same object identity
+    assert len(loads) == 1  # loaded exactly once total
+
+
+def test_factory_shares_one_whisper_model_entry_across_sessions():
+    """The Whisper path also routes through the shared cache (uniform seam).
+    Two factory calls get the same SharedAsrModel entry — and thus the same
+    inference_lock — even though the "model" itself is just a repo-name string."""
+    from openrecall_server.ingest.shared_asr_model import get_shared_model
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+
+    factory = build_pipeline_factory()
+
+    backend1 = _streamer_backend(factory)
+    backend2 = _streamer_backend(factory)
+
+    # Both backends received the same model name string from the cache.
+    assert backend1._model == backend2._model
+    # The shared holder entry (and its inference lock) is the same object.
+    _whisper_default = "mlx-community/whisper-large-v3-turbo"
+    shared1 = get_shared_model(_whisper_default, loader=lambda n: n)
+    shared2 = get_shared_model(_whisper_default, loader=lambda n: n)
+    assert shared1 is shared2
+    assert shared1.inference_lock is shared2.inference_lock

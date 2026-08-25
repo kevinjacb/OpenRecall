@@ -244,3 +244,33 @@ class ParakeetStreamingBackend:
             "parakeet streaming: %d PCM bytes -> %d word tokens", len(pcm), len(tokens),
         )
         return tokens
+
+
+# --- process-wide shared loader + warmup (see shared_asr_model) --------------
+
+
+def load_model(model_name: str = DEFAULT_PARAKEET_MODEL) -> Any:
+    """Load the Parakeet model from ``parakeet_mlx``.
+
+    Called once per process by
+    :func:`~openrecall_server.ingest.shared_asr_model.get_shared_model`; the
+    result is cached and injected into every per-session backend. Kept as a
+    module-level function (not a method) so tests can monkeypatch it without
+    installing ``parakeet_mlx``.
+    """
+    from parakeet_mlx import from_pretrained
+
+    return from_pretrained(model_name)
+
+
+def warmup_model(model: Any) -> None:
+    """Run a warmup transcribe on 100 ms of silence so the first real hop isn't cold.
+
+    Exercises the full featurize + ``model.generate`` path with the model
+    already loaded, so mlx compile / lazy init happens here — not on the
+    first real audio. Called inside ``get_shared_model``'s try/except, so a
+    warmup failure logs and continues without aborting startup.
+    """
+    backend = ParakeetStreamingBackend(model=model)
+    # 100 ms of 16 kHz mono silence = 1600 samples * 2 bytes = 3200 bytes.
+    backend.transcribe(b"\x00" * 3200, _EXPECTED_SAMPLE_RATE)

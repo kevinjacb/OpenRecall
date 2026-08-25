@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from ..ingest.pipeline import AudioIngestPipeline
 from ..ingest.reassembler import SessionReassembler
+from ..ingest.shared_asr_model import get_shared_model
 from ..protocol.messages import parse_control
 from .core import GatewayCore, PipelineFactory
 
@@ -190,27 +191,54 @@ def build_pipeline_factory(
         from ..ingest.opus_decoder import OpusStreamDecoder
         from ..ingest.streaming_transcriber import streaming_from_tokens
         from ..ingest.whisper_mlx import MlxWhisperTranscriber
+        from ..ingest.whisper_streaming import DEFAULT_MODEL as _whisper_default_model
         from ..ingest.whisper_streaming import WhisperStreamingBackend
 
         if use_streaming:
-            # The model call is the slow part (ASR inference). In production
-            # each session gets its own backend (so the internal buffers are
-            # session-scoped); the underlying model is shared implicitly via
-            # the ASR library's own state. The streaming transcriber owns the
-            # rolling PCM buffer and committed cursor, identically for both
-            # backends.
+            # The model call is the slow part (ASR inference). Each session
+            # gets its own backend (so the internal buffers are session-
+            # scoped), but the underlying model is shared by injection from
+            # a process-wide cache (ingest.shared_asr_model). The first
+            # session loads + warms the model; reconnects hit the cache and
+            # reuse the same object — no reload per session. A shared
+            # threading.Lock on the holder serializes inference (acquired by
+            # the inference worker in Task 3). The streaming transcriber
+            # owns the rolling PCM buffer and committed cursor, identically
+            # for both backends.
             if asr_backend == "parakeet":
-                from ..ingest.parakeet_streaming import ParakeetStreamingBackend
+                from ..ingest.parakeet_streaming import (
+                    DEFAULT_PARAKEET_MODEL,
+                    ParakeetStreamingBackend,
+                    load_model,
+                    warmup_model,
+                )
 
                 # `model` (the --model CLI flag) is the mlx-whisper repo
                 # override and is deliberately NOT reused here: pointing the
                 # Parakeet loader at a Whisper repo would fail confusingly.
                 # The Parakeet repo has its own knob (OPENRECALL_PARAKEET_MODEL).
+                _parakeet_name = parakeet_model or DEFAULT_PARAKEET_MODEL
                 parakeet_kwargs = {}
+                try:
+                    _shared = get_shared_model(
+                        _parakeet_name, loader=load_model, warmup=warmup_model,
+                    )
+                    parakeet_kwargs["model"] = _shared.model
+                except ImportError:
+                    # parakeet_mlx not installed (test environment); fall
+                    # back to the backend's own lazy load on first transcribe.
+                    pass
                 if parakeet_model:
                     parakeet_kwargs["model_name"] = parakeet_model
                 backend = ParakeetStreamingBackend(**parakeet_kwargs)
             else:
+                # Whisper's "model" is the repo-name string; mlx_whisper
+                # caches the loaded weights at module level internally, so
+                # the loader is the identity function. Routing through the
+                # shared holder gives a uniform seam + the shared inference
+                # lock, so a backend switch never regresses this.
+                _whisper_name = model or _whisper_default_model
+                _shared = get_shared_model(_whisper_name, loader=lambda n: n)
                 backend_kwargs = dict(
                     no_speech_threshold=no_speech_threshold,
                     logprob_threshold=logprob_threshold,
@@ -219,9 +247,8 @@ def build_pipeline_factory(
                     hallucination_blocklist_enabled=hallucination_blocklist_enabled,
                     hallucination_max_words=hallucination_max_words,
                     hallucination_phrases=hallucination_phrases,
+                    model=_shared.model,
                 )
-                if model:
-                    backend_kwargs["model"] = model
                 backend = WhisperStreamingBackend(**backend_kwargs)
             transcriber = streaming_from_tokens(
                 backend,
