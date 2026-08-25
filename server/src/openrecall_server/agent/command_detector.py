@@ -10,9 +10,11 @@ memory is written on device ack (see :mod:`command_memory`).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections import deque
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
@@ -117,3 +119,51 @@ class CommandDetector:
     async def _run_stage2(self, session_id: str, event: Any, ctype: str, context: str) -> None:
         """Task 5 implements the LLM confirmation + dispatch."""
         raise NotImplementedError
+
+
+# --- Task 4: Stage 2 prompt builder + reply parser (pure) -------------------
+
+@dataclass(frozen=True)
+class Stage2Result:
+    command_type: str | None
+    params: dict
+    confidence: float
+
+
+_SYSTEM_TEMPLATE = (
+    "You classify whether a wearer is directly commanding their own wearable "
+    "device. Narration, quotes, questions, hypotheticals, and third-person "
+    "mentions are NOT commands. If it is a direct command, output JSON "
+    '{{"command": {{"type": <one of: {types}>, "params": {{}}}}, '
+    '"confidence": <0..1>}}. If not, output '
+    '{{"command": null, "confidence": <0..1>}}. params is always {{}} for these '
+    "types. Output only the JSON."
+)
+
+
+def stage2_messages(context: str, allowed_types: tuple[str, ...]) -> tuple[str, str]:
+    system = _SYSTEM_TEMPLATE.format(types=", ".join(allowed_types))
+    user = f"Recent transcript:\n{context}\n\nClassify the last sentence."
+    return system, user
+
+
+def parse_stage2_reply(raw: str, allowed_types: tuple[str, ...]) -> Stage2Result:
+    try:
+        obj = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return Stage2Result(None, {}, 0.0)
+    if not isinstance(obj, dict):
+        return Stage2Result(None, {}, 0.0)
+    conf = obj.get("confidence")
+    if not isinstance(conf, (int, float)) or not (0.0 <= conf <= 1.0):
+        return Stage2Result(None, {}, 0.0)
+    cmd = obj.get("command")
+    if cmd is None:
+        return Stage2Result(None, {}, float(conf))
+    if not isinstance(cmd, dict):
+        return Stage2Result(None, {}, float(conf))
+    ctype = cmd.get("type")
+    params = cmd.get("params", {})
+    if ctype not in allowed_types or not isinstance(params, dict):
+        return Stage2Result(None, {}, float(conf))
+    return Stage2Result(ctype, params, float(conf))

@@ -1,7 +1,14 @@
 import asyncio
 from types import SimpleNamespace
 
-from openrecall_server.agent.command_detector import CommandDetector, match_command_phrase
+import pytest
+
+from openrecall_server.agent.command_detector import (
+    CommandDetector,
+    match_command_phrase,
+    parse_stage2_reply,
+    stage2_messages,
+)
 from openrecall_server.agent.config import CommandDetectorConfig, DEFAULT_COMMAND_PHRASES
 
 _P = DEFAULT_COMMAND_PHRASES
@@ -158,3 +165,50 @@ def test_feed_inflight_cap_drops_when_full():
     # Different command type but in-flight is full -> dropped.
     d.feed("s", _event("start a video", event_id="s:2"))
     assert len(d._launched) == 1
+
+
+# --- Task 4: Stage 2 prompt builder + reply parser --------------------------
+
+_ALLOWED = ("capture_photo", "start_video", "stop_video", "start_audio",
+            "stop_audio", "record_video", "flush_snapshots")
+
+
+def test_stage2_messages_lists_types_and_carries_context():
+    system, user = stage2_messages("take a photo of mine", _ALLOWED)
+    assert "capture_photo" in system
+    assert "narration" in system.lower()
+    assert "take a photo of mine" in user
+
+
+def test_parse_valid_command():
+    r = parse_stage2_reply('{"command":{"type":"capture_photo","params":{}},"confidence":0.9}', _ALLOWED)
+    assert r.command_type == "capture_photo"
+    assert r.params == {}
+    assert r.confidence == 0.9
+
+
+def test_parse_null_command():
+    r = parse_stage2_reply('{"command":null,"confidence":0.1}', _ALLOWED)
+    assert r.command_type is None
+    assert r.confidence == 0.1
+
+
+def test_parse_rejects_invalid_type():
+    r = parse_stage2_reply('{"command":{"type":"delete_everything","params":{}},"confidence":0.99}', _ALLOWED)
+    assert r.command_type is None  # not in the allowed vocabulary
+
+
+def test_parse_rejects_malformed_json():
+    r = parse_stage2_reply("not json", _ALLOWED)
+    assert r.command_type is None
+    assert r.confidence == 0.0
+
+
+def test_parse_rejects_missing_fields():
+    r = parse_stage2_reply('{"command":{"type":"capture_photo"}}', _ALLOWED)
+    assert r.command_type is None  # missing confidence -> not a valid command
+
+
+def test_parse_clamps_confidence():
+    r = parse_stage2_reply('{"command":{"type":"capture_photo","params":{}},"confidence":1.5}', _ALLOWED)
+    assert r.command_type is None  # confidence out of [0,1] -> reject
