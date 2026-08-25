@@ -350,6 +350,7 @@ async def test_stage2_guardrail_low_battery_does_not_dispatch():
     )
     await d._run_stage2("s", _event("take a photo"), "capture_photo", "take a photo")
     assert d._dispatcher.issued == []
+    assert d._inflight.get("s", 0) == 0  # in-flight decremented even on refusal
 
 
 def test_derive_idempotency_key_is_stable_and_typespecific():
