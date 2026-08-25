@@ -146,6 +146,10 @@ class AudioIngestPipeline:
         # Only used when a speaker identifier is wired; stays empty otherwise.
         self._speaker_window: bytearray = bytearray()
         self._speaker_window_bytes = speaker_window_ms * (sample_rate * 2 // 1000)
+        # Last non-None speaker identified across hops. flush() attributes the
+        # coalescer's tail sentence (held pending, no fresh PCM to identify)
+        # to this speaker instead of dropping the label — see flush().
+        self._last_speaker = None
         # Audio persistence (spec §3.1). `persist_audio` defaults to on so
         # Phase 3 stands alone; the `capture.save_audio` setting overrides it
         # once Phase 4 lands.
@@ -312,6 +316,8 @@ class AudioIngestPipeline:
             self._absolute_ms += self._streamer._hop_ms  # type: ignore[attr-defined]
             segments = self._streamer.feed(pcm)
             spk = self._speaker(pcm)
+            if spk is not None:
+                self._last_speaker = spk
             for seg in segments:
                 # For the str adapter, seg.end_ms - seg.start_ms == 0;
                 # use the segment's end_ms as the duration, falling back
@@ -345,6 +351,8 @@ class AudioIngestPipeline:
             self._absolute_ms += len(pcm) * 1000 // (self._sample_rate * 2)
             segments = self._streamer.feed(pcm)
             spk = self._speaker(pcm)
+            if spk is not None:
+                self._last_speaker = spk
             for seg in segments:
                 duration = seg.end_ms - seg.start_ms
                 if duration <= 0:
@@ -357,14 +365,19 @@ class AudioIngestPipeline:
                 ))
         # Drain the streamer/coalescer so a pending sentence is flushed.
         tail = self._streamer.flush()
+        # The tail sentence spans audio held across prior hops; attribute it to
+        # the last identified speaker, not the trailing partial-PCM `spk`
+        # (which is None whenever the hop buffer was already drained). Without
+        # this every end-of-session sentence lost its speaker label.
+        tail_spk = self._last_speaker
         for seg in tail:
             duration = seg.end_ms - seg.start_ms
             if duration <= 0:
                 duration = self._streamer._hop_ms  # type: ignore[attr-defined]
             out.append(Transcript(
                 text=seg.text, duration_ms=duration,
-                speaker=(spk.speaker_id if spk else None),
-                speaker_confidence=(spk.confidence if spk else None),
-                speaker_assignment=(spk.assignment if spk else None),
+                speaker=(tail_spk.speaker_id if tail_spk else None),
+                speaker_confidence=(tail_spk.confidence if tail_spk else None),
+                speaker_assignment=(tail_spk.assignment if tail_spk else None),
             ))
         return out

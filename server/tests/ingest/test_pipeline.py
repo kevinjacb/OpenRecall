@@ -259,6 +259,62 @@ def test_sentence_coalesce_groups_hops_into_one_sentence():
     assert tail[0].text.split() == ["seg1", "seg2", "seg3", "seg4", "seg5"]
 
 
+def test_flush_tail_sentence_keeps_last_identified_speaker():
+    """Regression (commit 2b35acb): with sentence coalescing ON, the coalescer
+    holds per-hop words and emits them as one sentence on flush(). The flush()
+    rewrite stamped those tail sentences with the speaker of the trailing
+    partial PCM (``spk``), which is ``None`` whenever the hop buffer was
+    already drained — dropping the label the held hops had identified. On
+    hardware this surfaced as "speaker labels missing again" because the
+    final sentence of every BLE session hit this path on _on_bye/disconnect.
+
+    The fix tracks the last identified speaker across hops
+    (``self._last_speaker``) and attributes the flushed tail sentence to it.
+    """
+    import math
+    from openrecall_server.ingest.speaker_config import SpeakerConfig
+    from openrecall_server.ingest.speaker_identifier import SpeakerIdentifier
+    from openrecall_server.memory.speaker_registry import (
+        InMemorySpeakerRegistry,
+        Speaker,
+    )
+
+    v = [0.5] * 8
+    n = math.sqrt(sum(x * x for x in v))
+    unit = [x / n for x in v]
+    reg = InMemorySpeakerRegistry(SpeakerConfig())
+    reg.add_speaker(
+        Speaker(
+            speaker_id="you", display_name="You", is_wearer=True,
+            enrollment_status="confirmed", centroid=unit, embedding_model="fake",
+            dim=8, turn_count=0, first_seen="2026-07-26T00:00:00+00:00",
+            updated_at="2026-07-26T00:00:00+00:00",
+        )
+    )
+
+    class _EmbedUnit:
+        dim = 8
+
+        def embed(self, pcm, sr):
+            return list(unit)
+
+    ident = SpeakerIdentifier(_EmbedUnit(), reg, SpeakerConfig())
+    pipe, _dec, _tr = make_pipeline(
+        speaker_identifier=ident, sentence_coalesce=True)
+
+    # Five hops, all held by the coalescer (no sentence boundary mid-stream).
+    out = pipe.ingest(pkt(0, n_frames=5))
+    assert out == []
+
+    tail = pipe.flush()
+    assert len(tail) == 1
+    # The tail sentence carries the speaker identified across the held hops,
+    # not None (the bug) — labels survive to the Android render gate.
+    assert tail[0].speaker == "you"
+    assert tail[0].speaker_assignment == "confirmed"
+    assert tail[0].speaker_confidence is not None
+
+
 def test_sentence_coalesce_off_emits_per_hop():
     """The default (coalesce off) keeps the one-Transcript-per-hop
     contract — the regression pin for the coalescer not silently
