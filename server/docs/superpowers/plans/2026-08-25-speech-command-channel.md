@@ -145,11 +145,9 @@ DEFAULT_COMMAND_PHRASES: dict[str, str] = {
     "start video": "start_video",
     "stop video": "stop_video",
     "stop the video": "stop_video",
-    "stop recording": "stop_video",
     "start audio": "start_audio",
     "start recording audio": "start_audio",
     "stop audio": "stop_audio",
-    "stop recording": "stop_audio",
     "flush snapshots": "flush_snapshots",
 }
 
