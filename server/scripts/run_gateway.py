@@ -24,6 +24,26 @@ Protocol (one WS connection == one session):
   * text frame:  §E JSON control, e.g. {"type":"hello","session_id":"...","start_seq":0}
   * binary frame: a §C.6 audio packet
   * server replies (text JSON): ack / request_chunks / transcript
+
+Environment variables (command channel, all optional — off by default):
+
+  OPENRECALL_COMMAND_DETECTOR_ENABLED   set "true" to enable the speech→command
+        channel (default: off). When off, spoken commands never fire.
+  OPENRECALL_COMMAND_REQUIRE_WEARER     "true" (default) restricts voice commands to
+        the confirmed wearer; "false" allows any identified speaker.
+  OPENRECALL_COMMAND_PHRASES            comma list of phrase→type overrides, e.g.
+        "take a photo=capture_photo,cheese=capture_photo". Unset = DEFAULT_COMMAND_PHRASES.
+  OPENRECALL_COMMAND_CONFIDENCE_THRESHOLD  Stage 2 LLM confidence floor (default 0.8).
+  OPENRECALL_COMMAND_COOLDOWN_S         per-command-type cooldown seconds (default 3).
+  OPENRECALL_COMMAND_MAX_INFLIGHT       concurrent Stage 2 calls per session (default 1).
+  OPENRECALL_COMMAND_LLM_MODEL          dedicated Stage 2 model; unset reuses the
+        extractor's shared chat model.
+  OPENRECALL_COMMAND_LLM_BASE_URL       Stage 2 base URL; unset reuses shared.
+  OPENRECALL_COMMAND_LLM_API_KEY        Stage 2 API key; unset reuses shared.
+
+The channel is two-stage (keyword pre-filter → scoped LLM confirmation) and dispatches
+through the rule-based command path (no Planner, no retrieval). It is gated on the
+confirmed wearer by default; requires OPENRECALL_SPEAKER_ENABLED for speaker assignment.
 """
 
 from __future__ import annotations
