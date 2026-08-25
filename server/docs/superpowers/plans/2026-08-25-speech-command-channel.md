@@ -936,7 +936,7 @@ def test_on_ack_writes_command_event_atom():
     w = CommandMemoryWriter(store=store, clock=FakeClock(now="2026-08-25T00:00:00+00:00"))
     w.on_ack(command_id="cmd-1", session_id="s", command_type="capture_photo",
              source_event_id="s:7", trigger_text="take a photo of mine")
-    atoms = store.recent(session_id="s", limit=10)
+    atoms = store.list(session_id="s", limit=10)[0]
     assert len(atoms) == 1
     a = atoms[0]
     assert a.atom_id == "cmd-1"  # command_id is the idempotency key
@@ -954,7 +954,7 @@ def test_on_ack_is_idempotent_on_repeat():
     w = CommandMemoryWriter(store=store, clock=FakeClock(now="2026-08-25T00:00:00+00:00"))
     w.on_ack("cmd-1", "s", "capture_photo", "s:7", "take a photo")
     w.on_ack("cmd-1", "s", "capture_photo", "s:7", "take a photo")  # re-ack
-    assert len(store.recent(session_id="s", limit=10)) == 1
+    assert len(store.list(session_id="s", limit=10)[0]) == 1
 
 
 def test_on_ack_skips_when_no_provenance():
@@ -962,7 +962,7 @@ def test_on_ack_skips_when_no_provenance():
     store = InMemoryAtomStore()
     w = CommandMemoryWriter(store=store, clock=FakeClock(now="2026-08-25T00:00:00+00:00"))
     w.on_ack("cmd-9", "s", "capture_photo", source_event_id=None, trigger_text=None)
-    assert store.recent(session_id="s", limit=10) == []
+    assert store.list(session_id="s", limit=10)[0] == []
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1035,7 +1035,7 @@ class CommandMemoryWriter:
 Run: `python -m pytest tests/agent/test_command_memory.py -x`
 Expected: PASS.
 
-> If `InMemoryAtomStore.recent`'s exact signature differs, adjust the test's retrieval call to match the real `AtomStore` query method (check `store.py`); the assertion is on the stored atom's fields, not the retrieval API.
+> Retrieval uses `AtomStore.list(*, session_id=, limit=) -> (atoms, anchor)` (verified in `store.py`); `[0]` takes the atoms page. `InMemoryAtomStore.append` dedupes by `atom_id`, so the idempotency test sees one atom.
 
 - [ ] **Step 5: Commit**
 
@@ -1059,14 +1059,66 @@ git commit -m "feat(agent): CommandMemoryWriter — command_event atom on device
 - [ ] **Step 1: Write the failing tests** (new file `tests/gateway/test_core_command_detector.py`)
 
 ```python
-from types import SimpleNamespace
+import struct
+from datetime import datetime, timedelta, timezone
 
+from openrecall_server.commands.dispatcher import CommandDispatcher
+from openrecall_server.commands.model import Command
+from openrecall_server.commands.signing import CommandSigner
+from openrecall_server.events.store import InMemoryEventStore
 from openrecall_server.gateway.core import GatewayCore
+from openrecall_server.ingest.audio_packet import PacketType, VadState
+from openrecall_server.ingest.pipeline import AudioIngestPipeline
+from openrecall_server.ingest.reassembler import SessionReassembler
+from openrecall_server.protocol.messages import Ack, CommandAck, Hello, TranscriptMsg
+
+NOW = datetime.now(timezone.utc)
+
+
+class FakeDecoder:
+    def decode(self, frame: bytes) -> bytes:
+        return b"\x00" * 640
+
+
+class FakeTranscriber:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def transcribe(self, pcm: bytes, sample_rate: int) -> str:
+        self.calls += 1
+        return f"seg{self.calls}"
+
+
+def factory(start_seq: int) -> AudioIngestPipeline:
+    return AudioIngestPipeline(
+        reassembler=SessionReassembler(start_seq=start_seq),
+        decoder=FakeDecoder(),
+        transcriber=FakeTranscriber(),
+        hop_ms=20,
+        window_ms=100,
+        sample_rate=16000,
+    )
+
+
+def audio_bytes(chunk_seq: int, n_frames: int, vad: int = VadState.SPEECH) -> bytes:
+    frames = [bytes([chunk_seq & 0xFF])] * n_frames
+    header = struct.pack(
+        "<BIIBBB",
+        (1 << 4) | PacketType.MEMORY_CHUNK,
+        chunk_seq,
+        chunk_seq * 20,
+        vad,
+        len(frames),
+        0,
+    )
+    return header + b"".join(struct.pack("<B", len(f)) + f for f in frames)
 
 
 class SpyDetector:
+    """Records feed() calls; carries a _provenance map like the real detector."""
     def __init__(self):
         self.fed = []
+        self._provenance = {}
 
     def feed(self, session_id, event):
         self.fed.append((session_id, event.event_id, event.text))
@@ -1077,17 +1129,71 @@ class SpyMemoryWriter:
         self.acks = []
 
     def on_ack(self, command_id, session_id, command_type, source_event_id, trigger_text):
-        self.acks.append((command_id, command_type, source_event_id))
+        self.acks.append((command_id, session_id, command_type, source_event_id))
 
 
-def test_emit_feeds_detector_on_stored_event():
-    # Construct a minimal GatewayCore; drive on_audio with a transcript-bearing
-    # pipeline. The exact harness mirrors the existing gateway tests — use the
-    # same fake pipeline factory + event store as tests/gateway/test_core_*.py.
-    ...
+def a_command(command_id: str, session_id: str = "s1") -> Command:
+    return Command(
+        command_id=command_id, session_id=session_id, type="capture_photo",
+        params={}, issued_at=NOW, expires_at=NOW + timedelta(minutes=5),
+    )
+
+
+def test_emit_feeds_detector_on_each_stored_event():
+    detector = SpyDetector()
+    core = GatewayCore(
+        pipeline_factory=factory,
+        event_store=InMemoryEventStore(),
+        command_detector=detector,
+    )
+    core.on_control(Hello(session_id="s1", start_seq=0))
+    core.on_audio(audio_bytes(0, n_frames=5))  # 5 hops -> 5 transcript events
+
+    assert len(detector.fed) == 5
+    assert detector.fed[0] == ("s1", "s1:0", "seg1")  # session_id, event_id, text
+
+
+def test_command_ack_writes_memory_for_provenanced_command():
+    detector = SpyDetector()
+    memory = SpyMemoryWriter()
+    dispatcher = CommandDispatcher(CommandSigner.generate())
+    core = GatewayCore(
+        pipeline_factory=factory, dispatcher=dispatcher,
+        command_detector=detector, command_memory_writer=memory,
+    )
+    core.on_control(Hello(session_id="s1", start_seq=0))
+    dispatcher.issue(a_command("c1"))
+    # Simulate the detector having recorded that c1 came from transcript event s1:3.
+    detector._provenance["c1"] = "s1:3"
+
+    core.on_control(CommandAck(session_id="s1", command_id="c1"))
+
+    assert memory.acks == [("c1", "s1", "capture_photo", "s1:3")]
+
+
+def test_command_ack_without_provenance_does_not_write_memory():
+    detector = SpyDetector()
+    memory = SpyMemoryWriter()
+    dispatcher = CommandDispatcher(CommandSigner.generate())
+    core = GatewayCore(
+        pipeline_factory=factory, dispatcher=dispatcher,
+        command_detector=detector, command_memory_writer=memory,
+    )
+    core.on_control(Hello(session_id="s1", start_seq=0))
+    dispatcher.issue(a_command("c2"))
+    # No provenance entry for c2 (e.g. an HTTP /agent-issued command) -> no memory.
+    core.on_control(CommandAck(session_id="s1", command_id="c2"))
+    assert memory.acks == []
+
+
+def test_emit_with_no_detector_is_a_noop_regression_guard():
+    core = GatewayCore(pipeline_factory=factory, event_store=InMemoryEventStore())
+    core.on_control(Hello(session_id="s1", start_seq=0))
+    out = core.on_audio(audio_bytes(0, n_frames=5))  # must not raise
+    # Transcripts still emitted exactly as before the wiring (5 + ack).
+    assert len([m for m in out if isinstance(m, TranscriptMsg)]) == 5
+    assert [m for m in out if isinstance(m, Ack)] == [Ack(session_id="s1", next_seq=1)]
 ```
-
-(The Step 1 test body must mirror the existing `tests/gateway/test_core_*.py` harness — a fake pipeline factory returning scripted `Transcript`s, an `InMemoryEventStore`, and a `SpyDetector`/`SpyMemoryWriter`. The implementer reads the existing gateway tests for the exact fixture and asserts: (a) a stored transcript event calls `detector.feed`; (b) a `CommandAck` for a command_id present in the detector's `_provenance` calls `memory_writer.on_ack` with the right `source_event_id`; (c) with `command_detector=None`, `_emit` behaves exactly as today — regression guard.)
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -1105,24 +1211,23 @@ In `src/openrecall_server/gateway/core.py`:
                 self._command_detector.feed(self._session_id, event)
 ```
 
-- In `_on_command_ack` (`core.py:408`), after `self._dispatcher.ack(msg.command_id)`, add:
+- In `_on_command_ack` (`core.py:408`), reuse the `acked_type` the method ALREADY captures at line 414 (BEFORE `self._dispatcher.ack(...)`). Do NOT re-call `self._command_type(msg.command_id)` after the ack — `ack()` moves the command out of `pending()`, so `_command_type` would return `None` and the memory writer would never fire. After the existing reconciler block, add:
 
 ```python
-        if self._command_memory_writer is not None:
+        # --- command memory on ack (speech→command channel) ---
+        if self._command_memory_writer is not None and acked_type is not None:
             source_event_id = None
-            trigger_text = None
             if self._command_detector is not None:
                 source_event_id = self._command_detector._provenance.get(msg.command_id)
-            ctype = self._command_type(msg.command_id)
-            if source_event_id is not None and ctype is not None:
+            if source_event_id is not None:
                 self._command_memory_writer.on_ack(
                     command_id=msg.command_id, session_id=self._session_id or "",
-                    command_type=ctype, source_event_id=source_event_id,
-                    trigger_text=trigger_text,
+                    command_type=acked_type, source_event_id=source_event_id,
+                    trigger_text=None,
                 )
 ```
 
-> The implementer verifies `_command_type` (already used at `core.py:414`) returns the command type string, and that `self._session_id` is the bound session. The `trigger_text` can be recovered from the source event via the event store if the writer needs it; otherwise leave `None` (the writer handles `None`). Resolve this against the real `_command_type` return before finalizing.
+> `acked_type` is the `str | None` already captured at `core.py:414` (`acked_type = self._command_type(msg.command_id)`) before the ack. `self._session_id` is the bound session. `trigger_text=None` is fine — `CommandMemoryWriter.on_ack` handles `None` (writes the bare label). Voice-command provenance (`source_event_id`) comes from `command_detector._provenance`; HTTP `/agent`-issued commands have no provenance and are skipped (`source_event_id is None`).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1141,63 +1246,90 @@ git commit -m "feat(gateway): wire CommandDetector + CommandMemoryWriter into _e
 
 ---
 
-### Task 8: run_gateway wiring + manual smoke
+### Task 8: run_gateway + adapter wiring + manual smoke
 
 **Files:**
 - Modify: `scripts/run_gateway.py`
+- Modify: `src/openrecall_server/gateway/adapter.py`
 
 **Interfaces:**
-- Consumes: `agent_config.command` (`CommandDetectorConfig`), the shared `dispatcher`, `command_validator` (`StrictCommandValidator`), `command_guardrails` (`StrictCommandGuardrails`), `capability_provider`, `speaker_registry`, `atom_store`, the gateway loop, `UuidIdGenerator`, `SystemClock`. A dedicated or shared `OpenAICompatibleChatModel` for Stage 2.
+- Consumes: `agent_config.command` (`CommandDetectorConfig`), the shared `dispatcher`, `StrictCommandValidator`, `capability_provider`, `speaker_registry`, `atom_store`, the gateway event loop, `UuidIdGenerator`, `SystemClock`, and `llm_chat` (`OpenAICompatibleChatModel`). Task 7 already added `command_detector=None` / `command_memory_writer=None` params to `GatewayCore.__init__`.
 
 > **Per project memory** `run-gateway-smoke-test`: pytest does not import `scripts/run_gateway.py`; this task is wiring + a **manual smoke check**, not a unit test.
 
-- [ ] **Step 1: Wire**
+> **Loop binding (load-bearing):** `run_gateway.py`'s `main()` is a *sync* function; the event loop is created later by `asyncio.run(main_loop())` (the `await serve(...)` call lives inside the nested `async def main_loop()`). The command detector stores the loop and uses `loop.call_soon_threadsafe(...)` from the audio thread — so it MUST bind the loop `main_loop` actually runs on. Constructing it in sync `main()` with `asyncio.get_event_loop()` would bind a *different* (never-run) loop and Stage 2 would never fire. Therefore the detector is constructed **inside `main_loop()`** with `asyncio.get_running_loop()`, just before `await serve(...)`.
 
-In `scripts/run_gateway.py`, after the planner/proactive construction block, add a command-detector construction block gated on `agent_config.command.enabled`:
+- [ ] **Step 1a: Thread the two kwargs through `serve()` in `adapter.py`**
+
+In `src/openrecall_server/gateway/adapter.py`, add two params to `serve()` (after `settings: "SettingsStore | None" = None,`):
 
 ```python
-    command_detector = None
-    command_memory_writer = None
-    if agent_config.command.enabled:
-        from openrecall_server.agent.command_detector import CommandDetector
-        from openrecall_server.agent.command_memory import CommandMemoryWriter
-        from openrecall_server.agent.validator_command import StrictCommandValidator
-        from openrecall_server.contracts.id_generator import UuidIdGenerator
-
-        # Stage 2 LLM: dedicated model if OPENRECALL_COMMAND_LLM_MODEL is set,
-        # else reuse the extractor's shared chat model (llm_chat).
-        if agent_config.command.llm_model:
-            from openrecall_server.memory.llm import OpenAICompatibleChatModel
-            command_llm = OpenAICompatibleChatModel(
-                base_url=agent_config.command.llm_base_url or llm_chat.base_url,
-                model=agent_config.command.llm_model,
-                api_key=agent_config.command.llm_api_key,
-            )
-        else:
-            command_llm = llm_chat
-
-        loop = asyncio.get_event_loop()
-        command_detector = CommandDetector(
-            model=command_llm,
-            dispatcher=dispatcher,
-            command_validator=StrictCommandValidator(),
-            capability_provider=capability_provider,  # the same one the Planner uses
-            speaker_registry=speaker_registry,
-            loop=loop,
-            config=agent_config.command,
-            ids=UuidIdGenerator(),
-            clock=SystemClock(),
-        )
-        command_memory_writer = CommandMemoryWriter(
-            store=atom_store, clock=SystemClock(),
-        )
-        logger.info("command detector enabled (require_wearer=%s)",
-                     agent_config.command.require_wearer)
+    command_detector=None,
+    command_memory_writer=None,
 ```
 
-Then pass `command_detector=command_detector, command_memory_writer=command_memory_writer` into the `GatewayCore(...)` constructor.
+and forward them to the per-connection `GatewayCore(...)` construction (the `core = GatewayCore(...)` block inside `handler`), adding after `settings=settings,`:
 
-> The implementer verifies the exact names of `capability_provider`, `speaker_registry`, `atom_store`, `SystemClock`, and the `GatewayCore(...)` call site in `run_gateway.py` and aligns them.
+```python
+            command_detector=command_detector,
+            command_memory_writer=command_memory_writer,
+```
+
+`None` defaults keep every existing caller and test working unchanged.
+
+- [ ] **Step 1b: Construct + wire in `run_gateway.py`**
+
+Inside `async def main_loop()` (NOT sync `main()`), just before the `await serve(...)` call, add a construction block gated on `agent_config.command.enabled`. All referenced names (`agent_config`, `dispatcher`, `llm_chat`, `capability_provider`, `speaker_registry`, `atom_store`, `SystemClock`) are in scope as closures over `main()`'s locals; verify each exists before use. `asyncio` is already imported at module top.
+
+```python
+        # Speech→command channel (off by default). Constructed inside main_loop
+        # so asyncio.get_running_loop() binds the loop this server runs on —
+        # the detector's call_soon_threadsafe must target THIS loop or Stage 2
+        # never fires.
+        command_detector = None
+        command_memory_writer = None
+        if agent_config.command.enabled:
+            from openrecall_server.agent.command_detector import CommandDetector
+            from openrecall_server.agent.command_memory import CommandMemoryWriter
+            from openrecall_server.agent.validator_command import StrictCommandValidator
+            from openrecall_server.contracts.id_generator import UuidIdGenerator
+
+            # Stage 2 LLM: dedicated model if OPENRECALL_COMMAND_LLM_MODEL is set,
+            # else reuse the extractor's shared chat model (llm_chat).
+            if agent_config.command.llm_model:
+                from openrecall_server.memory.llm import OpenAICompatibleChatModel
+                command_llm = OpenAICompatibleChatModel(
+                    base_url=agent_config.command.llm_base_url or llm_chat.base_url,
+                    model=agent_config.command.llm_model,
+                    api_key=agent_config.command.llm_api_key,
+                )
+            else:
+                command_llm = llm_chat
+
+            command_detector = CommandDetector(
+                model=command_llm,
+                dispatcher=dispatcher,
+                command_validator=StrictCommandValidator(),
+                capability_provider=capability_provider,  # the same one the Planner uses
+                speaker_registry=speaker_registry,
+                loop=asyncio.get_running_loop(),
+                config=agent_config.command,
+                ids=UuidIdGenerator(),
+                clock=SystemClock(),
+            )
+            command_memory_writer = CommandMemoryWriter(
+                store=atom_store, clock=SystemClock(),
+            )
+            logger.info("command detector enabled (require_wearer=%s)",
+                        agent_config.command.require_wearer)
+        else:
+            logger.info("command detector disabled "
+                        "(set OPENRECALL_COMMAND_DETECTOR_ENABLED=true to enable)")
+```
+
+Then add `command_detector=command_detector, command_memory_writer=command_memory_writer,` to the `await serve(...)` call's keyword arguments.
+
+> Verify the exact names in `run_gateway.py` before finalizing: `agent_config` (load_agent_config result), `dispatcher`, `llm_chat`, `capability_provider` (ReportedCapabilityProvider), `speaker_registry`, `atom_store`, `SystemClock` (imported at top), `UuidIdGenerator`, `StrictCommandValidator`. All confirmed present as of this plan revision.
 
 - [ ] **Step 2: Manual smoke check**
 
@@ -1213,13 +1345,13 @@ Then enable it and confirm it logs `command detector enabled` at startup without
 OPENRECALL_COMMAND_DETECTOR_ENABLED=true OPENRECALL_SPEAKER_ENABLED=true python scripts/run_gateway.py
 ```
 
-Expected: startup log includes `command detector enabled (require_wearer=True)`; no exceptions; audio/transcript flow unchanged.
+Expected: startup log includes `command detector enabled (require_wearer=True)`; no exceptions; audio/transcript flow unchanged. (Ctrl+C to stop each.)
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add scripts/run_gateway.py
-git commit -m "feat(gateway): wire CommandDetector + CommandMemoryWriter in run_gateway"
+git add scripts/run_gateway.py src/openrecall_server/gateway/adapter.py
+git commit -m "feat(gateway): wire CommandDetector + CommandMemoryWriter in run_gateway + serve"
 ```
 
 ---
