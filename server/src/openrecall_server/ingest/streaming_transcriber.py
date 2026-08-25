@@ -31,6 +31,15 @@ logger = logging.getLogger(__name__)
 # with "Thank you. Thank you. Thank you." Collapse a segment that is identical
 # to the last EMITTED segment AND short (<= this many words). Long phrases are
 # left alone (real repeats are rare; the repetition filter handles true loops).
+#
+# Re-calibrated for Parakeet word tokens: a single-word segment repeating across
+# hops is far more likely a genuine repeat (the speaker said the word twice)
+# than a phantom — Parakeet's transducer does not hallucinate isolated words the
+# way Whisper does. So the cross-hop dedup only fires for 2.._DEDUP_MAX_WORDS
+# (multi-word phrases like "thank you" that are classic Whisper phantoms).
+# Single words fall through and are emitted; the repetition filter handles true
+# loops downstream.
+_DEDUP_MIN_WORDS = 2
 _DEDUP_MAX_WORDS = 5
 
 # webrtcvad frame size: 20 ms at 16 kHz mono 16-bit == 640 bytes.
@@ -201,6 +210,13 @@ class StreamingTranscriber:
         # overlap dedup misses it) and is dropped without advancing the
         # cursor. Updated only on emit, so the suppression chains.
         self._last_emitted_text_norm: str = ""
+        # Text-merge cursor dedup (L7 fix): normalized words of the last
+        # EMITTED segment. A token that straddles the committed cursor
+        # (start < committed, end > committed) is a re-transcription of
+        # the overlap zone; we drop it ONLY if its text was already emitted
+        # (it's the same word re-transcribed). If its text is NOT in this
+        # set, it's a real word the previous hop missed — emit it.
+        self._last_emitted_words: set[str] = set()
         # Opt-in spectral VAD gate (None = disabled / unavailable).
         self._vad = None
         if vad_mode == "webrtc":
@@ -269,17 +285,34 @@ class StreamingTranscriber:
         # 3. Call the backend with the current buffer.
         tokens = self._backend.transcribe(bytes(self._buffer), self._sample_rate)
 
-        # 4. Determine which tokens are new (their start is past the
-        #    committed cursor) and translate to absolute session time.
+        # 4. Determine which tokens are new and translate to absolute session
+        #    time. The rule is timestamp/position-aware (L7 fix for Parakeet
+        #    word tokens whose start_ms jittered behind the cursor):
+        #
+        #    * Token entirely behind the cursor (end <= committed): drop —
+        #      already committed, no new audio.
+        #    * Token straddling the cursor (start < committed < end): this is
+        #      the overlap zone. Drop ONLY if the token's normalized text was
+        #      already in the last emitted segment (a re-transcription of the
+        #      same word). Emit it if the text is new — it's a real word the
+        #      previous hop missed (Parakeet's sub-word boundaries jitter
+        #      differently from Whisper's segment timestamps, so a real word's
+        #      retranscribed start can land just behind the cursor).
+        #    * Token past the cursor (start >= committed): always emit — it's
+        #      new audio, including a genuinely repeated word said twice.
         new_tokens: list[Token] = []
         for tok in tokens:
             absolute_start = self._buffer_start_ms + tok.start_ms
             absolute_end = self._buffer_start_ms + tok.end_ms
-            if absolute_start < self._committed_ms:
-                # Already committed; skip (avoids double-emission at hop
-                # boundaries where Whisper re-transcribes the overlap
-                # zone and returns the same text).
+            if absolute_end <= self._committed_ms:
+                # Entirely behind the cursor — already committed.
                 continue
+            if absolute_start < self._committed_ms:
+                # Straddles the cursor (overlap zone). Drop only if this word
+                # was already emitted; emit if it's new text (L7 fix).
+                tok_norm = _normalize_segment_text(tok.text)
+                if tok_norm and tok_norm in self._last_emitted_words:
+                    continue
             new_tokens.append(Token(
                 text=tok.text,
                 start_ms=absolute_start,
@@ -303,7 +336,7 @@ class StreamingTranscriber:
         if (
             norm
             and norm == self._last_emitted_text_norm
-            and _word_count(text) <= _DEDUP_MAX_WORDS
+            and _DEDUP_MIN_WORDS <= _word_count(text) <= _DEDUP_MAX_WORDS
         ):
             return []
         segment = Segment(
@@ -319,6 +352,9 @@ class StreamingTranscriber:
         #    the previous hop's end.
         self._committed_ms = max(self._committed_ms, segment.end_ms)
         self._last_emitted_text_norm = norm
+        self._last_emitted_words = {
+            _normalize_segment_text(w) for w in text.split()
+        }
         return [segment]
 
     def flush(self) -> list[Segment]:
@@ -337,8 +373,12 @@ class StreamingTranscriber:
         for tok in tokens:
             absolute_start = self._buffer_start_ms + tok.start_ms
             absolute_end = self._buffer_start_ms + tok.end_ms
-            if absolute_start < self._committed_ms:
+            if absolute_end <= self._committed_ms:
                 continue
+            if absolute_start < self._committed_ms:
+                tok_norm = _normalize_segment_text(tok.text)
+                if tok_norm and tok_norm in self._last_emitted_words:
+                    continue
             new_tokens.append(Token(
                 text=tok.text,
                 start_ms=absolute_start,
@@ -353,6 +393,9 @@ class StreamingTranscriber:
             end_ms=new_tokens[-1].end_ms,
         )
         self._committed_ms = segment.end_ms
+        self._last_emitted_words = {
+            _normalize_segment_text(w) for w in text.split()
+        }
         return [segment]
 
 

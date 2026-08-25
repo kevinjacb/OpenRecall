@@ -105,10 +105,12 @@ def test_hop_emits_new_text_only():
     assert "".join(seg.text for seg in seg2) == "beta gamma"
 
 
-def test_tokens_rejected_in_overlap_zone():
-    """If a hop's overlap retrial returns DIFFERENT text in the overlap zone,
-    the streaming wrapper must NOT commit the new (rejected) text and must
-    preserve the original committed prefix.
+def test_overlap_zone_new_text_is_emitted_via_text_merge():
+    """If a hop's overlap retrial returns DIFFERENT text in the overlap zone
+    (a word whose retranscribed start jittered behind the cursor), the
+    text-merge emits the new word — it's a real word the previous hop missed
+    (L7 fix). Already-committed text is still dropped. The wrapper does NOT
+    retroactively change the prefix; the new word is appended.
     """
     whisper = FakeWhisper([
         [_tok("hello", 0.0, 0.4), _tok("world", 0.4, 0.8)],
@@ -121,8 +123,54 @@ def test_tokens_rejected_in_overlap_zone():
     # First segment keeps "hello world" — the wrapper does not retroactively
     # change the prefix based on a divergent overlap retrial.
     assert seg1[0].text == "hello world"
+    # "different" straddles the cursor (start=500 < committed=800, end=1000 > 800)
+    # and its text is NOT in the last segment ("hello world") → emitted (L7 fix).
     # "foo" is past the committed prefix so it's emitted.
-    assert "".join(seg.text for seg in seg2) == "foo"
+    assert "".join(seg.text for seg in seg2) == "different foo"
+
+
+def test_token_behind_cursor_with_new_text_is_emitted():
+    """L7 fix: a word whose retranscribed start_ms jittered behind the cursor
+    but whose text was NOT in the last emitted segment IS emitted (it's a real
+    word the previous hop missed), NOT hard-dropped. Already-committed words
+    are NOT re-emitted.
+    """
+    whisper = FakeWhisper([
+        [_tok("hello", 0.0, 0.4), _tok("world", 0.4, 0.8)],  # committed=800
+        # "missed" straddles the cursor (start=350 < 800, end=900 > 800)
+        [_tok("missed", 0.35, 0.9), _tok("foo", 1.0, 1.4)],
+    ])
+    s = streaming_from_tokens(whisper, sample_rate=16000, hop_ms=1000, window_ms=5000)
+    seg1 = s.feed(b"\x00" * 16000)
+    seg2 = s.feed(b"\x00" * 16000)
+    assert seg1[0].text == "hello world"
+    # "missed" is new text (not in {"hello", "world"}) → emitted despite
+    # its start being behind the cursor.
+    assert "missed" in seg2[0].text
+    assert "foo" in seg2[0].text
+    # Already-committed words are NOT re-emitted.
+    assert "hello" not in seg2[0].text
+    assert "world" not in seg2[0].text
+
+
+def test_genuine_repeated_word_emitted_twice():
+    """A genuinely repeated word (said twice, both past the cursor) MUST be
+    emitted twice — the dedup is timestamp/position-aware, not pure text-equality.
+    The cross-hop dedup only fires for multi-word phrases (>= _DEDUP_MIN_WORDS),
+    so a single word repeating is not collapsed.
+    """
+    whisper = FakeWhisper([
+        [_tok("hello", 0.0, 0.4)],          # emit; committed=400
+        [_tok("hello", 0.5, 0.9)],          # past cursor, genuine repeat → emit
+        [_tok("hello", 1.5, 1.9)],          # past cursor, genuine repeat → emit
+    ])
+    s = streaming_from_tokens(whisper, sample_rate=16000, hop_ms=1000, window_ms=5000)
+    seg1 = s.feed(b"\x00" * 16000)
+    seg2 = s.feed(b"\x00" * 16000)
+    seg3 = s.feed(b"\x00" * 16000)
+    assert seg1[0].text == "hello"
+    assert seg2[0].text == "hello"   # not cross-hop deduped (single word)
+    assert seg3[0].text == "hello"   # not cross-hop deduped
 
 
 def test_short_partial_window_at_session_end():
