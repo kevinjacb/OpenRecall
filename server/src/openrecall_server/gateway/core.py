@@ -168,6 +168,8 @@ class GatewayCore:
         liveness: "DeviceLiveness | None" = None,
         capability_provider: "CapabilityProvider | None" = None,
         settings: "SettingsStore | None" = None,
+        command_detector=None,
+        command_memory_writer=None,
     ) -> None:
         self._reconciler = reconciler
         self._liveness = liveness
@@ -183,6 +185,8 @@ class GatewayCore:
         self._atom_store = atom_store
         self._caps = capability_provider
         self._settings = settings
+        self._command_detector = command_detector
+        self._command_memory_writer = command_memory_writer
         self._session_id: str | None = None
         self._pipeline: AudioIngestPipeline | None = None
         self._event_seq = 0  # per-session monotonic event index
@@ -418,6 +422,23 @@ class GatewayCore:
                 self._reconciler.note_acked(acked_type)
             except Exception:
                 logger.exception("reconcile_note_ack_failed command=%s", msg.command_id)
+        # --- command memory on ack (speech→command channel) ---
+        # Reuse acked_type (captured BEFORE the ack at the top of this method):
+        # after ack() the command moves out of pending() and _command_type would
+        # return None, so the memory writer would never fire if re-called here.
+        # Voice-command provenance (source_event_id) comes from the detector's
+        # _provenance map; HTTP /agent-issued commands have no provenance and are
+        # skipped (source_event_id is None). None-defaulted for back-compat.
+        if self._command_memory_writer is not None and acked_type is not None:
+            source_event_id = None
+            if self._command_detector is not None:
+                source_event_id = self._command_detector._provenance.get(msg.command_id)
+            if source_event_id is not None:
+                self._command_memory_writer.on_ack(
+                    command_id=msg.command_id, session_id=self._session_id or "",
+                    command_type=acked_type, source_event_id=source_event_id,
+                    trigger_text=None,
+                )
         return list(self._pending_commands())  # pull the remainder
 
     def _command_type(self, command_id: str) -> str | None:
@@ -599,6 +620,12 @@ class GatewayCore:
                     "enqueued for extraction session=%s event=%s seq=%d",
                     self._session_id, event.event_id, event.seq,
                 )
+            # Speech→command channel (Stage 1): feed every stored transcript
+            # event to the command detector so it can match command phrases
+            # per-sentence (immediate, NOT on a 60s extraction window). None-
+            # defaulted so existing callers/tests are unchanged.
+            if stored and self._command_detector is not None and self._session_id is not None:
+                self._command_detector.feed(self._session_id, event)
             self._event_seq += 1
             self._cum_ms += t.duration_ms
             logger.info(
