@@ -6,7 +6,9 @@ It wires the real Opus decoder + MLX-whisper transcriber per session, so it need
 the heavy extras installed on the Mac:
 
     pip install -e '.[mlx,opus]'   # also: brew install opus
-    python scripts/run_gateway.py --port 8765 --window-ms 5000
+    python scripts/run_gateway.py --port 8765
+    # Parakeet backend (low-latency live transcription): OPENRECALL_ASR_BACKEND=parakeet
+    #   pip install -e '.[parakeet]'  (parakeet-mlx>=0.5)
 
 Two servers share one event loop:
 
@@ -78,8 +80,11 @@ def main() -> None:
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--window-ms", type=int, default=2000, help="transcription window")
-    ap.add_argument("--hop-ms", type=int, default=234,
-                    help="transcription hop (output granularity); derived from Parakeet RTF (spec §6)")
+    ap.add_argument("--hop-ms", type=int, default=240,
+                    help="transcription hop (output granularity); MUST be a multiple of "
+                         "FRAME_MS=20 (pipeline enforces it). 240 is the smallest multiple "
+                         "satisfying the Phase-0 sustainability inequality "
+                         "(140ms inference < 240*0.6=144ms; spec §6).")
     ap.add_argument("--model", default=None, help="override the MLX-whisper model repo")
     ap.add_argument("--db", default="data/events.db", help="durable capture-event store path")
     ap.add_argument("--key-file", default="data/server_ed25519.key",
@@ -384,6 +389,22 @@ def main() -> None:
     token = load_or_create_token(args.token_file)
     # Thread the whisper noise-filter thresholds into the streaming
     # transcriber backend.
+    import os as _os
+    # Sentence coalescing: group per-hop word Segments into readable
+    # sentences. ON by default (the low-latency hop emits ~1 word/hop, which
+    # would otherwise be one word per Transcript line / one event per word).
+    # Set OPENRECALL_SENTENCE_COALESCE=0 to revert to per-word emission
+    # (for real-hardware debugging), and OPENRECALL_SENTENCE_PAUSE_MS to tune
+    # the inter-sentence pause threshold (default 400 ms).
+    _sentence_coalesce = _os.environ.get("OPENRECALL_SENTENCE_COALESCE", "1") != "0"
+    try:
+        _sentence_pause_ms = int(_os.environ.get("OPENRECALL_SENTENCE_PAUSE_MS", "400"))
+    except ValueError:
+        raise SystemExit(
+            "OPENRECALL_SENTENCE_PAUSE_MS must be an integer number of milliseconds"
+        )
+    if _sentence_pause_ms <= 0:
+        raise SystemExit("OPENRECALL_SENTENCE_PAUSE_MS must be > 0")
     from openrecall_server.gateway.adapter import build_pipeline_factory as _bpf
     def _make_factory():
         return _bpf(
@@ -400,6 +421,8 @@ def main() -> None:
             persist_audio=settings_store.get().capture.save_audio,
             audio_enabled=lambda: settings_store.get().capture.audio_enabled,
             rel_ts_sink=session_timeline.record,
+            sentence_coalesce=_sentence_coalesce,
+            sentence_pause_ms=_sentence_pause_ms,
         )
     factory = _make_factory()
     app = build_app(

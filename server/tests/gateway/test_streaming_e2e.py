@@ -90,13 +90,33 @@ def test_factory_default_uses_streaming_backend():
     """The factory's default is streaming. The transcriber attached to
     the pipeline is a :class:`StreamingTranscriber`, not a
     :class:`Transcriber`.
+
+    Sentence coalescing is disabled here so this asserts the backend
+    wiring directly; the production default (coalescing on) is covered
+    by :func:`test_factory_default_wraps_streamer_in_sentence_coalescer`.
     """
+    from openrecall_server.ingest.streaming_transcriber import StreamingTranscriber
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+
+    factory = build_pipeline_factory(
+        window_ms=100, hop_ms=20, sentence_coalesce=False,
+    )
+    pipeline = factory(0)
+    assert isinstance(pipeline._streamer, StreamingTranscriber)
+
+
+def test_factory_default_wraps_streamer_in_sentence_coalescer():
+    """The production default wraps the streamer in a
+    :class:`SentenceCoalescer` so transcripts are sentences, not words.
+    """
+    from openrecall_server.ingest.sentence_coalescer import SentenceCoalescer
     from openrecall_server.ingest.streaming_transcriber import StreamingTranscriber
     from openrecall_server.gateway.adapter import build_pipeline_factory
 
     factory = build_pipeline_factory(window_ms=100, hop_ms=20)
     pipeline = factory(0)
-    assert isinstance(pipeline._streamer, StreamingTranscriber)
+    assert isinstance(pipeline._streamer, SentenceCoalescer)
+    assert isinstance(pipeline._streamer._streamer, StreamingTranscriber)
 
 
 def test_factory_legacy_path_still_works():
@@ -107,7 +127,9 @@ def test_factory_legacy_path_still_works():
     """
     from openrecall_server.gateway.adapter import build_pipeline_factory
 
-    factory = build_pipeline_factory(window_ms=100, hop_ms=20, use_streaming=False)
+    factory = build_pipeline_factory(
+        window_ms=100, hop_ms=20, use_streaming=False, sentence_coalesce=False,
+    )
     pipeline = factory(0)
     # The legacy path wraps a str-returning Transcriber into a
     # StreamingTranscriber (via the text factory), so the pipeline's

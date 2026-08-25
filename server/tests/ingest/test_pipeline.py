@@ -67,12 +67,22 @@ class FakeTranscriber:
         return f"seg{len(self.calls)}"
 
 
-def make_pipeline(window_ms: int = 100, hop_ms: int = 20, speaker_identifier=None, speaker_window_ms: int = 2000):
+def make_pipeline(
+    window_ms: int = 100,
+    hop_ms: int = 20,
+    speaker_identifier=None,
+    speaker_window_ms: int = 2000,
+    sentence_coalesce: bool = False,
+):
     """Build a pipeline with streaming defaults scaled for the test.
 
     The old hard-cut pipeline used a single window. The new streaming
     pipeline uses 1-hop-per-frame (hop=20ms, window=100ms here) so the
     tests exercise the new path with the same number of frames.
+
+    ``sentence_coalesce`` defaults to False so the per-hop tests below
+    keep their existing contract; the coalesced path is exercised by
+    :func:`test_sentence_coalesce_groups_hops_into_one_sentence`.
     """
     dec = FakeDecoder()
     tr = FakeTranscriber()
@@ -85,6 +95,7 @@ def make_pipeline(window_ms: int = 100, hop_ms: int = 20, speaker_identifier=Non
         sample_rate=16000,
         speaker_identifier=speaker_identifier,
         speaker_window_ms=speaker_window_ms,
+        sentence_coalesce=sentence_coalesce,
     )
     return pipe, dec, tr
 
@@ -226,6 +237,39 @@ def test_pipeline_without_identifier_leaves_speaker_none():
         assert t.speaker is None
         assert t.speaker_confidence is None
         assert t.speaker_assignment is None
+
+
+def test_sentence_coalesce_groups_hops_into_one_sentence():
+    """With sentence coalescing on, the per-hop word Segments the raw
+    streamer emits are held and flushed as a single joined sentence,
+    instead of one Transcript per hop. At hop=20ms the inter-hop gap
+    (20ms) is below the 400ms pause threshold and the fake transcriber
+    adds no punctuation, so nothing emits mid-stream; the sentence comes
+    out on flush.
+    """
+    pipe, _dec, _tr = make_pipeline(window_ms=100, hop_ms=20, sentence_coalesce=True)
+
+    out = pipe.ingest(pkt(0, n_frames=5))  # 5 hops
+
+    # All held — no sentence boundary mid-stream.
+    assert out == []
+    tail = pipe.flush()
+    assert len(tail) == 1
+    # The five per-hop words joined into one sentence.
+    assert tail[0].text.split() == ["seg1", "seg2", "seg3", "seg4", "seg5"]
+
+
+def test_sentence_coalesce_off_emits_per_hop():
+    """The default (coalesce off) keeps the one-Transcript-per-hop
+    contract — the regression pin for the coalescer not silently
+    changing the raw pipeline's behaviour.
+    """
+    pipe, _dec, _tr = make_pipeline(window_ms=100, hop_ms=20, sentence_coalesce=False)
+
+    out = pipe.ingest(pkt(0, n_frames=5))
+
+    assert len(out) == 5
+    assert pipe.flush() == []
 
 
 def test_rolling_speaker_window_decouples_embedder_from_hop():

@@ -54,20 +54,37 @@ class Token:
     passed to the underlying transcriber (the rolling window), not
     absolute session time. The :class:`StreamingTranscriber` translates
     to absolute time when emitting segments.
+
+    ``sentence_id`` carries the ASR backend's own sentence grouping:
+    tokens that belong to the same backend sentence/segment share an id
+    (> 0), so the :class:`StreamingTranscriber` can emit one Segment per
+    backend sentence and the coalescer can group by the model's boundary
+    instead of re-deriving it with punctuation/pause heuristics. ``0`` is
+    the sentinel for "no sentence structure" — the str-returning adapter
+    and the flattened ``AlignedResult.tokens`` fallback both use 0, which
+    makes the streamer fall back to one Segment per hop and the coalescer
+    fall back to heuristics.
     """
 
     text: str
     start_ms: int
     end_ms: int
+    sentence_id: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class Segment:
-    """A committed slice of transcript with absolute session timestamps."""
+    """A committed slice of transcript with absolute session timestamps.
+
+    ``sentence_id`` mirrors the emitting tokens' id (> 0 = a real backend
+    sentence; 0 = no structure / per-hop grouping). The coalescer reads it
+    to decide sentence boundaries.
+    """
 
     text: str
     start_ms: int
     end_ms: int
+    sentence_id: int = 0
 
 
 @runtime_checkable
@@ -131,6 +148,32 @@ def _normalize_segment_text(text: str) -> str:
 
 def _word_count(text: str) -> int:
     return len(text.split())
+
+
+def _group_by_sentence_id(tokens: list[Token]) -> list[tuple[int, list[Token]]]:
+    """Group consecutive tokens sharing the same ``sentence_id`` into runs.
+
+    The backend returns tokens in audio order, and sentence ids are
+    non-decreasing within a single transcription call, so consecutive tokens
+    with the same id form one backend sentence. Returns ``(sentence_id,
+    [tokens])`` pairs in order. Tokens with id 0 (no structure) collapse into
+    one run — preserving the one-Segment-per-hop behavior for backends that
+    don't expose sentence boundaries.
+    """
+    if not tokens:
+        return []
+    runs: list[tuple[int, list[Token]]] = []
+    cur_id = tokens[0].sentence_id
+    cur: list[Token] = []
+    for tok in tokens:
+        if tok.sentence_id != cur_id:
+            runs.append((cur_id, cur))
+            cur_id = tok.sentence_id
+            cur = []
+        cur.append(tok)
+    if cur:
+        runs.append((cur_id, cur))
+    return runs
 
 
 class StreamingTranscriber:
@@ -317,45 +360,58 @@ class StreamingTranscriber:
                 text=tok.text,
                 start_ms=absolute_start,
                 end_ms=absolute_end,
+                sentence_id=tok.sentence_id,
             ))
 
         if not new_tokens:
             return []
 
-        # 5. Group new tokens into one segment per hop. A future
-        #    refinement could split on long pauses, but for now
-        #    one hop = one segment keeps the gateway's existing
-        #    segment-per-Transcript model intact.
-        text = " ".join(t.text for t in new_tokens)
-        # 5.5. Cross-hop dedup: a short segment identical to the last EMITTED
-        # one is a phantom repeat on noise (the overlap dedup in step 4 only
-        # catches repeats at the same absolute time; a fresh phantom each hop
-        # lands past the cursor). Drop it WITHOUT advancing the committed
-        # cursor — the next hop's real speech still self-corrects past it.
-        norm = _normalize_segment_text(text)
-        if (
-            norm
-            and norm == self._last_emitted_text_norm
-            and _DEDUP_MIN_WORDS <= _word_count(text) <= _DEDUP_MAX_WORDS
-        ):
-            return []
-        segment = Segment(
-            text=text,
-            start_ms=new_tokens[0].start_ms,
-            end_ms=new_tokens[-1].end_ms,
-        )
-        # 6. Advance the committed cursor to the end of the last new
-        #    token. We trust the backend's timestamps — a token-returning
-        #    backend (Whisper with word_timestamps) reports real word
-        #    boundaries, and the str-returning adapter reports the
-        #    trailing edge of the call's audio, which is naturally past
-        #    the previous hop's end.
-        self._committed_ms = max(self._committed_ms, segment.end_ms)
-        self._last_emitted_text_norm = norm
-        self._last_emitted_words = {
-            _normalize_segment_text(w) for w in text.split()
-        }
-        return [segment]
+        # 5. Emit one Segment per backend sentence. The backend tags each
+        #    token with its sentence id (> 0); consecutive tokens sharing an
+        #    id form one sentence (the backend returns tokens in order, and
+        #    sentence ids are non-decreasing within a call). This carries the
+        #    ASR model's own sentence segmentation through the committed-cursor
+        #    / dedup logic, so the downstream coalescer groups by the model's
+        #    boundary instead of re-deriving it with punctuation/pause
+        #    heuristics. Tokens with sentence_id == 0 (str adapter, or the
+        #    flattened AlignedResult.tokens fallback) all share id 0, so they
+        #    collapse into a single Segment — preserving the original
+        #    one-Segment-per-hop behavior for backends with no structure.
+        segments: list[Segment] = []
+        for sentence_id, group in _group_by_sentence_id(new_tokens):
+            text = " ".join(t.text for t in group)
+            # 5.5. Cross-hop dedup: a short segment identical to the last
+            # EMITTED one is a phantom repeat on noise (the overlap dedup in
+            # step 4 only catches repeats at the same absolute time; a fresh
+            # phantom each hop lands past the cursor). Drop it WITHOUT
+            # advancing the committed cursor — the next hop's real speech
+            # still self-corrects past it.
+            norm = _normalize_segment_text(text)
+            if (
+                norm
+                and norm == self._last_emitted_text_norm
+                and _DEDUP_MIN_WORDS <= _word_count(text) <= _DEDUP_MAX_WORDS
+            ):
+                continue
+            segment = Segment(
+                text=text,
+                start_ms=group[0].start_ms,
+                end_ms=group[-1].end_ms,
+                sentence_id=sentence_id,
+            )
+            # 6. Advance the committed cursor to the end of this sentence's
+            #    last token. We trust the backend's timestamps — a
+            #    token-returning backend (Whisper with word_timestamps, or
+            #    Parakeet word tokens) reports real word boundaries, and the
+            #    str-returning adapter reports the trailing edge of the
+            #    call's audio, which is naturally past the previous hop's end.
+            self._committed_ms = max(self._committed_ms, segment.end_ms)
+            self._last_emitted_text_norm = norm
+            self._last_emitted_words = {
+                _normalize_segment_text(w) for w in text.split()
+            }
+            segments.append(segment)
+        return segments
 
     def flush(self) -> list[Segment]:
         """Emit any final tokens that haven't been committed yet.
@@ -383,20 +439,28 @@ class StreamingTranscriber:
                 text=tok.text,
                 start_ms=absolute_start,
                 end_ms=absolute_end,
+                sentence_id=tok.sentence_id,
             ))
         if not new_tokens:
             return []
-        text = " ".join(t.text for t in new_tokens)
-        segment = Segment(
-            text=text,
-            start_ms=new_tokens[0].start_ms,
-            end_ms=new_tokens[-1].end_ms,
+        segments: list[Segment] = []
+        for sentence_id, group in _group_by_sentence_id(new_tokens):
+            text = " ".join(t.text for t in group)
+            segment = Segment(
+                text=text,
+                start_ms=group[0].start_ms,
+                end_ms=group[-1].end_ms,
+                sentence_id=sentence_id,
+            )
+            segments.append(segment)
+        self._committed_ms = max(
+            self._committed_ms, segments[-1].end_ms,
         )
-        self._committed_ms = segment.end_ms
         self._last_emitted_words = {
-            _normalize_segment_text(w) for w in text.split()
+            _normalize_segment_text(w)
+            for w in segments[-1].text.split()
         }
-        return [segment]
+        return segments
 
 
 def streaming_from_tokens(

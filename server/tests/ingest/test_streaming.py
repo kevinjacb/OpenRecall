@@ -52,6 +52,12 @@ def _tok(text: str, start: float, end: float) -> Token:
     return Token(text=text, start_ms=int(start * 1000), end_ms=int(end * 1000))
 
 
+def _toks(text: str, start: float, end: float, sid: int) -> Token:
+    """A token tagged with a real backend sentence id (> 0)."""
+    return Token(text=text, start_ms=int(start * 1000), end_ms=int(end * 1000),
+                 sentence_id=sid)
+
+
 # --- tests ------------------------------------------------------------------
 
 
@@ -356,3 +362,73 @@ def test_webrtcvad_invalid_aggressiveness_raises():
             FakeWhisper([]), sample_rate=16000, hop_ms=1000, window_ms=5000,
             vad_mode="webrtc", vad_aggressiveness=4,
         )
+
+
+# --- sentence_id: per-sentence Segment emission ----------------------------
+
+
+def test_tokens_with_different_sentence_ids_emit_one_segment_per_sentence():
+    """When the backend tags tokens with sentence ids, a single hop whose
+    new tokens span two backend sentences emits TWO Segments — one per
+    sentence, each carrying its sentence_id. This is how the model's own
+    segmentation is carried through the committed-cursor / dedup logic."""
+    whisper = FakeWhisper([
+        # First hop: one sentence "hello world" (id 1).
+        [_toks("hello", 0.0, 0.4, 1), _toks("world", 0.4, 0.8, 1)],
+        # Second hop: the new tokens span the end of sentence 1 ("foo")
+        # and the start of sentence 2 ("bar baz") — two sentences in one hop.
+        [_toks("world", 0.5, 0.9, 1), _toks("foo", 1.0, 1.4, 1),
+         _toks("bar", 1.5, 1.9, 2), _toks("baz", 1.9, 2.3, 2)],
+    ])
+    s = streaming_from_tokens(whisper, sample_rate=16000, hop_ms=1000, window_ms=5000)
+
+    seg1 = s.feed(b"\x00" * 16000)
+    assert len(seg1) == 1
+    assert seg1[0].text == "hello world"
+    assert seg1[0].sentence_id == 1
+
+    seg2 = s.feed(b"\x00" * 16000)
+    # "world" is behind the cursor (already committed); the new tokens are
+    # "foo" (id 1) then "bar baz" (id 2) — two Segments, one per sentence.
+    assert len(seg2) == 2
+    assert seg2[0].text == "foo"
+    assert seg2[0].sentence_id == 1
+    assert seg2[1].text == "bar baz"
+    assert seg2[1].sentence_id == 2
+
+
+def test_tokens_with_zero_sentence_id_collapse_into_one_segment():
+    """sentence_id == 0 (no structure: str adapter, or the flattened
+    AlignedResult.tokens fallback) collapses all new tokens into a single
+    Segment — preserving the original one-Segment-per-hop behavior."""
+    whisper = FakeWhisper([
+        [_tok("alpha", 0.0, 0.4), _tok("beta", 0.4, 0.8), _tok("gamma", 0.8, 1.2)],
+    ])
+    s = streaming_from_tokens(whisper, sample_rate=16000, hop_ms=1000, window_ms=5000)
+
+    segs = s.feed(b"\x00" * 16000)
+    assert len(segs) == 1
+    assert segs[0].text == "alpha beta gamma"
+    assert segs[0].sentence_id == 0
+
+
+def test_flush_emits_one_segment_per_pending_sentence_id():
+    """flush() also groups by sentence_id, emitting one Segment per backend
+    sentence among the final uncommitted tokens.
+
+    Hop 1 commits "hello" (id 1) and advances the cursor to 400ms. flush()
+    re-transcribes the buffer; its tokens (sentences 2 and 3) all start past
+    the committed cursor, so they are emitted grouped by sentence_id.
+    """
+    whisper = FakeWhisper([
+        [_toks("hello", 0.0, 0.4, 1)],                                   # feed
+        [_toks("how", 0.5, 0.9, 2), _toks("are", 0.9, 1.3, 2),          # flush
+         _toks("you", 1.4, 1.8, 3)],
+    ])
+    s = streaming_from_tokens(whisper, sample_rate=16000, hop_ms=1000, window_ms=5000)
+    s.feed(b"\x00" * 16000)            # commits "hello" (id 1); cursor=400
+    tail = s.flush()                   # flush transcribes; ids 2 & 3 past cursor
+    texts = [seg.text for seg in tail]
+    ids = [seg.sentence_id for seg in tail]
+    assert texts == ["how are", "you"]
+    assert ids == [2, 3]

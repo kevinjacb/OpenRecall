@@ -198,7 +198,7 @@ def test_result_without_tokens_property_falls_back_to_sentences():
         [[NoTokensProperty([FakeAlignedToken("hey", 0.0, 0.5)])]]
     )
     assert backend.transcribe(pcm(), 16000) == [
-        Token(text="hey", start_ms=0, end_ms=500)
+        Token(text="hey", start_ms=0, end_ms=500, sentence_id=1)
     ]
 
 

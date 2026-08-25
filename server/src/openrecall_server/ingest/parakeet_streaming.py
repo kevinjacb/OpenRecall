@@ -76,7 +76,7 @@ def _seconds_to_ms(seconds: float | None) -> int:
     return round(seconds * 1000)
 
 
-def _aligned_tokens_to_tokens(aligned: list[Any]) -> list[Token]:
+def _aligned_tokens_to_tokens(aligned: list[Any], sentence_id: int = 0) -> list[Token]:
     """Regroup Parakeet's sub-word tokens into whole-word :class:`Token`s.
 
     Parakeet emits *sentencepiece sub-word* pieces whose text carries the word
@@ -94,6 +94,10 @@ def _aligned_tokens_to_tokens(aligned: list[Any]) -> list[Token]:
     - the text is stripped, so the wrapper's ``" "`` join reproduces normal
       spacing.
 
+    ``sentence_id`` (> 0) is stamped onto every emitted Token so the streamer
+    can emit one Segment per backend sentence and the coalescer can group by
+    the model's own boundary. ``0`` is the "no structure" sentinel.
+
     Pieces with a zero/negative span are still merged for their *text* (a
     sub-word can legitimately carry a degenerate duration), but a fully
     collapsed word (``end <= start``) is dropped rather than emitted as a
@@ -109,7 +113,10 @@ def _aligned_tokens_to_tokens(aligned: list[Any]) -> list[Token]:
         nonlocal cur_text, cur_start, cur_end
         text = cur_text.strip()
         if text and cur_start is not None and cur_end > cur_start:
-            words.append(Token(text=text, start_ms=cur_start, end_ms=cur_end))
+            words.append(Token(
+                text=text, start_ms=cur_start, end_ms=cur_end,
+                sentence_id=sentence_id,
+            ))
         cur_text = ""
         cur_start = None
         cur_end = 0
@@ -136,21 +143,30 @@ def _aligned_tokens_to_tokens(aligned: list[Any]) -> list[Token]:
 def _result_to_tokens(result: Any) -> list[Token]:
     """Extract word-level Tokens from a ``parakeet_mlx`` ``AlignedResult``.
 
-    ``AlignedResult`` exposes a flattened ``tokens`` property over its
-    ``sentences``; we prefer that and fall back to walking ``sentences``
-    directly so a future version that drops the convenience property still
-    works. A result with neither yields no tokens rather than raising — an
-    empty hop (silence) is the normal, expected case for this backend.
+    ``AlignedResult`` exposes a ``sentences`` list, each carrying its own
+    ``tokens``; we walk that FIRST so every Token is stamped with its backend
+    sentence id (> 0), preserving the model's own sentence segmentation all
+    the way through the streamer and coalescer. Only when ``sentences`` is
+    absent do we fall back to the flattened ``tokens`` convenience property
+    (sentence_id=0 = no structure, so the coalescer falls back to its
+    punctuation/pause heuristics). A result with neither yields no tokens
+    rather than raising — an empty hop (silence) is the normal, expected case
+    for this backend.
     """
     if result is None:
         return []
+    sentences = getattr(result, "sentences", None)
+    if sentences:
+        tokens: list[Token] = []
+        for sid, sentence in enumerate(sentences):
+            tokens.extend(_aligned_tokens_to_tokens(
+                list(getattr(sentence, "tokens", []) or []),
+                sentence_id=sid + 1,  # 0 is the "no structure" sentinel.
+            ))
+        return tokens
     aligned = getattr(result, "tokens", None)
     if aligned is None:
-        aligned = [
-            tok
-            for sentence in getattr(result, "sentences", []) or []
-            for tok in getattr(sentence, "tokens", []) or []
-        ]
+        return []
     return _aligned_tokens_to_tokens(list(aligned))
 
 

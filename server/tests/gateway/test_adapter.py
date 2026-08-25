@@ -153,9 +153,29 @@ def test_build_pipeline_factory_threads_all_whisper_config_fields():
 
 
 def _streamer_backend(factory):
-    """Reach the StreamingBackend a factory's pipeline actually built."""
+    """Reach the StreamingBackend a factory's pipeline actually built.
+
+    The production factory default wraps the streamer in a
+    :class:`SentenceCoalescer`; unwrap it so these backend-wiring tests
+    reach the real backend regardless of the coalescing layer.
+    """
+    from openrecall_server.ingest.sentence_coalescer import SentenceCoalescer
+
     pipeline = factory(0)
-    return pipeline._streamer._backend
+    streamer = pipeline._streamer
+    if isinstance(streamer, SentenceCoalescer):
+        streamer = streamer._streamer
+    return streamer._backend
+
+
+def _raw_streamer(factory):
+    """Reach the raw :class:`StreamingTranscriber` a factory built."""
+    from openrecall_server.ingest.sentence_coalescer import SentenceCoalescer
+
+    streamer = factory(0)._streamer
+    if isinstance(streamer, SentenceCoalescer):
+        streamer = streamer._streamer
+    return streamer
 
 
 def test_default_factory_builds_the_whisper_backend():
@@ -244,7 +264,7 @@ def test_vad_gate_applies_to_the_parakeet_backend_too(fake_parakeet_loader):
     })
     factory = build_pipeline_factory(whisper_config=cfg.whisper, asr_config=cfg.asr)
 
-    assert factory(0)._streamer._vad is not None
+    assert _raw_streamer(factory)._vad is not None
 
 
 # --- S4: shared singleton ASR model (process-wide load-once cache) -----------

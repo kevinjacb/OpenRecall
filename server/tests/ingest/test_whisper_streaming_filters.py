@@ -107,7 +107,7 @@ def test_segment_below_no_speech_threshold_is_kept():
         no_speech_prob=0.2,
     ))
     tokens = _mlx_segments_to_tokens(response, no_speech_threshold=0.6)
-    assert tokens == [Token(text="hello", start_ms=0, end_ms=400)]
+    assert tokens == [Token(text="hello", start_ms=0, end_ms=400, sentence_id=1)]
 
 
 def test_segment_at_no_speech_threshold_boundary_is_kept():

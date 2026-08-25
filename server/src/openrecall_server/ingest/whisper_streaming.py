@@ -221,7 +221,7 @@ def _mlx_segments_to_tokens(
         hallucination_blocklist_enabled, hallucination_phrases,
     )
     tokens: list[Token] = []
-    for seg in response.get("segments", []):
+    for seg_idx, seg in enumerate(response.get("segments", [])):
         # Per-segment confidence gating. Missing fields are treated as
         # low-risk so a future mlx-whisper version without these
         # fields (or a custom backend) doesn't silently drop everything.
@@ -266,7 +266,10 @@ def _mlx_segments_to_tokens(
             if end_ms <= start_ms:
                 # Malformed word; drop rather than emit a zero-length token.
                 continue
-            tokens.append(Token(text=text, start_ms=start_ms, end_ms=end_ms))
+            tokens.append(Token(
+                text=text, start_ms=start_ms, end_ms=end_ms,
+                sentence_id=seg_idx + 1,  # 0 is the "no structure" sentinel.
+            ))
     # Aggregate guard: Whisper can also split a looping hallucination across
     # many short one-word segments, each individually non-repetitive. If the
     # whole response's tokens are unambiguatively repetitive, drop them all.

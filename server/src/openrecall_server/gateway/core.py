@@ -499,6 +499,27 @@ class GatewayCore:
         A no-op for a session that already said ``bye`` (which cleared
         ``_session_id``) or never said ``hello``.
         """
+        # Flush any pending transcription (e.g. a sentence held by the
+        # sentence coalescer) so a dropped link does not lose the last
+        # sentence. ``bye`` flushes on its own path and then clears the
+        # pipeline, so this only acts when bye never arrived — the common
+        # case for a wearable whose WebSocket just dropped. The final
+        # transcripts are persisted as events; the WS send is best-effort
+        # (the socket is already dead), so the value is keeping the last
+        # sentence in the recording + extraction, not reaching the phone.
+        if self._pipeline is not None and self._session_id is not None:
+            try:
+                flushed = list(self._emit(self._pipeline.flush()))
+                if flushed:
+                    logger.info(
+                        "disconnect: flushed %d final transcript(s) for "
+                        "session=%s", len(flushed), self._session_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "disconnect: final flush failed for session=%s",
+                    self._session_id,
+                )
         self.finalize_pending_session()
         if self._session_id is not None:
             self._close_session(self._session_id)

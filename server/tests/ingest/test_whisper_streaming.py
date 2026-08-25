@@ -91,8 +91,8 @@ def test_mlx_segments_to_tokens_extracts_words_with_timestamps():
     # the streaming wrapper joins with "" (empty string) so the leading
     # space IS the word boundary. We preserve it here.
     assert tokens == [
-        Token(text="hello", start_ms=0, end_ms=400),
-        Token(text=" world", start_ms=500, end_ms=900),
+        Token(text="hello", start_ms=0, end_ms=400, sentence_id=1),
+        Token(text=" world", start_ms=500, end_ms=900, sentence_id=1),
     ]
 
 
@@ -222,8 +222,8 @@ def test_backend_returns_tokens_for_words():
     b = WhisperStreamingBackend(mlx_transcribe=fake)
     tokens = b.transcribe(b"\x00" * 16000, 16000)
     assert tokens == [
-        Token(text="hello", start_ms=0, end_ms=400),
-        Token(text=" world", start_ms=500, end_ms=900),
+        Token(text="hello", start_ms=0, end_ms=400, sentence_id=1),
+        Token(text=" world", start_ms=500, end_ms=900, sentence_id=1),
     ]
 
 

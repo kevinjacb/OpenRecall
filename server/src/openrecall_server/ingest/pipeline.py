@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Callable
 
 from .audio_packet import AudioPacket
 from .reassembler import SessionReassembler
+from .sentence_coalescer import DEFAULT_PAUSE_MS, SentenceCoalescer
 from .streaming_transcriber import (
     Segment,
     StreamingTranscriber,
@@ -95,6 +96,8 @@ class AudioIngestPipeline:
         persist_audio: bool = True,
         audio_enabled=None,
         rel_ts_sink: Callable[[str, int], None] | None = None,
+        sentence_coalesce: bool = False,
+        sentence_pause_ms: int = DEFAULT_PAUSE_MS,
     ) -> None:
         if window_ms % FRAME_MS != 0:
             raise ValueError(f"window_ms must be a multiple of {FRAME_MS}")
@@ -108,7 +111,7 @@ class AudioIngestPipeline:
         self._decoder = decoder
         self._sample_rate = sample_rate
         self._hop_frames = hop_ms // FRAME_MS
-        self._streamer: StreamingTranscriber
+        self._streamer: StreamingTranscriber | SentenceCoalescer
         if isinstance(transcriber, StreamingTranscriber):
             self._streamer = transcriber
         elif isinstance(transcriber, Transcriber):
@@ -123,6 +126,16 @@ class AudioIngestPipeline:
             self._streamer = streaming_from_tokens(
                 transcriber,  # type: ignore[arg-type]
                 sample_rate, hop_ms, window_ms,
+            )
+        # Sentence coalescing (off by default; enabled by the production
+        # factory via OPENRECALL_SENTENCE_COALESCE). The raw streamer emits
+        # one Segment per hop (~one word at a low-latency hop); the coalescer
+        # accumulates those into sentence Segments so each Transcript is a
+        # readable sentence, not a single word. The streamer's cursor/dedup
+        # logic is left untouched — the coalescer is a transparent wrapper.
+        if sentence_coalesce:
+            self._streamer = SentenceCoalescer(
+                self._streamer, sample_rate=sample_rate, pause_ms=sentence_pause_ms,
             )
         self._pcm_buffer: bytearray = bytearray()  # decoded PCM, appended as frames arrive
         self._absolute_ms: int = 0  # total ms of audio fed to the streamer
@@ -315,20 +328,39 @@ class AudioIngestPipeline:
         return out
 
     def flush(self) -> list[Transcript]:
-        """Transcribe whatever audio remains (partial final hop at session end)."""
-        if not self._pcm_buffer:
-            return []
-        pcm = bytes(self._pcm_buffer)
-        self._pcm_buffer.clear()
-        self._absolute_ms += len(pcm) * 1000 // (self._sample_rate * 2)
-        segments = self._streamer.feed(pcm)
-        tail = self._streamer.flush()
-        spk = self._speaker(pcm)
+        """Transcribe whatever audio remains (partial final hop at session end)
+        and drain the streamer.
+
+        Draining always runs, even when there is no leftover PCM: with
+        sentence coalescing a sentence may be held pending with no audio
+        left to transcribe, and it must be emitted at session end. Without
+        coalescing the raw streamer returns ``[]`` when its buffer is empty,
+        so this is a no-op for the legacy per-hop path.
+        """
         out: list[Transcript] = []
-        for seg in [*segments, *tail]:
+        spk = None
+        if self._pcm_buffer:
+            pcm = bytes(self._pcm_buffer)
+            self._pcm_buffer.clear()
+            self._absolute_ms += len(pcm) * 1000 // (self._sample_rate * 2)
+            segments = self._streamer.feed(pcm)
+            spk = self._speaker(pcm)
+            for seg in segments:
+                duration = seg.end_ms - seg.start_ms
+                if duration <= 0:
+                    duration = len(pcm) * 1000 // (self._sample_rate * 2)
+                out.append(Transcript(
+                    text=seg.text, duration_ms=duration,
+                    speaker=(spk.speaker_id if spk else None),
+                    speaker_confidence=(spk.confidence if spk else None),
+                    speaker_assignment=(spk.assignment if spk else None),
+                ))
+        # Drain the streamer/coalescer so a pending sentence is flushed.
+        tail = self._streamer.flush()
+        for seg in tail:
             duration = seg.end_ms - seg.start_ms
             if duration <= 0:
-                duration = len(pcm) * 1000 // (self._sample_rate * 2)
+                duration = self._streamer._hop_ms  # type: ignore[attr-defined]
             out.append(Transcript(
                 text=seg.text, duration_ms=duration,
                 speaker=(spk.speaker_id if spk else None),

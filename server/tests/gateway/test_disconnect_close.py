@@ -80,6 +80,62 @@ def test_on_disconnect_without_hello_is_a_noop():
     assert len(lifecycle) == 0
 
 
+def test_abrupt_disconnect_flushes_a_pending_coalesced_sentence():
+    """A dropped link (no bye) must not lose a sentence held by the
+    sentence coalescer. The disconnect path is the close signal that
+    always fires, so it owns flushing the pipeline when bye never
+    arrived — otherwise the last sentence of every dropped session
+    (up to the coalescer's cap) would be silently lost.
+    """
+    store = InMemoryEventStore()
+
+    def factory(start_seq: int) -> AudioIngestPipeline:
+        return AudioIngestPipeline(
+            reassembler=SessionReassembler(start_seq=start_seq),
+            decoder=FakeDecoder(),
+            transcriber=FakeTranscriber(),
+            hop_ms=20,
+            window_ms=100,
+            sample_rate=16000,
+            sentence_coalesce=True,
+        )
+
+    core = GatewayCore(
+        pipeline_factory=factory,
+        event_store=store,
+        session_index=SessionIndex(clock=lambda: _NOW),
+        session_lifecycle=SessionLifecycle(),
+    )
+    core.on_control(Hello(session_id="s1", start_seq=0))
+    out = core.on_audio(audio_bytes(0, n_frames=3))
+    # The coalescer holds the 3 per-hop words; no Transcript emitted
+    # inline (only the per-packet Ack, which always rides along).
+    from openrecall_server.protocol.messages import TranscriptMsg
+    assert [m for m in out if isinstance(m, TranscriptMsg)] == []
+
+    core.on_disconnect()  # no bye — the socket just died
+
+    events = store.events("s1")
+    # The pending sentence is flushed and persisted as one event.
+    assert len(events) == 1
+    assert events[0].text.split() == ["seg1", "seg2", "seg3"]
+
+
+def test_disconnect_after_bye_does_not_double_flush():
+    """bye flushes and clears the pipeline; the disconnect path that
+    follows must not flush again (the pipeline is already gone)."""
+    core, store, _index, _lifecycle = _make_core()
+    core.on_control(Hello(session_id="s1", start_seq=0))
+    core.on_audio(audio_bytes(0, n_frames=3))
+    bye_events = len(store.events("s1"))
+
+    core.on_control(Bye(session_id="s1"))
+    core.on_disconnect()
+
+    # No new events from the disconnect flush (bye already handled it).
+    assert len(store.events("s1")) == bye_events
+
+
 # ---- §0.2 sessions never end ------------------------------------------------
 
 
