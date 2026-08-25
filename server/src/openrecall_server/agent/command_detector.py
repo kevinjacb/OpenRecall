@@ -9,6 +9,16 @@ memory is written on device ack (see :mod:`command_memory`).
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
+from collections import deque
+from typing import Any, Awaitable, Callable
+
+logger = logging.getLogger(__name__)
+
+_ROLLING_BUFFER_SEGS = 10
+
 
 def match_command_phrase(buffer: str, phrases: dict[str, str]) -> str | None:
     """Return the command type whose phrase appears in ``buffer``, longest
@@ -22,3 +32,88 @@ def match_command_phrase(buffer: str, phrases: dict[str, str]) -> str | None:
         if phrase in low:
             return phrases[phrase]
     return None
+
+
+class CommandDetector:
+    """Two-stage speech→command detector, confirmed-wearer-gated.
+
+    ``feed`` runs synchronously on the audio path: wearer gate → rolling
+    buffer → Stage 1 phrase match → cooldown/in-flight dedup → schedule
+    Stage 2 off the audio path via the loop. Stage 2 (LLM + dispatch) is
+    :meth:`_run_stage2`, implemented in Task 5.
+    """
+
+    def __init__(
+        self,
+        *,
+        model,
+        dispatcher,
+        command_validator,
+        capability_provider,
+        speaker_registry,
+        loop: asyncio.AbstractEventLoop,
+        config: CommandDetectorConfig,
+        ids,
+        clock,
+    ) -> None:
+        self._model = model
+        self._dispatcher = dispatcher
+        self._validator = command_validator
+        self._caps = capability_provider
+        self._speaker_registry = speaker_registry
+        self._loop = loop
+        self._cfg = config
+        self._ids = ids
+        self._clock = clock
+        # session_id -> deque of recent segment texts (rolling buffer).
+        self._buffers: dict[str, deque[str]] = {}
+        # session_id -> {command_type: last_candidate_monotonic}
+        self._last_candidate: dict[str, dict[str, float]] = {}
+        self._inflight: dict[str, int] = {}
+        # command_id -> source_event_id (for the ack-time memory).
+        self._provenance: dict[str, str] = {}
+
+    def feed(self, session_id: str, event: Any) -> None:
+        if not self._cfg.enabled:
+            return
+        # --- confirmed-wearer gate ---
+        if self._cfg.require_wearer:
+            spk = self._speaker_registry.get(event.speaker) if (
+                event.speaker and self._speaker_registry is not None) else None
+            if not (event.speaker and event.speaker_assignment == "confirmed"
+                    and spk is not None and spk.is_wearer):
+                return
+        # --- rolling recent-text buffer ---
+        buf = self._buffers.setdefault(session_id, deque(maxlen=_ROLLING_BUFFER_SEGS))
+        buf.append(event.text or "")
+        joined = " ".join(buf)
+        ctype = match_command_phrase(joined, self._cfg.phrases)
+        if ctype is None:
+            return
+        # --- cooldown dedup (per session, per matched command type) ---
+        now = time.monotonic()
+        last = self._last_candidate.setdefault(session_id, {})
+        if now - last.get(ctype, -self._cfg.cooldown_s) < self._cfg.cooldown_s:
+            logger.debug("command_detector dedup session=%s type=%s", session_id, ctype)
+            return
+        # --- in-flight cap (defends the shared Ollama model) ---
+        if self._inflight.get(session_id, 0) >= self._cfg.max_inflight:
+            logger.info("command_detector in-flight cap session=%s; dropping", session_id)
+            return
+        last[ctype] = now
+        self._inflight[session_id] = self._inflight.get(session_id, 0) + 1
+        context = joined  # Stage 2 sees the rolling buffer as context
+        self._loop.call_soon_threadsafe(
+            self._launch_stage2, session_id, event, ctype, context)
+
+    def _launch_stage2(self, session_id: str, event: Any, ctype: str, context: str) -> None:
+        """Runs on the gateway loop; kicks off the async Stage 2 + dispatch."""
+        try:
+            asyncio.ensure_future(self._run_stage2(session_id, event, ctype, context))
+        except RuntimeError:
+            # No running loop in some test contexts; fall back to a task.
+            asyncio.create_task(self._run_stage2(session_id, event, ctype, context))
+
+    async def _run_stage2(self, session_id: str, event: Any, ctype: str, context: str) -> None:
+        """Task 5 implements the LLM confirmation + dispatch."""
+        raise NotImplementedError
