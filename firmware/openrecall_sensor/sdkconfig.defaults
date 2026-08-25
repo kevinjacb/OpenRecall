@@ -99,5 +99,16 @@ CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
 # gives the GATT DB init + advertising setup the headroom they need.
 CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192
 
+# --- FatFS: Long Filename Support (required by P4b SD capture) ---
+# The P4b snapshot/video paths use names that exceed 8.3: the "snapshots" dir
+# (9 chars), clip/snapshot filenames "%010<rel_ts>_<seq>.jpg" (13-char name),
+# and ".mjpeg" (5-char ext). With the IDF default LFN_NONE, f_mkdir/f_open on
+# these returns FR_INVALID_NAME -> EINVAL, so every capture silently fails.
+# LFN_HEAP mallocs the LFN workspace (safer than LFN_STACK across the multiple
+# tasks that touch FatFS: app_main, executor, video task, transfer task). Code
+# page 437 (ASCII) covers our numeric/ASCII paths.
+# CONFIG_FATFS_LFN_NONE is not set
+CONFIG_FATFS_LFN_HEAP=y
+
 # --- Logging ---
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
