@@ -540,6 +540,51 @@ def main() -> None:
             print(f"bearer token (copy to phone): {token}")
             print(f"server command public key (provision on device): "
                   f"{signer.public_key_bytes.hex()}")
+            # Speech→command channel (off by default). Constructed inside main_loop
+            # so asyncio.get_running_loop() binds the loop this server runs on —
+            # the detector's call_soon_threadsafe must target THIS loop or Stage 2
+            # never fires.
+            command_detector = None
+            command_memory_writer = None
+            if agent_config.command.enabled:
+                from openrecall_server.agent.command_detector import CommandDetector
+                from openrecall_server.agent.command_memory import CommandMemoryWriter
+                # StrictCommandValidator + UuidIdGenerator are already in scope
+                # (imported at the top of main()); re-importing them here would
+                # shadow the closure binding and break the speaker_nudge block
+                # above, which references UuidIdGenerator before this branch runs
+                # (UnboundLocalError at startup with SPEAKER_ENABLED=true).
+
+                # Stage 2 LLM: dedicated model if OPENRECALL_COMMAND_LLM_MODEL is set,
+                # else reuse the extractor's shared chat model (llm_chat).
+                if agent_config.command.llm_model:
+                    command_llm = OpenAICompatibleChatModel(
+                        base_url=agent_config.command.llm_base_url or llm_chat.base_url,
+                        model=agent_config.command.llm_model,
+                        api_key=agent_config.command.llm_api_key,
+                    )
+                else:
+                    command_llm = llm_chat
+
+                command_detector = CommandDetector(
+                    model=command_llm,
+                    dispatcher=dispatcher,
+                    command_validator=StrictCommandValidator(),
+                    capability_provider=capability_provider,  # the same one the Planner uses
+                    speaker_registry=speaker_registry,
+                    loop=asyncio.get_running_loop(),
+                    config=agent_config.command,
+                    ids=UuidIdGenerator(),
+                    clock=SystemClock(),
+                )
+                command_memory_writer = CommandMemoryWriter(
+                    store=atom_store, clock=SystemClock(),
+                )
+                logging.info("command detector enabled (require_wearer=%s)",
+                             agent_config.command.require_wearer)
+            else:
+                logging.info("command detector disabled "
+                             "(set OPENRECALL_COMMAND_DETECTOR_ENABLED=true to enable)")
             await serve(
                 factory,
                 host=args.host,
@@ -564,6 +609,8 @@ def main() -> None:
                 # on a button wake) into every per-connection GatewayCore.
                 capability_provider=capability_provider,
                 settings=settings_store,
+                command_detector=command_detector,
+                command_memory_writer=command_memory_writer,
             )
         finally:
             await retention_sweeper.stop()

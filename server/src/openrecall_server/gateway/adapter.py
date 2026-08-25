@@ -321,6 +321,8 @@ async def serve(
     liveness: "DeviceLiveness | None" = None,
     capability_provider: "CapabilityProvider | None" = None,
     settings: "SettingsStore | None" = None,
+    command_detector=None,
+    command_memory_writer=None,
 ) -> None:
     """Run the gateway WebSocket server until cancelled.
 
@@ -382,6 +384,8 @@ async def serve(
             liveness=liveness,
             capability_provider=capability_provider,
             settings=settings,
+            command_detector=command_detector,
+            command_memory_writer=command_memory_writer,
         )
         # P3: rebind the engine's ws_sender to this per-connection core.
         # The engine is process-wide (one Planner, one set of listeners),
