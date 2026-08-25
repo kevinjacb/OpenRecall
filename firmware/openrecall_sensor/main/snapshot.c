@@ -1,11 +1,13 @@
 /*
  * P4b ambient snapshot — see snapshot.h. The timer callback runs on the
- * FreeRTOS timer service task (core 0); it captures one JPEG, writes it to
- * SD, and appends a manifest line. The SD write (~92 ms worst case, Spike-2)
- * happens on the timer task, not the audio real-time path, so it cannot stall
- * §C.6. rel_ts_ms_now() reads a volatile uint32 updated by the audio task each
- * frame — a 32-bit aligned read is atomic on the ESP32, sufficient for a ms
- * clock shared between cores.
+ * FreeRTOS timer service task but does NO heavy work: it only xTaskNotifyGive
+ * the snapshot worker. The capture (camera_capture_jpeg + SD write + manifest)
+ * runs on the 8 KB worker task, not the 2 KB Tmr Svc stack — running it on the
+ * timer task overflowed Tmr Svc and panicked. The SD write (~92 ms worst case,
+ * Spike-2) happens on the worker, not the audio real-time path, so it cannot
+ * stall §C.6. rel_ts_ms_now() reads a volatile uint32 updated by the audio task
+ * each frame — a 32-bit aligned read is atomic on the ESP32, sufficient for a
+ * ms clock shared between cores.
  */
 #include "snapshot.h"
 #include "boot_id.h"
@@ -32,7 +34,36 @@ static const char *TAG = "snapshot";
  * declaration. */
 
 static TimerHandle_t s_timer = NULL;
+static TaskHandle_t  s_worker = NULL;  /* capture runs here, NOT on the timer task */
 static uint32_t s_seq = 0;   /* monotonic per-boot counter */
+
+/* The worker task: blocks on a task notification, then runs one capture on the
+ * worker's 8 KB stack. The timer callback and snapshot_capture_async() only
+ * xTaskNotifyGive (instant, minimal stack) — the heavy camera_capture_jpeg +
+ * SD write + manifest append all happen here. 8 KB matches the video task,
+ * which does the same camera_capture_jpeg + SD work per frame; the executor
+ * task's 4 KB stack was sized for cJSON parse + queue send only and the 2 KB
+ * Tmr Svc stack cannot hold a camera capture at all. Core 0, priority 4 —
+ * below the audio encode task (the hard real-time constraint), same as the
+ * video task. Burst coalescing: ulTaskNotifyTake(pdTRUE) clears the count on
+ * wake, so several close notifications fire one capture — fine for ambient
+ * samples. */
+static void snapshot_worker_task(void *arg) {
+  (void)arg;
+  for (;;) {
+    (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    (void)snapshot_capture_one(rel_ts_ms_now());
+  }
+}
+
+void snapshot_capture_async(void) {
+  /* Signal the worker to capture one frame now. Safe from the timer service
+   * task, the executor task, or any other task — xTaskNotifyGive is non-
+   * blocking and ISR/timer-safe. No-op if the worker isn't up yet. */
+  if (s_worker) {
+    xTaskNotifyGive(s_worker);
+  }
+}
 
 /* One-shot mkdir that treats "already exists" as success. The per-boot
  * snapshot subdir (/sdcard/snapshots/<boot_id>) is not created by sd_store_mount
@@ -97,9 +128,10 @@ esp_err_t snapshot_capture_one(uint32_t rel_ts_ms) {
 
 static void snapshot_timer_cb(TimerHandle_t handle) {
   (void)handle;
-  /* Self-contained on the timer service task (core 0). rel_ts_ms_now() reads
-   * the audio task's clock without blocking it. */
-  (void)snapshot_capture_one(rel_ts_ms_now());
+  /* Timer callbacks must be short and non-blocking: just signal the worker.
+   * The capture (camera + SD) runs on the worker's 8 KB stack, not this 2 KB
+   * Tmr Svc stack — running it here overflowed Tmr Svc and panicked. */
+  snapshot_capture_async();
 }
 
 esp_err_t snapshot_init(void) {
@@ -107,6 +139,15 @@ esp_err_t snapshot_init(void) {
     /* Already created; restart at the default period. */
     xTimerChangePeriod(s_timer, pdMS_TO_TICKS(SNAPSHOT_INTERVAL_S * 1000), 0);
     return ESP_OK;
+  }
+  /* Create the capture worker BEFORE the timer so the first fire can't race a
+   * missing worker. 8 KB stack (camera capture + SD), core 0, priority 4 —
+   * matches the video task; below the audio encode task. */
+  BaseType_t ok = xTaskCreatePinnedToCore(snapshot_worker_task, "snapwork",
+                                          8192, NULL, 4, &s_worker, 0);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "xTaskCreatePinnedToCore(snapwork) failed");
+    return ESP_FAIL;
   }
   s_timer = xTimerCreate("snap", pdMS_TO_TICKS(SNAPSHOT_INTERVAL_S * 1000),
                          pdTRUE, 0, snapshot_timer_cb);

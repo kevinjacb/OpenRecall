@@ -47,7 +47,9 @@ static void executor_task(void *arg) {
         break;
       }
       case CMD_CAPTURE_PHOTO:
-        snapshot_capture_one(rel_ts_ms_now());
+        /* Signal the snapshot worker (8 KB stack) — camera_capture_jpeg + SD
+         * write overflows this task's 4 KB stack (sized for cJSON parse only). */
+        snapshot_capture_async();
         break;
       case CMD_RECORD_VIDEO:
         video_record(req.duration_s, rel_ts_ms_now());
