@@ -8,6 +8,7 @@ replies back. Uses a fake pipeline factory so no model/codec is needed.
 import asyncio
 import json
 import struct
+import time
 
 import pytest
 import websockets
@@ -103,6 +104,83 @@ async def test_full_session_over_a_real_socket():
         assert len(events) == 1
         assert events[0].text == "hello world"
         assert events[0].seq == 0
+    finally:
+        server_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await server_task
+
+
+class _SlowTranscriber:
+    """Sleeps 0.3s per call to simulate a slow model inference."""
+
+    def transcribe(self, pcm: bytes, sample_rate: int) -> str:
+        time.sleep(0.3)
+        return "slow result"
+
+
+def _slow_factory(start_seq: int) -> AudioIngestPipeline:
+    return AudioIngestPipeline(
+        reassembler=SessionReassembler(start_seq=start_seq),
+        decoder=FakeDecoder(),
+        transcriber=_SlowTranscriber(),
+        hop_ms=100,
+        window_ms=100,
+        sample_rate=16000,
+    )
+
+
+async def test_ws_loop_stays_responsive_during_slow_inference():
+    """S1: the WS receive loop stays responsive while inference runs on the
+    worker thread. A second ``hello`` (a fast control frame) is acked while
+    the first connection's slow transcribe is still running — proving the
+    worker decoupled inference from the receive loop."""
+    port = 8792
+    server_task = asyncio.create_task(
+        serve(_slow_factory, host="127.0.0.1", port=port)
+    )
+    try:
+        for _ in range(50):
+            try:
+                conn = await websockets.connect(f"ws://127.0.0.1:{port}")
+                break
+            except OSError:
+                await asyncio.sleep(0.02)
+        else:
+            pytest.fail("server did not start")
+
+        async with conn:
+            await conn.send('{"type": "hello", "session_id": "s1", "start_seq": 0}')
+            ack = json.loads(await conn.recv())
+            assert ack == {"type": "ack", "session_id": "s1", "next_seq": 0}
+
+            # Send audio (triggers a slow 0.3s transcribe on the worker).
+            await conn.send(audio_bytes(0, n_frames=5))
+
+            # While the transcribe is running, send a second hello on a NEW
+            # connection. If the server's event loop were blocked by the
+            # slow inference, this connection would time out. With the worker,
+            # the loop is free and the new connection is accepted + acked
+            # promptly.
+            t0 = time.monotonic()
+            async with await websockets.connect(f"ws://127.0.0.1:{port}") as conn2:
+                await conn2.send(
+                    '{"type": "hello", "session_id": "s2", "start_seq": 0}'
+                )
+                ack2 = json.loads(await conn2.recv())
+            elapsed = time.monotonic() - t0
+
+            assert ack2 == {"type": "ack", "session_id": "s2", "next_seq": 0}
+            # The second connection was acked in well under the 0.3s
+            # transcribe time — the loop was not blocked.
+            assert elapsed < 0.25, (
+                f"second connection took {elapsed:.3f}s — loop was blocked "
+                f"by the slow transcribe"
+            )
+
+            # The slow transcript still arrives eventually.
+            transcript = json.loads(await conn.recv())
+            assert transcript["type"] == "transcript"
+            assert transcript["text"] == "slow result"
     finally:
         server_task.cancel()
         with pytest.raises(asyncio.CancelledError):

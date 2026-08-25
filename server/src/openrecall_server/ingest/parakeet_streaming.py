@@ -43,6 +43,7 @@ hop.
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -179,10 +180,16 @@ class ParakeetStreamingBackend:
         model: Any | None = None,
         model_name: str = DEFAULT_PARAKEET_MODEL,
         featurize: FeaturizeFn | None = None,
+        inference_lock: threading.Lock | None = None,
     ) -> None:
         self._model = model
         self._model_name = model_name
         self._featurize = featurize
+        # R4: serializes model.generate across sessions/reconnects so
+        # concurrent connections don't corrupt the shared model state.
+        # Injected from SharedAsrModel.inference_lock by the factory; None
+        # in tests that don't share a model.
+        self._inference_lock = inference_lock
 
     def _ensure_model(self) -> Any:
         """Load the Parakeet model on first use (lazy, then cached).
@@ -233,7 +240,13 @@ class ParakeetStreamingBackend:
         mel = featurize(pcm, sample_rate)
         model = self._ensure_model()
 
-        results = model.generate(mel)
+        # R4: serialize the model call so concurrent connections (sharing
+        # one model via SharedAsrModel) don't interleave generate calls.
+        if self._inference_lock is not None:
+            with self._inference_lock:
+                results = model.generate(mel)
+        else:
+            results = model.generate(mel)
         # ``generate`` returns a list of AlignedResult (one per batch item); we
         # always pass a single window, so take the first. An empty list means
         # the transducer emitted only blanks — i.e. silence, the case this

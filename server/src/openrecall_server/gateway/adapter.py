@@ -224,6 +224,9 @@ def build_pipeline_factory(
                         _parakeet_name, loader=load_model, warmup=warmup_model,
                     )
                     parakeet_kwargs["model"] = _shared.model
+                    # R4: pass the shared inference lock so concurrent
+                    # connections serialize model.generate calls.
+                    parakeet_kwargs["inference_lock"] = _shared.inference_lock
                 except ImportError:
                     # parakeet_mlx not installed (test environment); fall
                     # back to the backend's own lazy load on first transcribe.
@@ -248,6 +251,9 @@ def build_pipeline_factory(
                     hallucination_max_words=hallucination_max_words,
                     hallucination_phrases=hallucination_phrases,
                     model=_shared.model,
+                    # R4: pass the shared inference lock so concurrent
+                    # connections serialize model.generate calls.
+                    inference_lock=_shared.inference_lock,
                 )
                 backend = WhisperStreamingBackend(**backend_kwargs)
             transcriber = streaming_from_tokens(
@@ -339,6 +345,7 @@ async def serve(
 
     from ..http.token import constant_time_eq
     from .core import GatewayError
+    from .inference_worker import InferenceWorker
 
     async def handler(ws: "websockets.ServerConnection") -> None:
         peer = getattr(ws, "remote_address", None)
@@ -425,34 +432,94 @@ async def serve(
                             )
                             return
             proactive_task = asyncio.create_task(_drain_proactive())
-        try:
+        # S1: decouple inference from the WS receive loop. One InferenceWorker
+        # (daemon thread + bounded queue.Queue) processes handle_message calls
+        # off the event loop so a slow transcribe doesn't head-of-line-block
+        # keepalive pings or subsequent packet replies. The WS loop enqueues
+        # messages (non-blocking); a reply-sender task drains the loop-side
+        # asyncio.Queue and writes replies to the socket in order.
+        #
+        # Error contract (preserved exactly from the synchronous to_thread
+        # path): GatewayError → re-raise → outer except closes 1002; any other
+        # exception in handling a frame → log + skip that frame (the worker
+        # does this internally, the link stays up); ConnectionClosed → pass.
+        loop = asyncio.get_running_loop()
+        reply_queue: asyncio.Queue = asyncio.Queue()
+
+        def _on_result(item):
+            """Sink for the worker — called on the event loop thread via
+            ``call_soon_threadsafe``. Puts replies (list[str]) or a
+            ``GatewayError`` onto the loop-side queue for the reply-sender."""
+            reply_queue.put_nowait(item)
+
+        worker = InferenceWorker(
+            handle_fn=handle_message, core=core, loop=loop, sink=_on_result,
+        )
+        worker.start()
+
+        async def _recv_loop():
+            """Pull messages from ws and enqueue to the worker (non-blocking)."""
             async for message in ws:
-                # Decode + transcription are blocking and can take seconds (model
-                # load/compile on the first window). Offload to a worker thread so the
-                # event loop stays responsive (keepalive pings, other connections) and
-                # the connection doesn't time out mid-transcribe. Messages from one
-                # connection are still processed in order (we await each in turn).
-                try:
-                    replies = await asyncio.to_thread(handle_message, core, message)
-                except GatewayError:
-                    # Protocol violation — re-raise so the outer handler closes 1002.
-                    raise
-                except Exception:
-                    # A bad packet / decode / transcribe error must NOT tear down the
-                    # relay connection. Log it and keep going — one bad frame shouldn't
-                    # reset the link. (GatewayError above is re-raised to the outer try.)
-                    kind = "binary" if isinstance(message, (bytes, bytearray, memoryview)) else "text"
-                    logger.exception("error handling a %s frame (%d bytes) from %s; skipping",
-                                     kind, len(message), peer)
-                    continue
-                for reply in replies:
+                worker.enqueue(message)
+
+        async def _send_replies():
+            """Drain reply_queue and send replies in order. Re-raises
+            ``GatewayError`` (posted by the worker) so the outer except
+            closes the WebSocket with code 1002."""
+            while True:
+                item = await reply_queue.get()
+                if isinstance(item, BaseException):
+                    raise item
+                for reply in item:
                     await ws.send(reply)
+
+        recv_task: asyncio.Task[None] | None = None
+        sender_task: asyncio.Task[None] | None = None
+        try:
+            recv_task = asyncio.create_task(_recv_loop())
+            sender_task = asyncio.create_task(_send_replies())
+            # Race the receive loop against the reply-sender. The first
+            # to complete (connection closed, GatewayError, or send error)
+            # wins; we surface its exception to the outer except blocks.
+            done, _pending = await asyncio.wait(
+                {recv_task, sender_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            # Prioritize GatewayError (→ close 1002) over ConnectionClosed
+            # so a protocol violation always triggers the 1002 close even
+            # if the socket also dropped at the same instant.
+            gateway_exc: GatewayError | None = None
+            other_exc: BaseException | None = None
+            for t in done:
+                if t.cancelled():
+                    continue
+                exc = t.exception()
+                if exc is None:
+                    continue
+                if isinstance(exc, GatewayError):
+                    gateway_exc = exc
+                elif other_exc is None:
+                    other_exc = exc
+            if gateway_exc is not None:
+                raise gateway_exc
+            if other_exc is not None:
+                raise other_exc
         except GatewayError as exc:
             logger.warning("protocol error from %s — closing 1002: %s", peer, exc)
             await ws.close(code=1002, reason="protocol error")  # 1002 == protocol error
         except ConnectionClosed:
             pass  # client went away (possibly mid-transcribe) — a normal disconnect
         finally:
+            # Stop the worker first so it doesn't process more messages or
+            # post more replies after the IO tasks are torn down.
+            await worker.stop()
+            for t in (recv_task, sender_task):
+                if t is not None and not t.done():
+                    t.cancel()
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
             # Bug C: a relay disconnect without a clean bye leaves the live
             # extraction cursor holding the trailing partial 60s window back.
             # Finalize the session this core was carrying so the last ~up-to-60s

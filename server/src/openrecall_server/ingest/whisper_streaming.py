@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -312,6 +313,7 @@ class WhisperStreamingBackend:
         hallucination_blocklist_enabled: bool = True,
         hallucination_max_words: int = 4,
         hallucination_phrases: tuple[str, ...] | None = None,
+        inference_lock: threading.Lock | None = None,
     ) -> None:
         self._mlx_transcribe = mlx_transcribe
         self._model = model
@@ -327,6 +329,11 @@ class WhisperStreamingBackend:
         self._hallucination_blocklist_enabled = hallucination_blocklist_enabled
         self._hallucination_max_words = hallucination_max_words
         self._hallucination_phrases = hallucination_phrases
+        # R4: serializes model.generate across sessions/reconnects so
+        # concurrent connections don't corrupt the shared model state.
+        # Injected from SharedAsrModel.inference_lock by the factory; None
+        # in tests that don't share a model.
+        self._inference_lock = inference_lock
 
     def transcribe(self, pcm: bytes, sample_rate: int) -> list[Token]:
         if sample_rate != 16000:
@@ -347,15 +354,29 @@ class WhisperStreamingBackend:
         else:
             transcribe = self._mlx_transcribe
 
-        response = transcribe(
-            audio,
-            path_or_hf_repo=self._model,  # keyword-only in mlx_whisper.transcribe
-            word_timestamps=True,
-            no_speech_threshold=self._no_speech_threshold,
-            logprob_threshold=self._logprob_threshold,
-            compression_ratio_threshold=self._compression_ratio_threshold,
-            condition_on_previous_text=self._condition_on_previous_text,
-        )
+        # R4: serialize the model call so concurrent connections (sharing
+        # one model via SharedAsrModel) don't interleave generate calls.
+        if self._inference_lock is not None:
+            with self._inference_lock:
+                response = transcribe(
+                    audio,
+                    path_or_hf_repo=self._model,  # keyword-only in mlx_whisper.transcribe
+                    word_timestamps=True,
+                    no_speech_threshold=self._no_speech_threshold,
+                    logprob_threshold=self._logprob_threshold,
+                    compression_ratio_threshold=self._compression_ratio_threshold,
+                    condition_on_previous_text=self._condition_on_previous_text,
+                )
+        else:
+            response = transcribe(
+                audio,
+                path_or_hf_repo=self._model,  # keyword-only in mlx_whisper.transcribe
+                word_timestamps=True,
+                no_speech_threshold=self._no_speech_threshold,
+                logprob_threshold=self._logprob_threshold,
+                compression_ratio_threshold=self._compression_ratio_threshold,
+                condition_on_previous_text=self._condition_on_previous_text,
+            )
         tokens = _mlx_segments_to_tokens(
             response,
             no_speech_threshold=self._no_speech_threshold,
