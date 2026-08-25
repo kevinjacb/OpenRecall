@@ -82,6 +82,14 @@ esp_err_t snapshot_capture_one(uint32_t rel_ts_ms) {
     return err;
   }
 
+  /* fb_count=1 + CAMERA_GRAB_WHEN_EMPTY leaves the last captured frame in the
+   * buffer while idle — up to SNAPSHOT_INTERVAL_S old. Drain it so this
+   * snapshot reflects ~now and its rel_ts matches the image, then capture a
+   * fresh frame. The flush is instant when the buffer is full (the normal idle
+   * case); camera_capture_jpeg then blocks ~40 ms for the fresh frame. Only the
+   * ambient path does this — the video loop keeps the pipeline fresh. */
+  camera_flush_stale();
+
   uint8_t *jpg = NULL;
   size_t n = 0;
   err = camera_capture_jpeg(&jpg, &n);

@@ -22,9 +22,20 @@ esp_err_t camera_init(void) {
     .pixel_format = PIXFORMAT_JPEG,
     .frame_size   = FRAMESIZE_VGA,     /* 640x480 */
     .jpeg_quality = VIDEO_JPEG_QUALITY,
-    .fb_count     = 2,                 /* double-buffer for streaming */
+    /* fb_count=1 + GRAB_WHEN_EMPTY: the DMA arms only when the single buffer is
+     * free, captures one frame, then DISARMS and waits for the app to take it.
+     * Between ambient snapshots (one frame / 30 s) the camera is quiet — no
+     * continuous capture, no cam_hal FB-OVF drops, and crucially no steady
+     * PSRAM DMA traffic contending with the audio ring buffer (also in PSRAM),
+     * which with fb_count=2 + GRAB_LATEST saturated the bus and spiked the
+     * primary-mic energy (e_pri) on real hardware. The video loop drains the
+     * buffer each 100 ms so it captures on demand at ~10 fps; VGA capture
+     * (~40 ms) is well inside the 100 ms period. Tradeoff: a frame sitting in
+     * the idle buffer is up to one interval stale — snapshot_capture_one calls
+     * camera_flush_stale() first so its timestamp matches the image. */
+    .fb_count     = 1,
     .fb_location  = CAMERA_FB_IN_PSRAM,
-    .grab_mode    = CAMERA_GRAB_LATEST,
+    .grab_mode    = CAMERA_GRAB_WHEN_EMPTY,
   };
   esp_err_t err = esp_camera_init(&cfg);
   if (err != ESP_OK) ESP_LOGE(TAG, "esp_camera_init: %s", esp_err_to_name(err));
@@ -43,4 +54,24 @@ esp_err_t camera_capture_jpeg(uint8_t **out_buf, size_t *out_len) {
   *out_buf = copy; *out_len = fb->len;
   esp_camera_fb_return(fb);
   return ESP_OK;
+}
+
+void camera_flush_stale(void) {
+  /* Drain a frame sitting in the on-demand buffer (fb_count=1 +
+   * GRAB_WHEN_EMPTY). While idle the single buffer holds the last captured
+   * frame — up to one snapshot interval old — so a bare camera_capture_jpeg
+   * would return that stale image stamped with the current rel_ts. Calling this
+   * first makes the next camera_capture_jpeg block for a fresh frame (~40 ms at
+   * VGA). When the buffer is full (the normal idle case) this returns
+   * immediately; it only blocks if the camera is mid-capture (two captures
+   * back-to-back), which is acceptable.
+   *
+   * This belongs HERE, not inside camera_capture_jpeg: the video loop keeps the
+   * pipeline fresh, so flushing there would discard a good frame every tick and
+   * halve throughput. Only the ambient snapshot path (long idle between
+   * captures) needs the flush. */
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (fb) {
+    esp_camera_fb_return(fb);
+  }
 }
