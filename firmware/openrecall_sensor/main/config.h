@@ -76,8 +76,8 @@
 #define C6_HEADER_LEN 12
 #define C6_FLAG_HISTORICAL 0x01
 #define C6_FLAG_LAST_OF_REQ 0x02
-/* 50 frames == 1 s of audio per BLE notify burst (BLE overhead vs latency balance). */
-#define C6_FRAMES_PER_CHUNK 50
+/* 10 * 20ms = 200ms chunks; source-side latency lever (spec §9 F1). */
+#define C6_FRAMES_PER_CHUNK 10
 
 enum c6_packet_type
 {
