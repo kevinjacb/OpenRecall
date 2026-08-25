@@ -219,7 +219,6 @@ def test_parse_clamps_confidence():
 from openrecall_server.agent.command_detector import CommandDetector, derive_idempotency_key
 from openrecall_server.agent.config import CommandDetectorConfig, DEFAULT_COMMAND_PHRASES
 from openrecall_server.contracts.clock import FakeClock
-from openrecall_server.contracts.types import IssueCommandPayload
 
 
 class FakeChatModel:
