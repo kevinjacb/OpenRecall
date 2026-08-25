@@ -62,29 +62,49 @@ def main() -> None:
     src.add_argument("--wav", help="path to a 16 kHz mono 16-bit wav")
     src.add_argument("--seconds", type=int, default=120, help="synthetic audio length")
     ap.add_argument("--window-ms", type=int, default=5000, help="transcription window")
-    ap.add_argument("--model", default=None, help="override the MLX-whisper model repo")
+    ap.add_argument(
+        "--backend",
+        choices=["whisper", "parakeet"],
+        default="whisper",
+        help="ASR backend to measure",
+    )
+    ap.add_argument("--model", default=None, help="override the model repo/id")
     args = ap.parse_args()
 
-    from openrecall_server.ingest.whisper_mlx import DEFAULT_MODEL, MlxWhisperTranscriber
+    if args.backend == "parakeet":
+        from openrecall_server.ingest.parakeet_streaming import (
+            DEFAULT_PARAKEET_MODEL, ParakeetStreamingBackend,
+        )
+        model = args.model or DEFAULT_PARAKEET_MODEL
+        tr = ParakeetStreamingBackend(model_name=model)
 
-    model = args.model or DEFAULT_MODEL
+        def _run(ch: bytes) -> str:
+            tokens = tr.transcribe(ch, SAMPLE_RATE)
+            return " ".join(t.text for t in tokens)
+    else:
+        from openrecall_server.ingest.whisper_mlx import DEFAULT_MODEL, MlxWhisperTranscriber
+        model = args.model or DEFAULT_MODEL
+        tr = MlxWhisperTranscriber(model=model)
+
+        def _run(ch: bytes) -> str:
+            return tr.transcribe(ch, SAMPLE_RATE)
+
     pcm = load_wav(args.wav) if args.wav else synth_pcm(args.seconds)
     chunks = windows(pcm, args.window_ms)
     audio_s = len(pcm) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
 
-    print(f"model={model}  window={args.window_ms} ms  windows={len(chunks)}  "
-          f"audio={audio_s:.1f} s")
-    tr = MlxWhisperTranscriber(model=model)
+    print(f"backend={args.backend}  model={model}  window={args.window_ms} ms  "
+          f"windows={len(chunks)}  audio={audio_s:.1f} s")
 
     print("warming up (model load + compile, not timed)…")
-    tr.transcribe(chunks[0], SAMPLE_RATE)  # excluded from measurement
+    _run(chunks[0])  # excluded from measurement
 
     rtfs: list[float] = []
     wall = 0.0
     for i, ch in enumerate(chunks):
         win_s = len(ch) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
         t0 = time.perf_counter()
-        text = tr.transcribe(ch, SAMPLE_RATE)
+        text = _run(ch)
         dt = time.perf_counter() - t0
         wall += dt
         rtf = dt / win_s
@@ -103,7 +123,7 @@ def main() -> None:
         verdict = "MARGINAL ⚠️ — keeps up, but little room for LLM/vision/embeddings"
     else:
         verdict = "FAIL ❌ — slower than real time; smaller model or batching needed"
-    print(f">>> WHISPER RTF VERDICT: {verdict}")
+    print(f">>> {args.backend.upper()} RTF VERDICT: {verdict}")
 
 
 if __name__ == "__main__":
