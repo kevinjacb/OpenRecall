@@ -98,6 +98,17 @@ class RelayService : Service() {
      *  doesn't cancel siblings; cancelled in [onDestroy]. */
     private val serviceScope = CoroutineScope(SupervisorJob())
 
+    /**
+     * A2: softDrop re-entry guard. [softDrop] does `compareAndSet(false,true)`
+     * on entry so exactly one concurrent drop handler proceeds, and clears it
+     * in a `finally` so a *later* (post-drop) drop is handled normally. This
+     * prevents the Bye-during-softDrop recursion: [RelaySession.stop] emits a
+     * `Bye` ([RelayAction.SendServerText]); if that WS send fails, [execute]
+     * routes back to [softDrop] — same generation, so the gen guard wouldn't
+     * catch it. It also collapses a burst of failed WS sends into one reconnect.
+     */
+    private val dropping = java.util.concurrent.atomic.AtomicBoolean(false)
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val urlExtra = intent?.getStringExtra("server_url")
         val tokenExtra = intent?.getStringExtra("token")
@@ -131,7 +142,18 @@ class RelayService : Service() {
         // ignored — they see a stale generation. NOT stopSelf: the service
         // keeps running with the new config.
         if (::session.isInitialized) {
-            runCatching { session.stop().forEach(::execute) }
+            // Teardown sends the old session's Bye best-effort. Do NOT route a
+            // failed Bye through execute->softDrop: this is a re-provision
+            // (generation already bumped above), not a transient drop, and the
+            // socket is about to be closed — a failed Bye must not schedule a
+            // rogue reconnect that races the new scan below. Send the Bye
+            // directly and ignore the return; route any other action normally.
+            runCatching {
+                session.stop().forEach { action ->
+                    if (action is RelayAction.SendServerText) socket?.sendText(action.text)
+                    else execute(action)
+                }
+            }
             socket?.close(); socket = null
             if (::sensor.isInitialized) sensor.stop()
         }
@@ -227,8 +249,19 @@ class RelayService : Service() {
 
     private fun execute(action: RelayAction) {
         when (action) {
-            is RelayAction.SendServerBinary -> socket?.sendBinary(action.data)
-            is RelayAction.SendServerText -> socket?.sendText(action.text)
+            // A2: sendBinary/sendText now return the OkHttp send() Boolean so a
+            // dropped WS frame is visible. A null socket (already torn down by a
+            // prior softDrop) is treated as ok so a batch of actions after the
+            // drop doesn't each re-trigger softDrop; only an actual `false` from
+            // a live socket routes to the drop path for a clean reconnect.
+            is RelayAction.SendServerBinary -> {
+                val ok = socket?.sendBinary(action.data) ?: true
+                if (!ok) softDrop(generation, "ws binary send failed")
+            }
+            is RelayAction.SendServerText -> {
+                val ok = socket?.sendText(action.text) ?: true
+                if (!ok) softDrop(generation, "ws text send failed")
+            }
             is RelayAction.WriteDeviceCommand -> sensor.writeCommand(action.frame)
             // P3: server-initiated proactive answer. Append to the
             // process-singleton chat history; the chat screen picks
@@ -253,13 +286,23 @@ class RelayService : Service() {
      */
     private fun softDrop(gen: Int, reason: String) {
         if (gen != generation) return
-        // Stop the current link so the retry starts clean. session.stop()
-        // flushes any pending server-bound frames; sensor.stop() cancels the
-        // BLE scan/GATT. NOT stopSelf — the service must outlive the drop.
-        runCatching { if (::session.isInitialized) session.stop().forEach(::execute) }
-        socket?.close(); socket = null
-        if (::sensor.isInitialized) runCatching { sensor.stop() }
-        scheduleReconnect(gen, reason)
+        // A2 re-entry guard: stop() sends a Bye (SendServerText); if that WS send
+        // fails it routes back here via execute. Same generation, so the gen guard
+        // above wouldn't catch it. compareAndSet admits exactly one handler; the
+        // finally clears it so a later (post-drop) drop is handled normally. Also
+        // collapses a burst of failed WS sends into one reconnect.
+        if (!dropping.compareAndSet(false, true)) return
+        try {
+            // Stop the current link so the retry starts clean. session.stop()
+            // flushes any pending server-bound frames; sensor.stop() cancels the
+            // BLE scan/GATT. NOT stopSelf — the service must outlive the drop.
+            runCatching { if (::session.isInitialized) session.stop().forEach(::execute) }
+            socket?.close(); socket = null
+            if (::sensor.isInitialized) runCatching { sensor.stop() }
+            scheduleReconnect(gen, reason)
+        } finally {
+            dropping.set(false)
+        }
     }
 
     /**
