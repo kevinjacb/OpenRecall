@@ -187,6 +187,12 @@ class GatewayCore:
         self._pipeline: AudioIngestPipeline | None = None
         self._event_seq = 0  # per-session monotonic event index
         self._cum_ms = 0  # cumulative audio offset within the session
+        # S5 throttle: ``request_chunks`` is emitted once per distinct open gap
+        # range, not on every ``on_audio`` packet while the gap is open (which
+        # spammed the control channel one request per packet). Cleared when the
+        # gap closes (``missing_range()`` returns None) so a later new gap
+        # emits again. Reset on hello for a fresh session.
+        self._last_requested_gap: tuple[int, int] | None = None
 
     def on_control(self, msg: Inbound) -> list[Outbound]:
         if isinstance(msg, Hello):
@@ -296,8 +302,21 @@ class GatewayCore:
         out: list[Outbound] = list(self._emit(self._pipeline.ingest(packet)))
         gap = self._pipeline.missing_range()
         if gap is not None:
-            logger.info("request_chunks: session=%s gap=[%d, %d)", self._session_id, gap[0], gap[1])
-            out.append(RequestChunks(session_id=self._session_id, start=gap[0], end=gap[1]))
+            # S5: emit ``request_chunks`` once per distinct open gap range.
+            # Without this throttle every ``on_audio`` packet while the gap is
+            # open appended a fresh ``RequestChunks`` — one per inbound packet
+            # — which spammed the control channel and the relay's request
+            # queue. Track the last-requested ``(start, end)`` and only
+            # re-emit when the gap range actually changes (e.g. a partial
+            # backfill shrinks it, or a re-anchor shifts it).
+            key = (gap[0], gap[1])
+            if self._last_requested_gap != key:
+                logger.info("request_chunks: session=%s gap=[%d, %d)", self._session_id, gap[0], gap[1])
+                out.append(RequestChunks(session_id=self._session_id, start=gap[0], end=gap[1]))
+                self._last_requested_gap = key
+        else:
+            # Gap closed — clear the throttle so a later new gap emits again.
+            self._last_requested_gap = None
         out.append(Ack(session_id=self._session_id, next_seq=self._pipeline.next_expected_seq))
         return out
 
@@ -339,6 +358,7 @@ class GatewayCore:
 
     def _on_hello(self, msg: Hello) -> list[Outbound]:
         self._session_id = msg.session_id
+        self._last_requested_gap = None  # fresh session — reset the S5 throttle
         self._pipeline = self._factory(msg.start_seq)
         # The factory only knows start_seq; the session id arrives here, and
         # the audio log is keyed by it (spec §3.1).

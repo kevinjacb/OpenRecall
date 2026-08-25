@@ -111,6 +111,46 @@ def test_gap_triggers_backfill_request_and_ack_holds_at_gap_head():
     ]
 
 
+def test_request_chunks_throttled_once_per_distinct_gap():
+    """S5: ``request_chunks`` is emitted once per distinct open gap range, not
+    on every ``on_audio`` packet while the gap is open. Without the throttle
+    every inbound packet during a gap appended a fresh ``RequestChunks`` —
+    control-channel spam. Emits again when the gap range changes; clears when
+    the gap closes so a later new gap emits again."""
+    core = make_core(window_ms=100)
+    core.on_control(Hello(session_id="s1", start_seq=0))
+    core.on_audio(audio_bytes(0, n_frames=5))  # anchor at 0
+
+    def rc(out):
+        return [m for m in out if isinstance(m, RequestChunks)]
+
+    # Open gap [1,3) — first RequestChunks.
+    out = core.on_audio(audio_bytes(3, n_frames=5))
+    assert len(rc(out)) == 1
+    assert rc(out)[0].start == 1 and rc(out)[0].end == 3
+
+    # Same gap [1,3) — two more packets, NO new RequestChunks.
+    out = core.on_audio(audio_bytes(4, n_frames=5))
+    assert rc(out) == []
+    out = core.on_audio(audio_bytes(5, n_frames=5))
+    assert rc(out) == []
+
+    # Changed gap [1,2) — seq 2 backfills part of the gap; a second RequestChunks.
+    out = core.on_audio(audio_bytes(2, n_frames=5))
+    assert len(rc(out)) == 1
+    assert rc(out)[0].start == 1 and rc(out)[0].end == 2
+
+    # Gap closes — seq 1 fills the head, drains 1..5; no RequestChunks.
+    out = core.on_audio(audio_bytes(1, n_frames=5))
+    assert rc(out) == []
+
+    # Advance past the drained run (seq 6 delivers), then open a NEW gap [7,8).
+    core.on_audio(audio_bytes(6, n_frames=5))
+    out = core.on_audio(audio_bytes(8, n_frames=5))
+    assert len(rc(out)) == 1
+    assert rc(out)[0].start == 7 and rc(out)[0].end == 8
+
+
 def test_bye_flushes_buffered_subwindow_audio_into_a_transcript():
     """The streaming pipeline flushes the partial last hop on Bye.
 

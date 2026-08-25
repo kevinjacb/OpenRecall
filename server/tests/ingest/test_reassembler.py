@@ -178,3 +178,75 @@ def test_head_gap_that_backfills_before_timeout_is_not_skipped():
     assert flushed == [b"b", b"c", b"d"]  # 101 + drained 102,103
     assert r.missing_range() is None
     assert r.next_expected_seq == 104
+
+
+def test_head_gap_skip_fires_via_missing_range_without_accept():
+    """S5: the wall-clock gap-skip must fire even when no ``accept()`` is
+    happening (e.g. the server is draining slowly and no new packets have
+    arrived). Previously ``_maybe_skip_stale_gap`` was only called from
+    ``accept()``, so a server backlog paused the timer past the point where a
+    backfill could still arrive usefully.
+
+    The skip drains the buffered future packets into ``_pending``; the next
+    ``accept()`` flushes them to the transcriber. No frames are silently
+    dropped — the 'no audio frames may be silently dropped' rule.
+    """
+    now = [0]
+    clock = lambda: now[0]
+    r = SessionReassembler(start_seq=0, gap_timeout_ms=3000, clock=clock)
+
+    # anchor at 100, deliver it
+    assert r.accept(pkt(100, [b"a"])) == [b"a"]
+    # 102, 103 arrive -> head gap [101,102); buffered
+    assert r.accept(pkt(102, [b"c"])) == []
+    assert r.accept(pkt(103, [b"d"])) == []
+    assert r.missing_range() == (101, 102)
+
+    # NO further accept() calls. Wall-clock advances past the deadline.
+    now[0] = 4000
+
+    # missing_range() triggers the skip: re-anchor at 102, drain 102,103 into
+    # _pending. The gap is now closed (buffer empty) so missing_range() returns
+    # None — no further request_chunks spam for a gap already decided unfilled.
+    assert r.missing_range() is None
+    assert r.next_expected_seq == 104
+
+    # The drained frames are NOT lost: the next accept() flushes _pending into
+    # its delivered list, so the pipeline transcribes them. Deliver a fresh
+    # packet at 104 to drive that flush.
+    now[0] = 4100
+    out = r.accept(pkt(104, [b"e"]))
+    assert out == [b"c", b"d", b"e"]
+    assert r.next_expected_seq == 105
+    assert r.missing_range() is None
+
+
+def test_missing_range_skip_with_noncontiguous_buffer_reports_next_gap():
+    """When the wall-clock skip fires from ``missing_range()`` and the buffer
+    has a non-contiguous tail beyond the drained head, the remaining gap is
+    reported (so the gateway can request_chunks for it) and the drained head's
+    frames are preserved in ``_pending``."""
+    now = [0]
+    clock = lambda: now[0]
+    r = SessionReassembler(start_seq=0, gap_timeout_ms=3000, clock=clock)
+
+    assert r.accept(pkt(100, [b"a"])) == [b"a"]
+    # 102, 103 contiguous; 110 separate (non-contiguous tail)
+    assert r.accept(pkt(102, [b"c"])) == []
+    assert r.accept(pkt(103, [b"d"])) == []
+    assert r.accept(pkt(110, [b"z"])) == []
+    assert r.missing_range() == (101, 102)
+
+    # Past the deadline — skip fires from missing_range().
+    now[0] = 4000
+    # 102,103 drain into _pending; _next advances to 104; 110 stays buffered.
+    assert r.missing_range() == (104, 110)
+    assert r.next_expected_seq == 104
+
+    # Next accept() flushes the drained head (102,103) plus the new packet.
+    now[0] = 4100
+    out = r.accept(pkt(104, [b"e"]))
+    assert out == [b"c", b"d", b"e"]
+    assert r.next_expected_seq == 105
+    # 110 still buffered behind the new gap [105,110).
+    assert r.missing_range() == (105, 110)

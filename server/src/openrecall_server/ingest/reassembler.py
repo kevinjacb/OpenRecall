@@ -57,6 +57,18 @@ class SessionReassembler:
         self._gap_timeout_ms = gap_timeout_ms
         self._clock = clock
         self._gap_opened_at: int | float | None = None
+        # Frames drained by a wall-clock gap-skip that fired from
+        # :meth:`missing_range` (i.e. outside any :meth:`accept` call). The
+        # reassembler has no transcriber of its own — decoded frames only
+        # reach the transcriber when :meth:`accept` returns them to
+        # :meth:`AudioIngestPipeline.ingest`. So a skip triggered by
+        # ``missing_range()`` parks the drained frames here; the very next
+        # ``accept()`` flushes them into its delivered list, and the pipeline
+        # transcribes them as usual. This keeps the skip's wall-clock trigger
+        # (independent of ``accept()``) from silently dropping the buffered
+        # frames that were ahead of the gap — the 'no frames may be silently
+        # dropped' correctness rule.
+        self._pending: list[bytes] = []
 
     @property
     def next_expected_seq(self) -> int:
@@ -67,7 +79,19 @@ class SessionReassembler:
         return bool(self._buffer)
 
     def missing_range(self) -> tuple[int, int] | None:
-        """The contiguous gap ``[next_expected, lowest_buffered)`` at the stream head."""
+        """The contiguous gap ``[next_expected, lowest_buffered)`` at the stream head.
+
+        Also opportunistically fires the wall-clock gap-skip so that a gap
+        whose deadline elapsed while no ``accept()`` was happening (e.g. the
+        server is draining slowly and no new packets have arrived) still
+        re-anchors at its wall-clock deadline rather than holding every
+        buffered future packet forever. Drained frames are parked in
+        ``_pending`` and picked up by the next ``accept()`` — they are NOT
+        returned here because the gateway caller of ``missing_range()``
+        consumes only the gap tuple, not frames (returning them here would
+        silently drop them, since no one transcribes that return value).
+        """
+        self._maybe_skip_stale_gap()
         if not self._buffer:
             return None
         return (self._next, min(self._buffer))
@@ -75,25 +99,31 @@ class SessionReassembler:
     def _now(self) -> int | float:
         return self._clock() if self._clock is not None else 0
 
-    def _maybe_skip_stale_gap(self) -> list[bytes]:
+    def _maybe_skip_stale_gap(self) -> None:
         """If the head gap has been open past the deadline, re-anchor at the
-        lowest buffered packet and drain the contiguous head. Returns the
-        frames drained (in order) so :meth:`accept` can merge them with the
-        incoming packet's frames. A no-op when there is no gap, no deadline is
-        wired, or the deadline has not elapsed."""
+        lowest buffered packet and drain the contiguous head into
+        ``_pending`` (so the next :meth:`accept` delivers them to the
+        transcriber). A no-op when there is no gap, no deadline is wired, or
+        the deadline has not elapsed.
+
+        Called from both :meth:`accept` and :meth:`missing_range` so the
+        timer advances on wall-clock (``self._clock``) regardless of whether
+        new packets are arriving — the original accept-only call site let a
+        server backlog pause the timer past the point where a backfill could
+        still arrive usefully."""
         if not self._buffer:
             self._gap_opened_at = None
-            return []
+            return
         if self._gap_timeout_ms is None:
-            return []
+            return
         now = self._now()
         if self._gap_opened_at is None:
             # The gap is (re)opening on this call; start the clock but don't
             # skip yet — a real backfill may be in flight.
             self._gap_opened_at = now
-            return []
+            return
         if now - self._gap_opened_at < self._gap_timeout_ms:
-            return []
+            return
         skip_to = min(self._buffer)
         logger.info(
             "reassembler: head gap [next=%d, %d) unfilled for %dms — "
@@ -103,13 +133,16 @@ class SessionReassembler:
         )
         self._next = skip_to
         self._gap_opened_at = None
-        # Drain the contiguous head from the new anchor so the transcriber gets
-        # the buffered packets without waiting for another accept() call.
-        drained: list[bytes] = []
+        # Drain the contiguous head from the new anchor. The frames go into
+        # ``_pending``; ``accept()`` flushes ``_pending`` into its delivered
+        # list so the pipeline transcribes them. When this skip was triggered
+        # from ``missing_range()`` there is no enclosing ``accept()`` yet, so
+        # the frames wait here for the next packet to arrive — but they are
+        # not lost, and the gap is closed immediately (no further
+        # ``request_chunks`` spam for a gap that is already decided unfilled).
         while self._next in self._buffer:
-            drained.extend(self._buffer.pop(self._next).frames)
+            self._pending.extend(self._buffer.pop(self._next).frames)
             self._next += 1
-        return drained
 
     def accept(self, packet: AudioPacket) -> list[bytes]:
         """Ingest one packet; return Opus frames now deliverable, in order."""
@@ -125,7 +158,12 @@ class SessionReassembler:
 
         # Maybe give up on an unfillable head gap (continue-stream reconnect)
         # and re-anchor at the lowest buffered packet. No-op without a deadline.
-        delivered = self._maybe_skip_stale_gap()
+        # Drained frames (if any) land in _pending.
+        self._maybe_skip_stale_gap()
+        # Flush any frames drained by a prior missing_range()-triggered skip
+        # so the transcriber receives them alongside this packet's frames.
+        delivered = self._pending
+        self._pending = []
 
         if seq < self._next:
             logger.debug("reassembler: seq=%d behind next=%d — duplicate/old, dropped", seq, self._next)
