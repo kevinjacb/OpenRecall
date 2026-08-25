@@ -25,10 +25,14 @@ logger = logging.getLogger(__name__)
 
 _ROLLING_BUFFER_SEGS = 10
 
+# The 7 day-one voice command types (spec §"Stage 2 prompt"). The full
+# IssueCommandPayload.command_type Literal includes request_buffer, record_audio,
+# sleep, and set_snapshot_interval, but those have NO Stage 1 phrase trigger and
+# NO _COMMAND_TEXT label — a Stage 2 misclassification could dispatch one with
+# no memory label and no user intent, so they're excluded from the voice channel.
 _ALLOWED_TYPES = (
-    "capture_photo", "record_video", "start_audio", "stop_audio",
-    "request_buffer", "record_audio", "start_video", "stop_video",
-    "flush_snapshots", "sleep", "set_snapshot_interval",
+    "capture_photo", "record_video", "start_video", "stop_video",
+    "start_audio", "stop_audio", "flush_snapshots",
 )
 
 

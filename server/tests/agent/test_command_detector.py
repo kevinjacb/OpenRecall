@@ -248,13 +248,27 @@ class FakeValidator:
 
 
 class FakeCaps:
+    """Parametrizable capability/resource provider for guardrail tests.
+
+    Defaults advertise every capability and ample resources, so the
+    guardrail-refusal branch is only exercised when a test opts in
+    (``camera=False`` or ``battery`` below the quick-op floor).
+    """
+
+    def __init__(self, *, camera=True, battery=0.9):
+        self._camera = camera
+        self._battery = battery
+
     def capabilities(self):
         from openrecall_server.contracts.types import CapabilitySet
-        return CapabilitySet(camera=True, microphone=True, retrospective_buffer=True)
+        return CapabilitySet(camera=self._camera, microphone=True,
+                             retrospective_buffer=True)
 
     def resources(self):
         from openrecall_server.contracts.types import DeviceResourceStatus
-        return DeviceResourceStatus(battery=0.9, storage_free=1.0, camera_in_use=False)
+        return DeviceResourceStatus(battery_pct=self._battery,
+                                    storage_free_bytes=1 << 30,
+                                    recording=False, relay_connected=True)
 
 
 class FakeDispatcher:
@@ -267,7 +281,7 @@ class FakeDispatcher:
         return SignedCommand(command=command, payload=command.canonical_bytes(), signature=b"")
 
 
-def _stage2_detector(reply, reject=False):
+def _stage2_detector(reply, reject=False, caps=None):
     cfg = CommandDetectorConfig(enabled=True, require_wearer=False, confidence_threshold=0.8,
                                 phrases=dict(DEFAULT_COMMAND_PHRASES))
     loop = FakeLoop()
@@ -278,7 +292,7 @@ def _stage2_detector(reply, reject=False):
 
     d = CommandDetector(
         model=FakeChatModel(reply), dispatcher=FakeDispatcher(), command_validator=FakeValidator(reject),
-        capability_provider=FakeCaps(), speaker_registry=None, loop=loop, config=cfg,
+        capability_provider=caps or FakeCaps(), speaker_registry=None, loop=loop, config=cfg,
         ids=_FakeIds(), clock=FakeClock(),
     )
     return d, loop
@@ -308,6 +322,32 @@ async def test_stage2_low_confidence_does_not_dispatch():
 
 async def test_stage2_validator_rejection_does_not_dispatch():
     d, _ = _stage2_detector('{"command":{"type":"capture_photo","params":{}},"confidence":0.9}', reject=True)
+    await d._run_stage2("s", _event("take a photo"), "capture_photo", "take a photo")
+    assert d._dispatcher.issued == []
+
+
+async def test_stage2_guardrail_no_camera_does_not_dispatch():
+    """Spec-mandated: guardrail refusal (no camera) does not dispatch.
+
+    Validation passes (FakeValidator reject=False) so the real
+    StrictCommandGuardrails constructed inside _dispatch is what refuses
+    — exercising the real refusal branch, not a stub.
+    """
+    d, _ = _stage2_detector(
+        '{"command":{"type":"capture_photo","params":{}},"confidence":0.9}',
+        caps=FakeCaps(camera=False),
+    )
+    await d._run_stage2("s", _event("take a photo"), "capture_photo", "take a photo")
+    assert d._dispatcher.issued == []  # guardrail refused → no dispatch
+    assert d._inflight.get("s", 0) == 0  # in-flight still decremented
+
+
+async def test_stage2_guardrail_low_battery_does_not_dispatch():
+    """Battery below the quick-op floor (5%) refuses capture_photo."""
+    d, _ = _stage2_detector(
+        '{"command":{"type":"capture_photo","params":{}},"confidence":0.9}',
+        caps=FakeCaps(battery=0.04),
+    )
     await d._run_stage2("s", _event("take a photo"), "capture_photo", "take a photo")
     assert d._dispatcher.issued == []
 
