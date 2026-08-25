@@ -646,9 +646,9 @@ _SYSTEM_TEMPLATE = (
     "You classify whether a wearer is directly commanding their own wearable "
     "device. Narration, quotes, questions, hypotheticals, and third-person "
     "mentions are NOT commands. If it is a direct command, output JSON "
-    '{"command": {"type": <one of: {types}>, "params": {{}}}, '
-    '"confidence": <0..1>}. If not, output '
-    '{"command": null, "confidence": <0..1>}. params is always {{}} for these '
+    '{{"command": {{"type": <one of: {types}>, "params": {{}}}}, '
+    '"confidence": <0..1>}}. If not, output '
+    '{{"command": null, "confidence": <0..1>}}. params is always {{}} for these '
     "types. Output only the JSON."
 )
 
