@@ -212,15 +212,26 @@ static void ble_host_task(void *param) {
   nimble_port_freertos_deinit();
 }
 
+// Distinct return codes so the audio drainer can apply the right backpressure
+// policy: -1 = mbuf exhausted (retry-worthy), -2 = no subscriber / link error
+// (not retry-worthy). 0 = delivered. See ble_link_notify_audio docs.
 static int notify(uint16_t attr_handle, bool subscribed, const uint8_t *data, size_t len) {
   if (s_conn_handle == BLE_HS_CONN_HANDLE_NONE || !subscribed) {
-    return -1;
+    return -2;  // no subscriber
   }
   struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
   if (om == NULL) {
-    return -1;
+    return -1;  // mbuf pool exhausted — transient, retry-worthy
   }
-  return ble_gatts_notify_custom(s_conn_handle, attr_handle, om);
+  int rc = ble_gatts_notify_custom(s_conn_handle, attr_handle, om);
+  if (rc != 0) {
+    // Non-mbuf notify error (e.g. BLE_HS_ENOTCONN — link dropped between the
+    // subscriber check and the call). Treat as no-subscriber: not retry-worthy.
+    ESP_LOGW(TAG, "notify attr=%" PRIu16 " rc=%d (link error; treating as no subscriber)",
+             attr_handle, rc);
+    return -2;
+  }
+  return 0;
 }
 
 int ble_link_notify_audio(const uint8_t *data, size_t len) {

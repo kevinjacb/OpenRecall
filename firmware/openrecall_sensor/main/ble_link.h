@@ -32,8 +32,16 @@ esp_err_t ble_link_start(ble_command_handler_t on_command);
 void ble_link_suspend(void);
 void ble_link_resume(void);
 
-// Notify a §C.6 audio packet to the subscribed phone. Returns 0 on success, <0 if
-// not connected/subscribed or on error. Non-blocking; drops if the link is down.
+// Notify a §C.6 audio packet to the subscribed phone. Non-blocking.
+//
+// Return codes (distinct so the caller can apply the right backpressure policy):
+//   0   — delivered to the NimBLE stack (ble_gatts_notify_custom ok).
+//   -1  — mbuf exhausted (ble_hs_mbuf_from_flat returned NULL). Transient: the
+//         pool is momentarily full; a bounded retry after a short delay usually
+//         succeeds once the stack reclaims mbufs.
+//   -2  — no subscriber (not connected or audio char not subscribed) OR the
+//         notify call itself failed with a non-mbuf error (e.g. link dropped).
+//         Not retry-worthy — there is no one receiving.
 int ble_link_notify_audio(const uint8_t *data, size_t len);
 
 // Notify a command ack / status frame to the phone.

@@ -285,6 +285,7 @@ static void drain_task(void *arg) {
       // Pack frames into MTU-sized packets. Each packet carries as many frames
       // as fit; chunk_seq advances per packet so the server sees monotonic seq.
       size_t i = 0;
+      uint32_t notify_count = 0;  // for burst pacing
       while (i < count) {
         size_t start = i;
         size_t used = 0;
@@ -310,14 +311,61 @@ static void drain_task(void *arg) {
         if (n == 0) {
           ESP_LOGE(TAG, "packet overflow: n_in_pkt=%u cap=%u",
                    (unsigned)n_in_pkt, (unsigned)sizeof(pkt));
-        } else {
-          // ble_link_notify_audio is non-blocking and returns <0 if the phone
-          // isn't subscribed — that's fine; we keep draining so the ring never
-          // stalls.
-          int rc = ble_link_notify_audio(pkt, n);
-          if (rc < 0) {
-            ESP_LOGD(TAG, "no subscriber; dropped chunk %" PRIu32, (uint32_t)chunk_seq);
+          chunk_seq++;
+          continue;
+        }
+
+        // Pace the burst: yield every few notifies so the stack reclaims mbufs
+        // between sends and a full 200 ms chunk (up to 10 notifications) doesn't
+        // exhaust the pool all at once. Safe to block the drain task ~1 ms here
+        // — audio capture runs on a separate task and the 60 s PSRAM ring
+        // absorbs this pause.
+        if (notify_count > 0 && (notify_count % 4) == 0) {
+          vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        notify_count++;
+
+        int rc = ble_link_notify_audio(pkt, n);
+        if (rc == 0) {
+          // Delivered to the stack.
+        } else if (rc == -1) {
+          // mbuf exhausted: the NimBLE pool is momentarily full. Retry a bounded
+          // number of times with a short delay so the stack can reclaim mbufs —
+          // this is the real losslessness win. Safe to block the drain task
+          // ~6 ms here: capture runs on a separate task and the 60 s PSRAM ring
+          // absorbs the pause.
+          bool delivered = false;
+          int last_rc = -1;
+          for (int attempt = 0; attempt < 3; attempt++) {
+            vTaskDelay(pdMS_TO_TICKS(2));
+            last_rc = ble_link_notify_audio(pkt, n);
+            if (last_rc == 0) { delivered = true; break; }
+            if (last_rc != -1) { break; }  // link gone; stop retrying mbuf path
           }
+          if (!delivered) {
+            if (last_rc == -1) {
+              // All retries still mbuf-exhausted: the chunk is lost on the BLE
+              // link. ADVANCE chunk_seq (leaving it stuck would collide on the
+              // next chunk) and log visibly at WARN — the server detects the
+              // gap via the chunk_seq jump and skips it after its gap timeout
+              // (handled server-side). No gap-marker packet is emitted: a
+              // BLE-dropped packet never reached the Android relay, so its
+              // ring buffer cannot backfill it (R5).
+              ESP_LOGW(TAG, "mbuf exhausted; lost chunk_seq=%" PRIu32,
+                       (uint32_t)chunk_seq);
+            } else {
+              // Link dropped mid-retry: treat as no-subscriber.
+              ESP_LOGW(TAG, "no subscriber; link down; advance chunk_seq=%" PRIu32,
+                       (uint32_t)chunk_seq);
+            }
+          }
+        } else {
+          // rc == -2: no subscriber (phone not connected / not subscribed, or
+          // the notify call failed with a link error). Not an error to retry —
+          // there is no one receiving and no one to backfill to. Advance
+          // chunk_seq and keep draining so the ring never stalls.
+          ESP_LOGW(TAG, "no subscriber; link down; advance chunk_seq=%" PRIu32,
+                   (uint32_t)chunk_seq);
         }
         chunk_seq++;
       }

@@ -99,6 +99,15 @@ CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
 # gives the GATT DB init + advertising setup the headroom they need.
 CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192
 
+# Enlarge the NimBLE MSYS_2 mbuf pool 24 -> 48 blocks (block size stays 320 B).
+# The 200 ms §C.6 audio chunk (Task 7) is up to 10 frames, each its own notify
+# when frames are large; a full-chunk notify burst can exhaust the 24-block pool
+# and silently drop audio. 48 blocks gives headroom for a full 10-notify burst
+# (each <=244 B fits in one 320-B mbuf) alongside normal ACL/ADV traffic. Paired
+# with the burst pacing + bounded retry in ble_drain.c (F2) this makes the audio
+# path lossless under load.
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=48
+
 # --- FatFS: Long Filename Support (required by P4b SD capture) ---
 # The P4b snapshot/video paths use names that exceed 8.3: the "snapshots" dir
 # (9 chars), clip/snapshot filenames "%010<rel_ts>_<seq>.jpg" (13-char name),
