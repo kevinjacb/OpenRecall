@@ -55,6 +55,40 @@ ENV_ASR_BACKEND = "OPENRECALL_ASR_BACKEND"
 ENV_PARAKEET_MODEL = "OPENRECALL_PARAKEET_MODEL"
 _ASR_BACKENDS = ("whisper", "parakeet")
 
+# --- command detector --------------------------------------------------------
+ENV_COMMAND_ENABLED = "OPENRECALL_COMMAND_DETECTOR_ENABLED"
+ENV_COMMAND_REQUIRE_WEARER = "OPENRECALL_COMMAND_REQUIRE_WEARER"
+ENV_COMMAND_CONFIDENCE_THRESHOLD = "OPENRECALL_COMMAND_CONFIDENCE_THRESHOLD"
+ENV_COMMAND_COOLDOWN_S = "OPENRECALL_COMMAND_COOLDOWN_S"
+ENV_COMMAND_MAX_INFLIGHT = "OPENRECALL_COMMAND_MAX_INFLIGHT"
+ENV_COMMAND_LLM_MODEL = "OPENRECALL_COMMAND_LLM_MODEL"
+ENV_COMMAND_LLM_BASE_URL = "OPENRECALL_COMMAND_LLM_BASE_URL"
+ENV_COMMAND_LLM_API_KEY = "OPENRECALL_COMMAND_LLM_API_KEY"
+ENV_COMMAND_PHRASES = "OPENRECALL_COMMAND_PHRASES"
+
+# Day-one voice vocabulary: phrase -> device command type. Stage 1 matches
+# these phrases (lowercased substring) against a rolling recent-text buffer.
+# Bare common words ("stop", "start") are deliberately NOT keys — they appear
+# constantly in speech and would defeat the filter.
+DEFAULT_COMMAND_PHRASES: dict[str, str] = {
+    "take a photo": "capture_photo",
+    "take a picture": "capture_photo",
+    "snap a photo": "capture_photo",
+    "snap a pic": "capture_photo",
+    "capture a photo": "capture_photo",
+    "record a video": "record_video",
+    "start a video": "start_video",
+    "start video": "start_video",
+    "stop video": "stop_video",
+    "stop the video": "stop_video",
+    "stop recording": "stop_video",
+    "start audio": "start_audio",
+    "start recording audio": "start_audio",
+    "stop audio": "stop_audio",
+    "stop recording": "stop_audio",
+    "flush snapshots": "flush_snapshots",
+}
+
 
 class GuardrailsConfig(BaseModel):
     """The three policy numbers the agent's :class:`Guardrails` consume."""
@@ -220,14 +254,47 @@ class AsrConfig(BaseModel):
         return self
 
 
+class CommandDetectorConfig(BaseModel):
+    """Configuration for the speech -> command channel: detecting device
+    commands ("take a photo", "start a video") from the rolling transcript
+    and forwarding them to the firmware.
+
+    The detector is OFF by default (``enabled=False``); an operator opts in
+    via ``OPENRECALL_COMMAND_DETECTOR_ENABLED=true``. ``require_wearer``
+    gates command execution on the wearer being an enrolled speaker so a
+    bystander cannot trigger capture — on by default, relax only if you
+    accept that risk.
+
+    ``phrases`` is the phrase -> command-type map the Stage-1 substring
+    matcher scans the recent-text buffer against. When
+    ``OPENRECALL_COMMAND_PHRASES`` is unset the :data:`DEFAULT_COMMAND_PHRASES`
+    ship; an empty string is a deliberate "no phrases" override (-> {}).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    enabled: bool = False
+    require_wearer: bool = True
+    confidence_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+    cooldown_s: float = Field(default=3.0, ge=0.0)
+    max_inflight: int = Field(default=1, ge=1)
+    llm_model: str | None = None
+    llm_base_url: str | None = None
+    llm_api_key: str | None = None
+    phrases: dict[str, str] = Field(
+        default_factory=lambda: dict(DEFAULT_COMMAND_PHRASES)
+    )
+
+
 class AgentConfig(BaseModel):
     """The full server config — guardrails + whisper noise filtering + ASR
-    backend selection. Future policy (extraction interval, etc.) lives here."""
+    backend selection + command-detector policy. Future policy (extraction
+    interval, etc.) lives here."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     whisper: WhisperConfig = Field(default_factory=WhisperConfig)
     asr: AsrConfig = Field(default_factory=AsrConfig)
+    command: CommandDetectorConfig = Field(default_factory=CommandDetectorConfig)
 
 
 # --- env loader --------------------------------------------------------------
@@ -273,6 +340,30 @@ def _parse_phrase_list(name: str, raw: str) -> tuple[str, ...]:
     if not raw.strip():
         return ()
     return tuple(p for p in parts if p)
+
+
+def _parse_phrase_map(name: str, raw: str) -> dict[str, str]:
+    """Semicolon-separated ``type:phrase`` pairs -> phrase -> type dict.
+    An empty string is a deliberate "no phrases" override (-> {})."""
+    raw = raw.strip()
+    if not raw:
+        return {}
+    out: dict[str, str] = {}
+    for pair in raw.split(";"):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if ":" not in pair:
+            raise ValueError(
+                f"{name}={raw!r}: each entry must be 'type:phrase' (got {pair!r})"
+            )
+        ctype, phrase = pair.split(":", 1)
+        ctype = ctype.strip()
+        phrase = phrase.strip()
+        if not ctype or not phrase:
+            raise ValueError(f"{name}={raw!r}: empty type or phrase in {pair!r}")
+        out[phrase.lower()] = ctype
+    return out
 
 
 def load_agent_config(env: Mapping[str, str]) -> AgentConfig:
@@ -350,8 +441,47 @@ def load_agent_config(env: Mapping[str, str]) -> AgentConfig:
         raw_model = env[ENV_PARAKEET_MODEL].strip()
         if raw_model:
             asr_kwargs["parakeet_model"] = raw_model
+    command_kwargs: dict = {}
+    if ENV_COMMAND_ENABLED in env:
+        command_kwargs["enabled"] = _parse_bool(
+            ENV_COMMAND_ENABLED, env[ENV_COMMAND_ENABLED]
+        )
+    if ENV_COMMAND_REQUIRE_WEARER in env:
+        command_kwargs["require_wearer"] = _parse_bool(
+            ENV_COMMAND_REQUIRE_WEARER, env[ENV_COMMAND_REQUIRE_WEARER]
+        )
+    if ENV_COMMAND_CONFIDENCE_THRESHOLD in env:
+        command_kwargs["confidence_threshold"] = _parse_float(
+            ENV_COMMAND_CONFIDENCE_THRESHOLD,
+            env[ENV_COMMAND_CONFIDENCE_THRESHOLD],
+        )
+    if ENV_COMMAND_COOLDOWN_S in env:
+        command_kwargs["cooldown_s"] = _parse_float(
+            ENV_COMMAND_COOLDOWN_S, env[ENV_COMMAND_COOLDOWN_S]
+        )
+    if ENV_COMMAND_MAX_INFLIGHT in env:
+        command_kwargs["max_inflight"] = _parse_int(
+            ENV_COMMAND_MAX_INFLIGHT, env[ENV_COMMAND_MAX_INFLIGHT]
+        )
+    if ENV_COMMAND_LLM_MODEL in env:
+        raw_model = env[ENV_COMMAND_LLM_MODEL].strip()
+        if raw_model:
+            command_kwargs["llm_model"] = raw_model
+    if ENV_COMMAND_LLM_BASE_URL in env:
+        raw_url = env[ENV_COMMAND_LLM_BASE_URL].strip()
+        if raw_url:
+            command_kwargs["llm_base_url"] = raw_url
+    if ENV_COMMAND_LLM_API_KEY in env:
+        raw_key = env[ENV_COMMAND_LLM_API_KEY].strip()
+        if raw_key:
+            command_kwargs["llm_api_key"] = raw_key
+    if ENV_COMMAND_PHRASES in env:
+        command_kwargs["phrases"] = _parse_phrase_map(
+            ENV_COMMAND_PHRASES, env[ENV_COMMAND_PHRASES]
+        )
     return AgentConfig(
         guardrails=GuardrailsConfig(**guardrails_kwargs),
         whisper=WhisperConfig(**whisper_kwargs),
         asr=AsrConfig(**asr_kwargs),
+        command=CommandDetectorConfig(**command_kwargs),
     )

@@ -301,3 +301,64 @@ def test_whisper_filters_are_unaffected_by_backend_choice():
     cfg = load_agent_config({"OPENRECALL_ASR_BACKEND": "parakeet"})
     assert cfg.whisper.no_speech_threshold == 0.6
     assert cfg.whisper.hallucination_blocklist_enabled is True
+
+
+# --- CommandDetectorConfig (speech -> command channel) -----------------------
+
+from openrecall_server.agent.config import (
+    CommandDetectorConfig,
+    DEFAULT_COMMAND_PHRASES,
+)
+
+
+def test_command_config_defaults_off_and_wearer_gated():
+    cfg = load_agent_config({})
+    assert cfg.command.enabled is False
+    assert cfg.command.require_wearer is True
+    assert cfg.command.confidence_threshold == 0.8
+    assert cfg.command.cooldown_s == 3.0
+    assert cfg.command.max_inflight == 1
+    assert cfg.command.llm_model is None
+    # The day-one photo/video/audio phrases ship by default.
+    assert DEFAULT_COMMAND_PHRASES["take a photo"] == "capture_photo"
+    assert DEFAULT_COMMAND_PHRASES["start a video"] == "start_video"
+    assert "stop video" in DEFAULT_COMMAND_PHRASES
+    # The default map is loaded when no env override is given.
+    assert cfg.command.phrases == DEFAULT_COMMAND_PHRASES
+
+
+def test_command_config_env_overrides():
+    cfg = load_agent_config({
+        "OPENRECALL_COMMAND_DETECTOR_ENABLED": "true",
+        "OPENRECALL_COMMAND_REQUIRE_WEARER": "false",
+        "OPENRECALL_COMMAND_CONFIDENCE_THRESHOLD": "0.66",
+        "OPENRECALL_COMMAND_COOLDOWN_S": "1.5",
+        "OPENRECALL_COMMAND_MAX_INFLIGHT": "2",
+        "OPENRECALL_COMMAND_LLM_MODEL": "qwen2.5:3b",
+        "OPENRECALL_COMMAND_LLM_BASE_URL": "http://x:8000/v1",
+        "OPENRECALL_COMMAND_LLM_API_KEY": "sk-x",
+        "OPENRECALL_COMMAND_PHRASES": "capture_photo:take a photo;start_video:roll video",
+    })
+    assert cfg.command.enabled is True
+    assert cfg.command.require_wearer is False
+    assert cfg.command.confidence_threshold == 0.66
+    assert cfg.command.cooldown_s == 1.5
+    assert cfg.command.max_inflight == 2
+    assert cfg.command.llm_model == "qwen2.5:3b"
+    assert cfg.command.llm_base_url == "http://x:8000/v1"
+    assert cfg.command.llm_api_key == "sk-x"
+    # The env var fully replaces the default map (explicit override).
+    assert cfg.command.phrases == {"take a photo": "capture_photo", "roll video": "start_video"}
+
+
+def test_command_config_empty_phrases_is_deliberate_override():
+    cfg = load_agent_config({"OPENRECALL_COMMAND_PHRASES": ""})
+    assert cfg.command.phrases == {}
+
+
+def test_command_config_bad_values_raise():
+    import pytest
+    with pytest.raises(ValueError, match="OPENRECALL_COMMAND_CONFIDENCE_THRESHOLD"):
+        load_agent_config({"OPENRECALL_COMMAND_CONFIDENCE_THRESHOLD": "nope"})
+    with pytest.raises(ValueError, match="OPENRECALL_COMMAND_MAX_INFLIGHT"):
+        load_agent_config({"OPENRECALL_COMMAND_MAX_INFLIGHT": "x"})
