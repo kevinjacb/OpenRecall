@@ -10,16 +10,36 @@ memory is written on device ack (see :mod:`command_memory`).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import re
 import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from .planner import _default_ttl
+
 logger = logging.getLogger(__name__)
 
 _ROLLING_BUFFER_SEGS = 10
+
+_ALLOWED_TYPES = (
+    "capture_photo", "record_video", "start_audio", "stop_audio",
+    "request_buffer", "record_audio", "start_video", "stop_video",
+    "flush_snapshots", "sleep", "set_snapshot_interval",
+)
+
+
+def derive_idempotency_key(session_id: str, command_type: str, text: str) -> str:
+    norm = re.sub(r"\s+", " ", (text or "").strip().lower())
+    h = hashlib.sha1(f"{session_id}|{command_type}|{norm}".encode()).hexdigest()[:16]
+    return f"voice:{h}"
+
+
+def context_buf(event) -> str:
+    return getattr(event, "text", "") or ""
 
 
 def match_command_phrase(buffer: str, phrases: dict[str, str]) -> str | None:
@@ -117,8 +137,58 @@ class CommandDetector:
             asyncio.create_task(self._run_stage2(session_id, event, ctype, context))
 
     async def _run_stage2(self, session_id: str, event: Any, ctype: str, context: str) -> None:
-        """Task 5 implements the LLM confirmation + dispatch."""
-        raise NotImplementedError
+        try:
+            system, user = stage2_messages(context, _ALLOWED_TYPES)
+            raw = await asyncio.to_thread(self._model.complete, system, user)
+            result = parse_stage2_reply(raw, _ALLOWED_TYPES)
+            if result.command_type is None:
+                return
+            if result.confidence < self._cfg.confidence_threshold:
+                logger.info("command_detector low confidence %s type=%s",
+                            result.confidence, result.command_type)
+                return
+            self._dispatch(session_id, event, result)
+        except Exception:
+            logger.exception("command_detector stage2 failed session=%s", session_id)
+        finally:
+            self._inflight[session_id] = max(0, self._inflight.get(session_id, 0) - 1)
+
+    def _dispatch(self, session_id, event, result):
+        from ..contracts.types import IssueCommandPayload
+        from .guardrails_command import StrictCommandGuardrails
+        from ..commands.model import Command
+
+        idem = derive_idempotency_key(session_id, result.command_type, context_buf(event))
+        payload = IssueCommandPayload(
+            command_type=result.command_type, params=result.params,
+            idempotency_key=idem, confidence=result.confidence,
+        )
+        v_out = self._validator.validate(payload)
+        if v_out.rejection is not None:
+            logger.info("command_detector validator rejected: %s", v_out.message)
+            return
+        guardrails = StrictCommandGuardrails(
+            capabilities=self._caps.capabilities(),
+            resources=self._caps.resources(),
+            confidence_autonomous=self._cfg.confidence_threshold,
+        )
+        g_out = guardrails.check(v_out.command)
+        if not g_out.allowed:
+            logger.info("command_detector guardrails refused: %s", g_out.message)
+            return
+        command = Command(
+            command_id=self._ids.new(),
+            session_id=session_id,
+            type=v_out.command.command_type,
+            params=v_out.command.params,
+            issued_at=self._clock.now(),
+            expires_at=self._clock.now() + _default_ttl(),
+            idempotency_key=v_out.command.idempotency_key,
+        )
+        signed = self._dispatcher.issue(command)
+        self._provenance[signed.command.command_id] = event.event_id
+        logger.info("command_detector issued command=%s type=%s source=%s",
+                    signed.command.command_id, command.type, event.event_id)
 
 
 # --- Task 4: Stage 2 prompt builder + reply parser (pure) -------------------

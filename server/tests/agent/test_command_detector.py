@@ -212,3 +212,110 @@ def test_parse_rejects_missing_fields():
 def test_parse_clamps_confidence():
     r = parse_stage2_reply('{"command":{"type":"capture_photo","params":{}},"confidence":1.5}', _ALLOWED)
     assert r.command_type is None  # confidence out of [0,1] -> reject
+
+
+# --- Task 5: Stage 2 LLM confirmation + dispatch ----------------------------
+
+from openrecall_server.agent.command_detector import CommandDetector, derive_idempotency_key
+from openrecall_server.agent.config import CommandDetectorConfig, DEFAULT_COMMAND_PHRASES
+from openrecall_server.contracts.clock import FakeClock
+from openrecall_server.contracts.types import IssueCommandPayload
+
+
+class FakeChatModel:
+    def __init__(self, reply):
+        self._reply = reply
+        self.calls = []
+
+    def complete(self, system, user):
+        self.calls.append((system, user))
+        return self._reply
+
+
+class FakeValidator:
+    def __init__(self, reject=False):
+        self._reject = reject
+
+    def validate(self, payload):
+        from openrecall_server.agent.validator_command import (
+            CommandValidationResult, ValidatedCommand)
+        if self._reject:
+            return CommandValidationResult(command=None, rejection="unknown", message="no")
+        return CommandValidationResult(
+            command=ValidatedCommand(
+                command_type=payload.command_type, params=payload.params,
+                idempotency_key=payload.idempotency_key, confidence=payload.confidence),
+            rejection=None, message=None)
+
+
+class FakeCaps:
+    def capabilities(self):
+        from openrecall_server.contracts.types import CapabilitySet
+        return CapabilitySet(camera=True, microphone=True, retrospective_buffer=True)
+
+    def resources(self):
+        from openrecall_server.contracts.types import DeviceResourceStatus
+        return DeviceResourceStatus(battery=0.9, storage_free=1.0, camera_in_use=False)
+
+
+class FakeDispatcher:
+    def __init__(self):
+        self.issued = []
+
+    def issue(self, command):
+        self.issued.append(command)
+        from openrecall_server.commands.signing import SignedCommand
+        return SignedCommand(command=command, payload=command.canonical_bytes(), signature=b"")
+
+
+def _stage2_detector(reply, reject=False):
+    cfg = CommandDetectorConfig(enabled=True, require_wearer=False, confidence_threshold=0.8,
+                                phrases=dict(DEFAULT_COMMAND_PHRASES))
+    loop = FakeLoop()
+
+    class _FakeIds:
+        def new(self):
+            return "cmd-1"
+
+    d = CommandDetector(
+        model=FakeChatModel(reply), dispatcher=FakeDispatcher(), command_validator=FakeValidator(reject),
+        capability_provider=FakeCaps(), speaker_registry=None, loop=loop, config=cfg,
+        ids=_FakeIds(), clock=FakeClock(),
+    )
+    return d, loop
+
+
+async def test_stage2_confirmed_command_dispatches():
+    d, _ = _stage2_detector('{"command":{"type":"capture_photo","params":{}},"confidence":0.9}')
+    ev = _event("take a photo", event_id="s:7")
+    await d._run_stage2("s", ev, "capture_photo", "take a photo")
+    assert len(d._dispatcher.issued) == 1
+    assert d._dispatcher.issued[0].type == "capture_photo"
+    assert d._provenance["cmd-1"] == "s:7"
+    assert d._inflight.get("s", 0) == 0  # decremented after completion
+
+
+async def test_stage2_null_command_does_not_dispatch():
+    d, _ = _stage2_detector('{"command":null,"confidence":0.1}')
+    await d._run_stage2("s", _event("take a photo"), "capture_photo", "take a photo")
+    assert d._dispatcher.issued == []
+
+
+async def test_stage2_low_confidence_does_not_dispatch():
+    d, _ = _stage2_detector('{"command":{"type":"capture_photo","params":{}},"confidence":0.5}')
+    await d._run_stage2("s", _event("take a photo"), "capture_photo", "take a photo")
+    assert d._dispatcher.issued == []
+
+
+async def test_stage2_validator_rejection_does_not_dispatch():
+    d, _ = _stage2_detector('{"command":{"type":"capture_photo","params":{}},"confidence":0.9}', reject=True)
+    await d._run_stage2("s", _event("take a photo"), "capture_photo", "take a photo")
+    assert d._dispatcher.issued == []
+
+
+def test_derive_idempotency_key_is_stable_and_typespecific():
+    k1 = derive_idempotency_key("s", "capture_photo", "take a photo of mine")
+    k2 = derive_idempotency_key("s", "capture_photo", "take a photo of mine")
+    k3 = derive_idempotency_key("s", "start_video", "take a photo of mine")
+    assert k1 == k2
+    assert k1 != k3
