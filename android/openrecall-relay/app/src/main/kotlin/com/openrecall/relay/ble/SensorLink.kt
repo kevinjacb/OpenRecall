@@ -120,6 +120,12 @@ class SensorLink(private val context: Context, private val listener: Listener) {
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
             Log.i(TAG, "MTU=$mtu; discovering services")
+            // A1: request high-priority connection parameters to cut connection-event
+            // latency for the 200 ms audio chunks. Best-effort hint — the result is
+            // async via onConnectionPriorityChanged (not overridden; a log here is
+            // enough). Standard Android GATT (API 21+, same floor as requestMtu).
+            val priOk = g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+            Log.i(TAG, "requestConnectionPriority(HIGH)=$priOk")
             g.discoverServices()
         }
 

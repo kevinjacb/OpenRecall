@@ -10,6 +10,7 @@ import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -175,6 +176,139 @@ class RelaySessionTest {
         )
         assertNull(cache.get("nothing"))
         assertEquals(0, cache.snapshot().size)
+    }
+
+    // --- A1: ring buffer + request_chunks backfill ---------------------------
+
+    /**
+     * Build a minimal §C.6 audio packet with the given [chunkSeq] at bytes 1-4
+     * (little-endian uint32) and an empty body. The server's RequestChunks
+     * asks for a chunk_seq range the Android relay DID receive and DID send,
+     * but the server missed (Android→server WebSocket loss/reorder) — the ring
+     * buffer backfills from chunks Android still has. It does NOT backfill
+     * BLE-dropped packets (those never reached Android).
+     */
+    private fun c6Packet(chunkSeq: Int): ByteArray {
+        val p = ByteArray(12)  // 12-byte §C.6 header, no frames
+        p[0] = 0x10            // version=1, ptype=LIVE=0
+        // chunk_seq at bytes 1-4, little-endian
+        p[1] = (chunkSeq and 0xFF).toByte()
+        p[2] = ((chunkSeq ushr 8) and 0xFF).toByte()
+        p[3] = ((chunkSeq ushr 16) and 0xFF).toByte()
+        p[4] = ((chunkSeq ushr 24) and 0xFF).toByte()
+        // bytes 5-8 rel_ts_ms = 0; byte 9 vad=0; byte 10 frame_count=0; byte 11 flags=0
+        return p
+    }
+
+    private fun requestChunks(start: Int, end: Int): String =
+        """{"type":"request_chunks","session_id":"s","start":$start,"end":$end}"""
+
+    /** Pull the chunk_seq (bytes 1-4 LE) back out of a sent-binary payload. */
+    private fun chunkSeqOf(data: ByteArray): Int {
+        assertEquals(true, data.size >= 5, "packet too short for chunk_seq")
+        return (data[1].toInt() and 0xFF) or
+            ((data[2].toInt() and 0xFF) shl 8) or
+            ((data[3].toInt() and 0xFF) shl 16) or
+            ((data[4].toInt() and 0xFF) shl 24)
+    }
+
+    @Test
+    fun request_chunks_backfills_in_range_seqs_from_the_ring() {
+        val session = RelaySession("s")
+        session.start()  // hello; discard
+        // Seed the ring with seqs 10, 11, 12, 13, 14.
+        for (seq in 10..14) {
+            session.onDeviceAudio(c6Packet(seq))
+        }
+        // Server reports it missed [11, 14) — seqs 11, 12, 13.
+        val actions = session.onServerMessage(requestChunks(11, 14))
+        val sent = actions.filterIsInstance<RelayAction.SendServerBinary>()
+        assertEquals(3, sent.size)
+        val seqs = sent.map { chunkSeqOf(it.data) }
+        assertEquals(listOf(11, 12, 13), seqs)
+    }
+
+    @Test
+    fun request_chunks_skips_seqs_not_in_the_ring_without_crashing() {
+        val session = RelaySession("s")
+        session.start()
+        // Ring has seqs 10, 12, 14 (gaps in the ring itself).
+        session.onDeviceAudio(c6Packet(10))
+        session.onDeviceAudio(c6Packet(12))
+        session.onDeviceAudio(c6Packet(14))
+        // Server asks for [9, 16) — only 10, 12, 14 are present; 9, 11, 13, 15 skipped.
+        val actions = session.onServerMessage(requestChunks(9, 16))
+        val sent = actions.filterIsInstance<RelayAction.SendServerBinary>()
+        assertEquals(listOf(10, 12, 14), sent.map { chunkSeqOf(it.data) })
+    }
+
+    @Test
+    fun request_chunks_with_empty_range_returns_no_send_actions() {
+        val session = RelaySession("s")
+        session.start()
+        session.onDeviceAudio(c6Packet(10))
+        val actions = session.onServerMessage(requestChunks(10, 10))
+        assertTrue(actions.none { it is RelayAction.SendServerBinary })
+    }
+
+    @Test
+    fun ring_evicts_oldest_past_the_cap_so_old_seqs_are_skipped() {
+        val session = RelaySession("s")
+        session.start()
+        // Push 30 chunks (cap is 25); seqs 0..29. The ring keeps the most recent 25,
+        // i.e. seqs 5..29; seqs 0..4 are evicted.
+        for (seq in 0 until 30) {
+            session.onDeviceAudio(c6Packet(seq))
+        }
+        // Request an evicted seq (3) — it must be skipped, not crash.
+        val actions = session.onServerMessage(requestChunks(0, 5))
+        assertTrue(actions.none { it is RelayAction.SendServerBinary },
+            "evicted seqs must not be backfilled")
+        // Request a retained seq (5) — it must be present.
+        val actions2 = session.onServerMessage(requestChunks(5, 6))
+        val sent2 = actions2.filterIsInstance<RelayAction.SendServerBinary>()
+        assertEquals(listOf(5), sent2.map { chunkSeqOf(it.data) })
+    }
+
+    @Test
+    fun request_chunks_before_start_does_not_backfill_held_audio() {
+        // Before start(), audio is held in pendingAudio (not yet sent) but it
+        // IS in the ring. However, the runtime cannot send binary before hello,
+        // so a backfill before start() returns no SendServerBinary — the server
+        // cannot have requested backfill for a session it hasn't seen hello for.
+        // (The ring still holds the chunks for after start().)
+        val session = RelaySession("s")
+        session.onDeviceAudio(c6Packet(10))
+        val actions = session.onServerMessage(requestChunks(10, 11))
+        assertTrue(actions.none { it is RelayAction.SendServerBinary })
+    }
+
+    @Test
+    fun stop_clears_the_ring_so_a_reconnect_request_chunks_backfills_nothing() {
+        val session = RelaySession("s")
+        session.start()
+        session.onDeviceAudio(c6Packet(10))
+        session.onDeviceAudio(c6Packet(11))
+        session.stop()  // bye; ring cleared
+        // Reconnect: re-start and request the old seqs — ring is empty.
+        session.start()
+        val actions = session.onServerMessage(requestChunks(10, 12))
+        assertTrue(actions.none { it is RelayAction.SendServerBinary },
+            "stop() must clear the ring so stale chunk_seqs from the dead link are not backfilled")
+    }
+
+    @Test
+    fun short_or_malformed_packets_are_skipped_by_request_chunks_not_crash() {
+        val session = RelaySession("s")
+        session.start()
+        session.onDeviceAudio(c6Packet(10))
+        // A malformed packet (too short for chunk_seq) goes into the ring but
+        // is skipped during backfill — it cannot contribute a chunk_seq.
+        session.onDeviceAudio(byteArrayOf(0x10, 0x01, 0x02))
+        val actions = session.onServerMessage(requestChunks(10, 12))
+        val sent = actions.filterIsInstance<RelayAction.SendServerBinary>()
+        // Only seq 10 (the well-formed packet) is backfilled.
+        assertEquals(listOf(10), sent.map { chunkSeqOf(it.data) })
     }
 
     // JSON-quote/escape a string as a field value.

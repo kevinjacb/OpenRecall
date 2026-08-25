@@ -10,6 +10,9 @@ import com.openrecall.relay.protocol.Hello
 import com.openrecall.relay.protocol.ServerMessage
 import com.openrecall.relay.protocol.encode
 import com.openrecall.relay.protocol.parseServerMessage
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.ArrayDeque
 import java.util.Base64
 
 /**
@@ -28,6 +31,13 @@ class RelaySession(
     private val startSeq: Int = 0,
     private val speakerCache: com.openrecall.relay.data.SpeakerCache? = null,
 ) {
+    companion object {
+        /**
+         * A1: ring buffer cap — ~5 s of 200 ms audio chunks (5 s / 200 ms = 25).
+         * Eviction is oldest-first past this size.
+         */
+        const val RING_MAX_CHUNKS = 25
+    }
 
     /**
      * True once [start] has emitted `hello` for the current link. The BLE
@@ -39,6 +49,16 @@ class RelaySession(
      */
     private var started = false
     private val pendingAudio = ArrayDeque<ByteArray>()
+
+    /**
+     * A1: ring buffer of recently-sent §C.6 audio packets, kept so the relay
+     * can honor a server [ServerMessage.RequestChunks] backfill. This covers
+     * Android→server WebSocket loss or reordering — chunks the relay DID
+     * receive from the device and DID send, but the server missed. It does
+     * NOT backfill BLE-dropped packets (a BLE-dropped packet never reached
+     * Android, so it isn't in the ring). Capped at ~5 s of 200 ms chunks.
+     */
+    private val sentRing = ArrayDeque<ByteArray>()
 
     /** Both links are up (device connected, socket open): open the server session. */
     fun start(): List<RelayAction> {
@@ -55,17 +75,44 @@ class RelaySession(
      * Before [start] has run (the socket-open/hello race window), the packet is
      * held in [pendingAudio] and nothing is sent; [start] flushes it after
      * `hello`. After [start], packets are forwarded immediately.
+     *
+     * A1: every outbound chunk (both branches — held audio is still sent after
+     * [start] flushes it, so it belongs in the ring too) is pushed onto
+     * [sentRing] so a later [ServerMessage.RequestChunks] can re-send it.
      */
     fun onDeviceAudio(packet: ByteArray): List<RelayAction> =
-        if (started) listOf(RelayAction.SendServerBinary(packet))
-        else { pendingAudio.addLast(packet); emptyList() }
+        if (started) {
+            pushRing(packet)
+            listOf(RelayAction.SendServerBinary(packet))
+        } else {
+            pendingAudio.addLast(packet)
+            pushRing(packet)
+            emptyList()
+        }
+
+    /** Push [packet] onto the ring, evicting the oldest past the cap. */
+    private fun pushRing(packet: ByteArray) {
+        sentRing.addLast(packet)
+        while (sentRing.size > RING_MAX_CHUNKS) sentRing.pollFirst()
+    }
+
+    /**
+     * Extract the §C.6 `chunk_seq` (bytes 1-4, little-endian uint32) from a
+     * packet, or null if the packet is too short / malformed. Mirrors the
+     * server-side parser (`audio_packet.py`): `_HEADER = "<BIIBBB"`,
+     * `chunk_seq` at offset 1. Stored/compared as Kotlin `Int` (signed) — at
+     * 200 ms/chunk, 2^31 chunks ≈ 14 years, no wrap concern.
+     */
+    private fun chunkSeqOf(packet: ByteArray): Int? =
+        if (packet.size >= 5)
+            ByteBuffer.wrap(packet, 1, 4).order(ByteOrder.LITTLE_ENDIAN).int
+        else null
 
     /** A §E text frame from the server. */
     fun onServerMessage(text: String): List<RelayAction> =
         when (val msg = parseServerMessage(text)) {
             is ServerMessage.Command -> listOf(forwardCommand(msg))
-            is ServerMessage.RequestChunks ->
-                listOf(RelayAction.Note("server requested backfill [${msg.start}, ${msg.end}) — not yet supported"))
+            is ServerMessage.RequestChunks -> backfill(msg.start, msg.end)
             is ServerMessage.Transcript -> {
                 // Speaker recognition: upsert the cache so labels and the
                 // reassign picker resolve the UUID to the latest name. The
@@ -134,12 +181,41 @@ class RelaySession(
         return RelayAction.SendServerText(CommandAck(sessionId, commandId).encode())
     }
 
+    /**
+     * A1: re-send chunks in the `[start, end)` chunk_seq range from [sentRing].
+     *
+     * The server's `RequestChunks(start, end)` is triggered when its reassembler
+     * detects a `chunk_seq` gap from Android→server WebSocket loss or reordering
+     * — chunks the relay DID receive and DID send, but the server missed. The
+     * ring buffer backfills those. Seqs not in the ring (evicted, or never
+     * received — e.g. BLE-dropped packets never reached Android) are skipped
+     * without crashing. Range is `[start, end)` (start inclusive, end
+     * exclusive), matching the server's `RequestChunks` semantics.
+     *
+     * Before [start] has run, returns no backfill — the runtime cannot send
+     * binary before `hello` (the server would close 1002), and the server
+     * cannot have requested backfill for a session it hasn't seen hello for.
+     */
+    private fun backfill(start: Int, end: Int): List<RelayAction> {
+        if (!started || start >= end) return emptyList()
+        val actions = mutableListOf<RelayAction>()
+        for (packet in sentRing) {
+            val seq = chunkSeqOf(packet) ?: continue  // skip short/malformed
+            if (seq in start until end) {
+                actions.add(RelayAction.SendServerBinary(packet))
+            }
+        }
+        return actions
+    }
+
     /** Tear down: tell the server the session is closing so it flushes. Resets the
      *  hello/audio gate so a reconnect (same instance, re-[start]) drops any audio
-     *  held against the dead link and re-arms the hold for the next link. */
+     *  held against the dead link and re-arms the hold for the next link. A1 also
+     *  clears [sentRing] — on reconnect the old link's chunk_seqs are stale. */
     fun stop(): List<RelayAction> {
         started = false
         pendingAudio.clear()
+        sentRing.clear()
         return listOf(RelayAction.SendServerText(Bye(sessionId).encode()))
     }
 
