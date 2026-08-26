@@ -109,6 +109,47 @@ async def test_an_open_segment_is_served_live_and_not_cached(tmp_path):
     assert not (audio.log_path("s1").parent / "seg").exists()
 
 
+async def test_an_open_segment_supports_range_requests(tmp_path):
+    """A segment still within the idle-close window (5 min) is open, but it
+    must still be seekable — scrubbing a just-finished recording is the common
+    case. Without Range the open path served a non-seekable 200, so
+    MediaPlayer treated the source as unseekable and seekTo was a no-op: the
+    'drags the bar but plays from where it started' bug.
+
+    Range support is added by hand on the in-memory snapshot (open segments
+    are never cached to disk, so FileResponse is not an option here).
+    """
+    client, audio, _index = _client(
+        tmp_path, events=[_event(0)], frames=[b"aa"] * 100, closed=False,
+    )
+    async with client:
+        resp = await client.get(
+            "/segments/s1:0/audio", headers={**_AUTH, "Range": "bytes=0-99"},
+        )
+        body = await resp.read()
+
+    assert resp.status == 206
+    assert len(body) == 100
+    assert resp.headers["Content-Range"].startswith("bytes 0-99/")
+    assert resp.headers["Accept-Ranges"] == "bytes"
+    # Still never cached or written to disk — it's a live snapshot.
+    assert resp.headers["Cache-Control"] == "no-store"
+    assert not (audio.log_path("s1").parent / "seg").exists()
+
+
+async def test_open_segment_without_range_advertises_accept_ranges(tmp_path):
+    """The no-range 200 must advertise Accept-Ranges, or MediaPlayer marks the
+    source unseekable up front and never even issues a Range request."""
+    client, _audio, _index = _client(
+        tmp_path, events=[_event(0)], frames=[b"aa"] * 10, closed=False,
+    )
+    async with client:
+        resp = await client.get("/segments/s1:0/audio", headers=_AUTH)
+
+    assert resp.status == 200
+    assert resp.headers["Accept-Ranges"] == "bytes"
+
+
 async def test_audio_for_a_session_with_no_log_is_404(tmp_path):
     client, _audio, _index = _client(tmp_path, events=[_event(0)])
     async with client:

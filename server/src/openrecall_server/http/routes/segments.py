@@ -340,6 +340,54 @@ async def patch_segment(request: web.Request) -> web.Response:
 WAVEFORM_BUCKET_MS = 500
 
 
+def _serve_ogg_range(
+    request: web.Request, body: bytes, *, extra_headers: dict[str, str],
+) -> web.Response:
+    """Serve in-memory Ogg audio bytes with HTTP Range support.
+
+    Open segments are a request-time snapshot (the frame log read at this
+    instant), built in memory and never cached to disk — so [FileResponse] is
+    not an option here. But they must still be seekable: a segment stays open
+    for ``SEGMENT_IDLE_MS`` after its last event, so "scrub a recording I just
+    finished" almost always lands here, and a plain [web.Response] ignores the
+    Range header and serves a 200 — which Android's MediaPlayer reads as an
+    unseekable source and silently no-ops [seekTo], the "drags the bar but
+    plays from where it started" bug. Honour Range by hand instead.
+
+    A single byte range is handled (what MediaPlayer issues); an unsatisfiable
+    range gets 416; anything unparseable falls back to a 200 that at least
+    advertises ``Accept-Ranges`` so the client knows it may retry with one.
+    """
+    total = len(body)
+    headers = {"Accept-Ranges": "bytes", **extra_headers}
+    rng = request.headers.get("Range")
+    if rng and rng.strip().lower().startswith("bytes="):
+        spec = rng.strip()[len("bytes="):]
+        try:
+            start_s, _, end_s = spec.partition("-")
+            if start_s == "" and end_s != "":
+                start = max(0, total - int(end_s))  # suffix: last N bytes
+                end = total - 1
+            elif start_s != "":
+                start = int(start_s)
+                end = int(end_s) if end_s != "" else total - 1
+            else:
+                raise ValueError
+            if end >= total:
+                end = total - 1
+            if total == 0 or start < 0 or start > end or start >= total:
+                raise ValueError
+        except ValueError:
+            return web.Response(
+                status=416, headers={**headers, "Content-Range": f"bytes */{total}"},
+            )
+        return web.Response(
+            status=206, body=body[start:end + 1], content_type="audio/ogg",
+            headers={**headers, "Content-Range": f"bytes {start}-{end}/{total}"},
+        )
+    return web.Response(body=body, content_type="audio/ogg", headers=headers)
+
+
 async def get_segment_audio(request: web.Request) -> web.Response:
     """Serve the segment's audio as Ogg Opus.
 
@@ -368,10 +416,8 @@ async def get_segment_audio(request: web.Request) -> web.Response:
         body = mux_to_bytes(frames)
         if not body:
             return _not_found()
-        return web.Response(
-            body=body,
-            content_type="audio/ogg",
-            headers={"Cache-Control": "no-store"},
+        return _serve_ogg_range(
+            request, body, extra_headers={"Cache-Control": "no-store"},
         )
 
     cache = audio.log_path(segment.session_id).parent / "seg"
