@@ -28,6 +28,7 @@
 #include "ble_link.h"
 #include "commands.h"
 #include "config.h"
+#include "dc_blocker.h"
 #include "executor.h"
 #include "opus_stream.h"
 #include "provisioning.h"
@@ -67,6 +68,12 @@ static void audio_task(void *arg) {
   static uint8_t opus_buf[MAX_OPUS_BYTES];
   vad_t vad;
   vad_init(&vad, VAD_ENERGY_THRESHOLD, VAD_HANGOVER_FRAMES);
+  // DC blocker on the primary mic, before encode. The INMP441 has no
+  // high-pass, so a DC bias accumulates (drifts with temp/handling) and would
+  // otherwise eat Opus bits and bias the energy VAD. Stateful across frames
+  // for the life of the audio task; runs on every voiced frame.
+  dc_blocker_t dc;
+  dc_blocker_init(&dc);
 
   uint32_t frames = 0, voiced = 0, gaps = 0, total = 0;
   uint32_t rel_ts_ms = 0;
@@ -117,6 +124,10 @@ static void audio_task(void *arg) {
       // Voiced frame: encode the primary mic and push the Opus packet. A
       // failure here is fatal to the frame (it'll show up as a chunk_seq gap on
       // the server, which the request_chunks + ring-buffer replay can recover).
+      // DC-block the primary before encode: the VAD above ran on the raw mic
+      // (unchanged behaviour — no VAD regression), but the encoder gets the
+      // DC-free signal so its bits go to voice, not to a slowly drifting bias.
+      dc_blocker_process(&dc, pri, FRAME_SAMPLES);
       int n = opus_stream_encode(pri, opus_buf, sizeof opus_buf);
       if (n > 0 && n <= UINT8_MAX) {
         ring_buffer_push(state, rel_ts_ms, opus_buf, (uint8_t)n);

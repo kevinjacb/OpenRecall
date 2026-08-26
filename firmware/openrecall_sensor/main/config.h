@@ -19,8 +19,17 @@
 #define FRAME_MS 20                                   /* one Opus frame == 20 ms */
 #define FRAME_SAMPLES (SAMPLE_RATE * FRAME_MS / 1000) /* 320 */
 #define FRAME_BYTES (FRAME_SAMPLES * 2)               /* 640 (int16) */
-#define OPUS_BITRATE 24000
-#define OPUS_COMPLEXITY 1  /* [Spike 1] 6.0 ms/frame, ~30% of core 1 */
+/* Opus encode params. 24 kb/s VOIP at complexity 1 was the Spike-1 setting
+ * (6.0 ms/frame, ~30% of core 1) — fine for the throwaway spike, but thin for
+ * real speech: voice intelligibility suffers and the server-side ASR sees a
+ * lossy signal. Bump to 32 kb/s (still well under the BLE notify ceiling) and
+ * complexity 2 — a small core-1 cost for a real quality lift on the encoded
+ * speech that downstream Whisper/Parakeet transcribe. The DC blocker above
+ * also feeds a cleaner signal to the encoder, so the bits go to voice, not
+ * to encoding a DC bias. MAX_OPUS_BYTES caps the per-frame size (fits §C.6 u8
+ * len); 32 kb/s over 20 ms is 80 bytes worst case, well under 256. */
+#define OPUS_BITRATE 32000
+#define OPUS_COMPLEXITY 2  /* [Spike 1 was 1] small core-1 cost, real quality lift */
 #define MAX_OPUS_BYTES 256 /* per-frame encoded cap (fits §C.6 u8 len) */
 
 /* ---- Ring buffer (retrospective capture: "remember that") ---- */

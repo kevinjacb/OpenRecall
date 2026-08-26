@@ -14,6 +14,7 @@ idf_component_register(
         "audio_capture.c"
         "vad.c"
         "mic_dsp.c"
+        "dc_blocker.c"
         "ring_buffer.c"
         "opus_stream.c"
         "ble_link.c"
