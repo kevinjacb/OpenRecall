@@ -119,7 +119,23 @@ def main() -> None:
                     help="bearer token file for the HTTP control API + WS auth (created on first run)")
     ap.add_argument("--http-port", type=int, default=8766,
                     help="HTTP control API port (operator/phone-facing)")
+    ap.add_argument(
+        "--config", default="config.toml",
+        help="TOML config file for OPENRECALL_* runtime knobs (asr backend, "
+             "denoise, whisper params, command detector, llm/vlm, etc.) — a "
+             "persistent alternative to exporting env vars each launch. Keys "
+             "flatten to OPENRECALL_{SECTION}_{KEY}; real env vars still win "
+             "(setdefault). A missing file is a no-op. Copy config.example.toml "
+             "to config.toml to get started.",
+    )
     args = ap.parse_args()
+
+    # Apply the config file BEFORE any OPENRECALL_* read (LOG_LEVEL below, the
+    # sentence-coalesce / denoise reads later, and load_agent_config all read
+    # os.environ). setdefault means an explicit env var or CLI override still
+    # wins; the file only fills gaps. A missing file is a silent no-op.
+    from openrecall_server.config_file import apply_config_file
+    _cfg_applied = apply_config_file(args.config)
 
     # Bring-up observability: INFO shows the full relay + memory + proactive
     # flow (connection, hello, transcripts, event append, extraction enqueue,
@@ -133,6 +149,11 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    if _cfg_applied:
+        logging.getLogger(__name__).info(
+            "config: %d key(s) from %s (env var wins on conflict)",
+            len(_cfg_applied), args.config,
+        )
 
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
     store = SqliteEventStore(args.db)

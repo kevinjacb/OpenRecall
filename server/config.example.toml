@@ -1,0 +1,151 @@
+# OpenRecall gateway config — copy to config.toml and edit.
+#
+# This is a persistent, file-based alternative to exporting a wall of
+# OPENRECALL_* environment variables every launch. The gateway loads
+# config.toml (override with --config <path>) at startup and merges it into
+# the environment. REAL ENV VARS WIN: anything you `export` (or set in CI)
+# takes precedence over this file, so this is the convenient default, not a
+# new source of truth that overrides explicit settings.
+#
+# Sectioned keys flatten to OPENRECALL_{SECTION}_{KEY}. Each section below
+# documents the real env-var name it maps to. A missing file is a no-op, so
+# deleting/renaming config.toml reverts to the built-in defaults + env vars.
+# Everything commented out == the built-in default. Uncomment to change.
+
+# ---- ASR backend (which transcription engine) ----
+[asr]
+# OPENRECALL_ASR_BACKEND — "whisper" (default; mlx-whisper) or "parakeet"
+#   (NVIDIA Parakeet-TDT; transducer, no Whisper near-silence phantoms).
+# backend = "whisper"
+
+[parakeet]
+# OPENRECALL_PARAKEET_MODEL — parakeet-mlx model id (parakeet backend only).
+# model = "parakeet-mlx-0.6b"
+
+# ---- Transcription tuning ----
+# The rolling window + hop are CLI flags (--window-ms / --hop-ms), not env
+# vars, so they are NOT set here. window-ms defaults to backend-aware:
+# 5000 for whisper, 2000 for parakeet.
+
+[whisper]
+# OPENRECALL_WHISPER_NO_SPEECH_THRESHOLD — prob above which a hop is "speech".
+# no_speech_threshold = 0.6
+# OPENRECALL_WHISPER_LOGPROB_THRESHOLD — avg logprob below which text is dropped.
+# logprob_threshold = -1.0
+# OPENRECALL_WHISPER_COMPRESSION_RATIO_THRESHOLD — gzip-ratio hallucination gate.
+# compression_ratio_threshold = 2.4
+# OPENRECALL_WHISPER_CONDITION_ON_PREVIOUS_TEXT — keep off (causes drift/hallucination).
+# condition_on_previous_text = false
+# OPENRECALL_WHISPER_HALLUCINATION_BLOCKLIST_ENABLED — drop short phantom phrases.
+# hallucination_blocklist_enabled = false
+# OPENRECALL_WHISPER_HALLUCINATION_MAX_WORDS — blocklist applies to phrases <= N words.
+# hallucination_max_words = 4
+# OPENRECALL_WHISPER_HALLUCINATION_PHRASES — TOML array -> comma-joined string.
+# hallucination_phrases = ["hello", "thank you", "hi"]
+# OPENRECALL_WHISPER_VAD_MODE — "off" (default) or "webrtc" (opt-in webrtcvad gate;
+#   skips the Whisper call on pure-noise hops; needs the [vad] pip extra).
+# vad_mode = "off"
+# OPENRECALL_WHISPER_VAD_AGGRESSIVENESS — 0..3 (webrtc mode only).
+# vad_aggressiveness = 2
+
+# ---- Server-side denoise (spectral gating on decoded PCM) ----
+# Off by default. ON needs the [denoise] pip extra: pip install -e '.[denoise]'
+# Self-calibrates a noise profile from the quietest hops; gates each hop
+# against it before transcription AND speaker embedding.
+[denoise]
+# OPENRECALL_DENOISE_ENABLED — true to enable server-side noisereduce.
+# enabled = true
+
+# ---- Sentence coalescing (per-hop words -> readable sentences) ----
+[sentence]
+# OPENRECALL_SENTENCE_COALESCE — on by default; set false to revert to per-word.
+# coalesce = true
+# OPENRECALL_SENTENCE_PAUSE_MS — inter-sentence pause threshold (ms).
+# pause_ms = 400
+
+# ---- Proactive listener (background extraction) ----
+[proactive]
+# OPENRECALL_PROACTIVE_PLAN_TIMEOUT_S — LLM call timeout for proactive planning.
+# plan_timeout_s = 8
+
+# ---- Speaker recognition (off by default; needs [speaker] pip extra) ----
+[speaker]
+# OPENRECALL_SPEAKER_ENABLED — true to enable speaker identification.
+# enabled = false
+# OPENRECALL_SPEAKER_EMBED_MODEL — "resemblyzer" (real CPU backend) or a remote id.
+# embed_model = "resemblyzer"
+# OPENRECALL_SPEAKER_EMBED_BASE_URL / OPENRECALL_SPEAKER_EMBED_API_KEY — remote embedder.
+# embed_base_url = ""
+# embed_api_key = ""
+
+[confidence]
+# OPENRECALL_CONFIDENCE_AUTONOMOUS — auto-act threshold (must be > confirm).
+# confidence_autonomous = 0.70
+# OPENRECALL_CONFIDENCE_CONFIRM — confirm-with-user threshold.
+# confidence_confirm = 0.78
+# OPENRECALL_RATE_LIMIT_PER_MIN — proactive plan rate cap.
+# rate_limit_per_min = 6
+
+# ---- Speech->command channel (off by default) ----
+[command]
+# OPENRECALL_COMMAND_DETECTOR_ENABLED — true to enable the voice command path.
+# detector_enabled = false
+# OPENRECALL_COMMAND_REQUIRE_WEARER — gate commands on confirmed-wearer (default true).
+# require_wearer = true
+# OPENRECALL_COMMAND_CONFIDENCE_THRESHOLD — Stage-2 LLM confidence floor.
+# confidence_threshold = 0.6
+# OPENRECALL_COMMAND_COOLDOWN_S — per-command-type cooldown.
+# cooldown_s = 30
+# OPENRECALL_COMMAND_MAX_INFLIGHT — concurrent Stage-2 LLM calls.
+# max_inflight = 2
+# OPENRECALL_COMMAND_LLM_MODEL / _BASE_URL / _API_KEY — Stage-2 LLM endpoint.
+# llm_model = ""
+# llm_base_url = ""
+# llm_api_key = ""
+# OPENRECALL_COMMAND_PHRASES — map of "type:phrase" pairs joined by ';'.
+#   Example: reminder:remind me to;memo:note that I saw
+# phrases = ""
+
+# ---- Extraction LLM (memory formation) — provider-agnostic, OpenAI-compatible ----
+[llm]
+# OPENRECALL_LLM_MODEL / _BASE_URL / _API_KEY — local (Ollama, mlx_lm.server) or cloud.
+# model = ""
+# base_url = ""
+# api_key = ""
+# OPENRECALL_LLM_TEMPERATURE — extraction temperature.
+# temperature = 0.2
+
+# ---- Embeddings (retrieval) ----
+[embed]
+# OPENRECALL_EMBED_MODEL / _BASE_URL / _API_KEY — embedding model endpoint.
+# model = ""
+# base_url = ""
+# api_key = ""
+
+# ---- Vision LLM (scene captions) ----
+[vlm]
+# OPENRECALL_VLM_MODEL / _BASE_URL / _API_KEY — VLM endpoint (or OPENRECALL_VLM_MODEL=dummy for CI).
+# model = ""
+# base_url = ""
+# api_key = ""
+
+# ---- Vision keyframe selection (video clips) ----
+[vision]
+# OPENRECALL_VISION_KEYFRAME_THRESHOLD — scene-change MAD threshold (0..1).
+# keyframe_threshold = 0.12
+# OPENRECALL_VISION_KEYFRAME_MIN_GAP — min frames between keyframes.
+# keyframe_min_gap = 5
+# OPENRECALL_VISION_KEYFRAME_CAP — max keyframes per clip.
+# keyframe_cap = 12
+# OPENRECALL_VISION_KEYFRAME_THUMB_SIZE — thumbnail px for MAD.
+# keyframe_thumb_size = 32
+
+# ---- Logging ----
+[log]
+# OPENRECALL_LOG_LEVEL — "INFO" (default), "DEBUG", "WARNING".
+# level = "INFO"
+
+# ---- Escape hatch ----
+# Top-level keys (not in any [section]) are used verbatim as env-var names, for
+# any value that does not fit the OPENRECALL_{SECTION}_{KEY} shape. Example:
+# OPENRECALL_PARAKEET_MODEL = "tdt-small"

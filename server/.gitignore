@@ -11,3 +11,6 @@ build/
 *.sqlite3
 data/
 blobs/
+
+# Operator runtime config (copy from config.example.toml)
+config.toml
