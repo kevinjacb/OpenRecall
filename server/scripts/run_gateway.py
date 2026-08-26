@@ -442,6 +442,21 @@ def main() -> None:
         )
     if _sentence_pause_ms <= 0:
         raise SystemExit("OPENRECALL_SENTENCE_PAUSE_MS must be > 0")
+    # Server-side denoise: spectral gating on the decoded PCM before it reaches
+    # the transcriber and the speaker embedder. Off by default (NoopDenoiser,
+    # zero cost / zero behavior change); set OPENRECALL_DENOISE_ENABLED=1 to
+    # wire NoisereduceDenoiser, which self-calibrates a noise profile from the
+    # quietest hops and gates each hop against it. Requires the [denoise] extra
+    # (pip install -e '.[denoise]'); the noisereduce import is lazy so a default
+    # install and the unit suite run without it.
+    _denoise_enabled = _os.environ.get("OPENRECALL_DENOISE_ENABLED", "0") not in (
+        "0", "", "false",
+    )
+    _denoiser = None
+    if _denoise_enabled:
+        from openrecall_server.ingest.denoise import build_denoiser
+        _denoiser = build_denoiser(enabled=True, sample_rate=16000)
+        logging.info("denoise: enabled (noisereduce spectral gating)")
     from openrecall_server.gateway.adapter import build_pipeline_factory as _bpf
     def _make_factory():
         return _bpf(
@@ -460,6 +475,7 @@ def main() -> None:
             rel_ts_sink=session_timeline.record,
             sentence_coalesce=_sentence_coalesce,
             sentence_pause_ms=_sentence_pause_ms,
+            denoiser=_denoiser,
         )
     factory = _make_factory()
     app = build_app(

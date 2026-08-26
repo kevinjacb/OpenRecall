@@ -119,6 +119,7 @@ def build_pipeline_factory(
     rel_ts_sink=None,
     sentence_coalesce: bool = True,
     sentence_pause_ms: int | None = None,
+    denoiser=None,
 ) -> PipelineFactory:
     """Factory wiring the real Opus decoder + MLX-whisper transcriber per session.
 
@@ -296,6 +297,7 @@ def build_pipeline_factory(
             sentence_pause_ms=(
                 sentence_pause_ms if sentence_pause_ms is not None else 400
             ),
+            denoiser=denoiser,
         )
 
     return factory

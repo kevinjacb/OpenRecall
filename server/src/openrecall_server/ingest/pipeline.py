@@ -29,6 +29,7 @@ import logging
 from typing import TYPE_CHECKING, Callable
 
 from .audio_packet import AudioPacket
+from .denoise import NoopDenoiser, PcmDenoiser
 from .reassembler import SessionReassembler
 from .sentence_coalescer import DEFAULT_PAUSE_MS, SentenceCoalescer
 from .streaming_transcriber import (
@@ -98,6 +99,7 @@ class AudioIngestPipeline:
         rel_ts_sink: Callable[[str, int], None] | None = None,
         sentence_coalesce: bool = False,
         sentence_pause_ms: int = DEFAULT_PAUSE_MS,
+        denoiser: PcmDenoiser | None = None,
     ) -> None:
         if window_ms % FRAME_MS != 0:
             raise ValueError(f"window_ms must be a multiple of {FRAME_MS}")
@@ -150,6 +152,12 @@ class AudioIngestPipeline:
         # coalescer's tail sentence (held pending, no fresh PCM to identify)
         # to this speaker instead of dropping the label — see flush().
         self._last_speaker = None
+        # Denoise on the decoded PCM before it reaches the transcriber and the
+        # speaker embedder (both read from `_pcm_buffer`). Defaults to a
+        # pass-through so a default install (no noisereduce) is unchanged;
+        # the production factory wires NoisereduceDenoiser when
+        # OPENRECALL_DENOISE_ENABLED is set.
+        self._denoiser: PcmDenoiser = denoiser if denoiser is not None else NoopDenoiser()
         # Audio persistence (spec §3.1). `persist_audio` defaults to on so
         # Phase 3 stands alone; the `capture.save_audio` setting overrides it
         # once Phase 4 lands.
@@ -295,7 +303,7 @@ class AudioIngestPipeline:
             return []
         self._persist(packet)
         for frame in delivered:
-            self._pcm_buffer.extend(self._decoder.decode(frame))
+            self._pcm_buffer.extend(self._denoiser.process(self._decoder.decode(frame)))
         if delivered:
             logger.info(
                 "pipeline: +%d frame(s) decoded -> %d bytes PCM buffered",

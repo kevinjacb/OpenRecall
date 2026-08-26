@@ -58,6 +58,16 @@ llm = [
 video = [
     "pillow>=10",
 ]
+# Server-side spectral-gating denoise on the decoded PCM before transcription
+# (and speaker embedding). Off by default (OPENRECALL_DENOISE_ENABLED=true);
+# lazy-imported inside NoisereduceDenoiser so the unit suite and a default
+# install run without it. INMP441 has no AGC and nothing filters the mic
+# signal end-to-end, so this is the single biggest background-noise win and
+# also lifts transcription accuracy by feeding the ASR cleaner audio.
+denoise = [
+    "noisereduce>=2.0",
+    "numpy>=2",
+]
 
 [build-system]
 requires = ["hatchling"]
