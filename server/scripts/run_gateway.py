@@ -99,7 +99,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--window-ms", type=int, default=2000, help="transcription window")
+    ap.add_argument(
+        "--window-ms", type=int, default=None,
+        help="transcription rolling-window size in ms. None = backend-aware: "
+             "5000 for whisper (context-hungry: accuracy depends on surrounding "
+             "speech), 2000 for parakeet (transducer, tuned for low-latency RTF). "
+             "The low-latency refactor cut this 5000->2000 for parakeet's RTF but "
+             "applied it to whisper too, gutting whisper's context window.")
     ap.add_argument("--hop-ms", type=int, default=240,
                     help="transcription hop (output granularity); MUST be a multiple of "
                          "FRAME_MS=20 (pipeline enforces it). 240 is the smallest multiple "
@@ -322,6 +328,17 @@ def main() -> None:
     # OPENRECALL_RATE_LIMIT_PER_MIN from the process environment. Defaults match
     # the spec; a bad value aborts startup with a clear error.
     agent_config = load_agent_config(__import__("os").environ)
+    # Resolve the backend-aware transcription window. Whisper is context-hungry
+    # (5s window, as the streaming design was built around); Parakeet's
+    # transducer runs at 2s for low-latency RTF. An explicit --window-ms wins.
+    # The 5s overlap gives ~21x hop redundancy at 240ms, so the inference
+    # worker's drop-oldest stays lossless even if Whisper inference runs over
+    # the hop budget (a dropped hop's audio is covered by the adjacent ones).
+    if args.window_ms is None:
+        args.window_ms = 5000 if agent_config.asr.backend == "whisper" else 2000
+        logging.info(
+            "window_ms auto=%d (asr_backend=%s)", args.window_ms, agent_config.asr.backend,
+        )
     planner = Planner(
         retriever=Retriever(
             embedder=embedder,
