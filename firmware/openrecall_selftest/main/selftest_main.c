@@ -85,7 +85,7 @@ void app_main(void) {
 
   printf("\n[live mic meter] per-channel RMS every %d ms. Press D2 to exit.\n",
          LIVE_METER_FRAMES * 20);
-  int16_t p[FRAME_SAMPLES], rr[FRAME_SAMPLES];
+  static int16_t p[FRAME_SAMPLES], rr[FRAME_SAMPLES];   /* static: keep off the main stack */
   while (gpio_get_level(BUTTON_GPIO) != 0) {
     long sq_p = 0, sq_r = 0; long n = 0;
     for (int f = 0; f < LIVE_METER_FRAMES && gpio_get_level(BUTTON_GPIO) != 0; f++) {

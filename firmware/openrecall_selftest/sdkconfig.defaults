@@ -23,6 +23,12 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_FREERTOS_HZ=1000
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
+# app_main runs ALL four tests sequentially (I2S init + camera init/deinit +
+# ADC + printf/ESP_LOG) on the main task, then the live mic meter. The IDF
+# default 3 KB main stack overflows during audio init; 8 KB matches the
+# product's proven 8 KB camera/snapshot tasks.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
 # --- Console ---
 # The XIAO ESP32S3 USB-C port is USB-Serial/JTAG (NOT USB-OTG CDC). Mirror the
 # product firmware: UART0 primary + USB-Serial/JTAG secondary, so `idf.py
