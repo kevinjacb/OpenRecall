@@ -14,8 +14,8 @@
  * Audio mics reuse the production drivers (I2S on GPIO 4/5/6 = D3/D4/D5);
  * the camera reuses the production driver (OV2640 on the Sense board).
  * Only the button + battery are new here. */
-#define VBAT_GPIO         2     /* D1, ADC1 channel 1 (battery divider) */
-#define BUTTON_GPIO       3     /* D2, strapping pin; internal pull-up, press = LOW */
+#define VBAT_GPIO         1     /* D0, ADC1 channel 0 (battery divider) */
+#define BUTTON_GPIO       2     /* D1, non-strapping; internal pull-up, press = LOW */
 #define LED_GPIO         21      /* USER_LED on the Sense (also SD CS; SD is skipped) */
 
 /* XIAO USER_LED is active-low (drive 0 = ON). Flip both if your board differs. */

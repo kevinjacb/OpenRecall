@@ -39,12 +39,24 @@ static bool stage_rgb565(double *mean_out, double *std_out, char *detail, size_t
     .pixel_format = PIXFORMAT_RGB565,
     .frame_size = FRAMESIZE_QVGA,           /* 320x240 */
     .jpeg_quality = 12,
-    .fb_count = 2,
+    /* fb_count=1 + GRAB_WHEN_EMPTY: the audio I2S path is STILL running during
+     * this test (kept initialized for the post-summary live meter), so continuous
+     * capture (fb_count=2 + GRAB_LATEST) would spam PSRAM DMA and contend with
+     * the audio ring buffer. On-demand capture takes one frame, disarms, waits.
+     * Matches the production camera.c rationale (see camera-on-demand note). */
+    .fb_count = 1,
     .fb_location = CAMERA_FB_IN_PSRAM,
-    .grab_mode = CAMERA_GRAB_LATEST,
+    .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
   };
   esp_err_t err = esp_camera_init(&cfg);
-  if (err != ESP_OK) { snprintf(detail, dlen, "rgb565 init: %s", esp_err_to_name(err)); return false; }
+  if (err != ESP_OK) {
+    /* ESP_ERR_NOT_SUPPORTED = the SCCB probe found no responding camera at any
+     * known address (no ACK). esp_camera auto-detects both OV2640 and OV3660,
+     * so this is a connectivity/power issue, not a wrong-sensor config. */
+    snprintf(detail, dlen, "%s (no camera on SCCB — check connection)",
+             err == ESP_ERR_NOT_SUPPORTED ? "no camera detected" : esp_err_to_name(err));
+    return false;
+  }
 
   camera_fb_t *fb1 = esp_camera_fb_get();
   if (!fb1 || fb1->format != PIXFORMAT_RGB565) {

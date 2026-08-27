@@ -66,7 +66,7 @@ void app_main(void) {
   selftest_led_init();
   printf("\n\n====== OpenRecall Hardware Self-Test ======\n");
   printf("Board: XIAO ESP32S3 Sense | IDF 5.1.6\n");
-  printf("audio: mics D3-5/GPIO4-6 | camera: OV2640 | button: D2/GPIO3 | battery: D1/GPIO2\n");
+  printf("audio: mics D3-5/GPIO4-6 | camera: OV2640/OV3660 (auto-detect) | button: D1/GPIO2 | battery: D0/GPIO1\n");
   printf("LED: GPIO21 - solid ON = all pass; blink N = N failures\n\n");
 
   selftest_result_t res[4];
@@ -83,7 +83,7 @@ void app_main(void) {
   if (fails == 0) { printf("ALL PASS - safe to seal the device.\n"); selftest_led_set_all_pass(); }
   else            { printf("%d FAIL(s) - do NOT seal.\n", fails); selftest_led_start_fail_blink(fails); }
 
-  printf("\n[live mic meter] per-channel RMS every %d ms. Press D2 to exit.\n",
+  printf("\n[live mic meter] per-channel RMS every %d ms. Press D1 to exit.\n",
          LIVE_METER_FRAMES * 20);
   static int16_t p[FRAME_SAMPLES], rr[FRAME_SAMPLES];   /* static: keep off the main stack */
   while (gpio_get_level(BUTTON_GPIO) != 0) {

@@ -23,7 +23,7 @@ static const char *TAG = "battery";
 
 selftest_result_t test_battery(void) {
   selftest_result_t r = {0};
-  ESP_LOGI(TAG, "init ADC1 channel 1 (GPIO%d, 11 dB atten)...", VBAT_GPIO);
+  ESP_LOGI(TAG, "init ADC1 channel 0 (GPIO%d, 12 dB atten)...", VBAT_GPIO);
 
   adc_oneshot_unit_handle_t adc = NULL;
   adc_oneshot_unit_init_cfg_t init_cfg = { .unit_id = ADC_UNIT_1 };
@@ -31,19 +31,19 @@ selftest_result_t test_battery(void) {
   if (err != ESP_OK) { r.status = ST_FAIL; snprintf(r.detail, sizeof r.detail, "adc init: %s", esp_err_to_name(err)); return r; }
 
   adc_oneshot_chan_cfg_t chan_cfg = { .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_12 };
-  err = adc_oneshot_config_channel(adc, ADC_CHANNEL_1, &chan_cfg);
+  err = adc_oneshot_config_channel(adc, ADC_CHANNEL_0, &chan_cfg);
   if (err != ESP_OK) { r.status = ST_FAIL; snprintf(r.detail, sizeof r.detail, "adc cfg: %s", esp_err_to_name(err)); return r; }
 
   adc_cali_handle_t cali = NULL;
   adc_cali_curve_fitting_config_t cali_cfg = {
-    .unit_id = ADC_UNIT_1, .chan = ADC_CHANNEL_1, .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_12 };
+    .unit_id = ADC_UNIT_1, .chan = ADC_CHANNEL_0, .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_12 };
   err = adc_cali_create_scheme_curve_fitting(&cali_cfg, &cali);
   if (err != ESP_OK) { r.status = ST_FAIL; snprintf(r.detail, sizeof r.detail, "cali: %s", esp_err_to_name(err)); return r; }
 
   int raw[BAT_SAMPLES];
   for (int i = 0; i < BAT_SAMPLES; i++) {
     int v = 0;
-    if (adc_oneshot_read(adc, ADC_CHANNEL_1, &v) != ESP_OK) v = 0;
+    if (adc_oneshot_read(adc, ADC_CHANNEL_0, &v) != ESP_OK) v = 0;
     raw[i] = v;
     vTaskDelay(pdMS_TO_TICKS(2));
   }

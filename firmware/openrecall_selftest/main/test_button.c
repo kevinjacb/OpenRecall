@@ -1,10 +1,9 @@
 /*
- * Button test — momentary switch on D2 (GPIO3, strapping pin).
+ * Button test — momentary switch on D1 (GPIO2, non-strapping).
  *
  * Wired button->GND with the internal pull-up, so press = LOW. Polls with a
- * ~20 ms debounce and waits up to BUTTON_TIMEOUT_MS for a press. GPIO3 is a
- * strapping pin but only matters at reset (a held-down button at boot would
- * change JTAG routing); reading it at runtime is fine.
+ * ~20 ms debounce and waits up to BUTTON_TIMEOUT_MS for a press. GPIO2 is not
+ * a strapping pin, so it is safe at both reset and runtime.
  */
 #include "selftest.h"
 #include "selftest_config.h"
@@ -26,8 +25,8 @@ selftest_result_t test_button(void) {
   esp_err_t err = gpio_config(&io);
   if (err != ESP_OK) { r.status = ST_FAIL; snprintf(r.detail, sizeof r.detail, "cfg: %s", esp_err_to_name(err)); return r; }
 
-  printf(">>> Press the D2 button now (waiting up to %d s)...\n", BUTTON_TIMEOUT_MS / 1000);
-  ESP_LOGI(TAG, "waiting for press on GPIO%d (D2)...", BUTTON_GPIO);
+  printf(">>> Press the D1 button now (waiting up to %d s)...\n", BUTTON_TIMEOUT_MS / 1000);
+  ESP_LOGI(TAG, "waiting for press on GPIO%d (D1)...", BUTTON_GPIO);
 
   int pressed = 0;
   TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(BUTTON_TIMEOUT_MS);
