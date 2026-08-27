@@ -18,13 +18,14 @@ build/
 dist/
 
 # --- ESP-IDF / firmware ---
-firmware/openrecall_sensor/build/
-firmware/openrecall_sensor/managed_components/
-firmware/openrecall_sensor/.cache/
-firmware/openrecall_sensor/sdkconfig
-firmware/openrecall_sensor/sdkconfig.old
+firmware/*/build/
+firmware/*/managed_components/
+firmware/*/.cache/
+firmware/*/sdkconfig
+firmware/*/sdkconfig.old
 **/dependencies.lock
 !firmware/openrecall_sensor/dependencies.lock
+!firmware/openrecall_selftest/dependencies.lock
 
 # --- Android / Gradle ---
 android/**/.gradle/

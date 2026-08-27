@@ -1,0 +1,33 @@
+# OpenRecall self-test firmware — IDF defaults (XIAO ESP32S3 Sense).
+# No radio/SD/Opus. Rationale in comments; mirrors the product firmware's
+# board essentials minus BT/WiFi/FatFS.
+
+# --- Flash + PSRAM (8 MB flash; 8 MB Octal PSRAM on the Sense) ---
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+
+# --- Partition table: custom single-app, 1 MB factory (no OTA) ---
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+# CAPS_ALLOC (not _MALLOC) — same rationale as the product firmware: keeps
+# system allocations in internal SRAM. The camera requests PSRAM explicitly.
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+# CONFIG_SPIRAM_USE_MALLOC is not set
+
+# --- CPU / scheduler ---
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# --- Console ---
+# The XIAO ESP32S3 USB-C port is USB-Serial/JTAG (NOT USB-OTG CDC). Mirror the
+# product firmware: UART0 primary + USB-Serial/JTAG secondary, so `idf.py
+# monitor` shows the log over the USB-C cable. Never set ESP_CONSOLE_USB_CDC.
+CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
+
+# --- Logging ---
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
