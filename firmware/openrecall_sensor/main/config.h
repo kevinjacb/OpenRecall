@@ -92,6 +92,14 @@
 #define VAD_NOISE_ALPHA_DOWN_Q16   1311  /* 0.02 * 65536 */
 #define VAD_NOISE_ALPHA_UP_Q16     131   /* 0.002 * 65536 */
 
+/* ---- Input gain (pre-Opus, on the DC-blocked primary) ----
+ * Fixed Q8 multiply: out = sat_int16(in * INPUT_GAIN_Q8 >> 8). The INMP441 has
+ * no AGC and sits at ~1.4% full scale at wearable distance (amp ~450); x8
+ * (2048 in Q8) lifts it to ~11% FS — a hotter signal for Opus and Whisper with
+ * no clipping risk on normal speech. Saturates only on rare full-scale peaks.
+ * Tunable here; runtime tunability is a Phase 3 concern. */
+#define INPUT_GAIN_Q8 2048u   /* x8 in Q8 (8 << 8) */
+
 /* ---- Dual-mic DSP: NLMS adaptive differential noise cancellation ----
  * Pure fixed-point (int32 Q15). The reference mic (back, ambient) drives an
  * adaptive FIR that models the noise path to the primary (front, voice) mic;
