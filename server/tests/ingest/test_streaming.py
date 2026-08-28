@@ -432,3 +432,32 @@ def test_flush_emits_one_segment_per_pending_sentence_id():
     ids = [seg.sentence_id for seg in tail]
     assert texts == ["how are", "you"]
     assert ids == [2, 3]
+
+
+def test_leading_space_tokens_join_single_spaced_in_feed():
+    """mlx-whisper prefixes non-first word tokens with a leading space; the
+    streamer must join them to a single-spaced sentence, not 'Hello,  world!'."""
+    whisper = FakeWhisper([
+        [Token(text="Hello,", start_ms=0, end_ms=400),
+         Token(text=" world!", start_ms=400, end_ms=800)],
+    ])
+    s = streaming_from_tokens(whisper, sample_rate=16000, hop_ms=1000, window_ms=5000)
+    segments = s.feed(b"\x00" * 16000)  # 1 s of audio
+    assert len(segments) == 1
+    assert segments[0].text == "Hello, world!"
+
+
+def test_leading_space_tokens_join_single_spaced_in_flush():
+    """The flush path (session-end drain) must strip leading spaces too."""
+    # feed commits "Hello," (0-400); the flush call re-transcribes and adds
+    # " world!" (400-800) past the committed cursor -> emitted via flush.
+    whisper = FakeWhisper([
+        [Token(text="Hello,", start_ms=0, end_ms=400)],
+        [Token(text="Hello,", start_ms=0, end_ms=400),
+         Token(text=" world!", start_ms=400, end_ms=800)],
+    ])
+    s = streaming_from_tokens(whisper, sample_rate=16000, hop_ms=1000, window_ms=5000)
+    feed_segs = s.feed(b"\x00" * 16000)
+    assert [seg.text for seg in feed_segs] == ["Hello,"]
+    flush_segs = s.flush()
+    assert [seg.text for seg in flush_segs] == ["world!"]

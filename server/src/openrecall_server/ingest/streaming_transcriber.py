@@ -379,7 +379,10 @@ class StreamingTranscriber:
         #    one-Segment-per-hop behavior for backends with no structure.
         segments: list[Segment] = []
         for sentence_id, group in _group_by_sentence_id(new_tokens):
-            text = " ".join(t.text for t in group)
+            # mlx-whisper prefixes non-first word tokens with a leading space
+            # (a tokenization marker, not content); strip it before joining so
+            # the segment is single-spaced ("Hello, world!", not "Hello,  world!").
+            text = " ".join(t.text.lstrip() for t in group)
             # 5.5. Cross-hop dedup: a short segment identical to the last
             # EMITTED one is a phantom repeat on noise (the overlap dedup in
             # step 4 only catches repeats at the same absolute time; a fresh
@@ -445,7 +448,8 @@ class StreamingTranscriber:
             return []
         segments: list[Segment] = []
         for sentence_id, group in _group_by_sentence_id(new_tokens):
-            text = " ".join(t.text for t in group)
+            # Strip leading-space tokenization marker (see feed() for the rationale).
+            text = " ".join(t.text.lstrip() for t in group)
             segment = Segment(
                 text=text,
                 start_ms=group[0].start_ms,
