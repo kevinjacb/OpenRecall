@@ -16,6 +16,7 @@ idf_component_register(
         "mic_dsp.c"
         "dc_blocker.c"
         "gain.c"
+        "button.c"
         "ring_buffer.c"
         "opus_stream.c"
         "ble_link.c"

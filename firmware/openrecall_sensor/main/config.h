@@ -100,6 +100,32 @@
  * Tunable here; runtime tunability is a Phase 3 concern. */
 #define INPUT_GAIN_Q8 2048u   /* x8 in Q8 (8 << 8) */
 
+/* ---- D1 button (GPIO2) gesture thresholds (spec 3.4) ----
+ * Tunable. The classifier (button.c) is host-tested against these. The button
+ * is on D1/GPIO2 (non-strapping; internal pull-up, press=LOW). Gestures:
+ *   SHORT     -> mark moment (request_buffer 60 s)
+ *   DOUBLE    -> toggle capture (audio_gate)
+ *   LONG      -> capture_photo (snapshot now)
+ *   VERY_LONG -> deep sleep (explicit only) */
+#define BUTTON_GPIO            2     /* D1, non-strapping; internal pull-up, press=LOW */
+#define BUTTON_DEBOUNCE_MS      20
+#define BUTTON_DOUBLE_GAP_MS    400   /* second press within this of a short release = double */
+#define BUTTON_LONG_MS          1000  /* hold >= this = long (snapshot); < this = a tap */
+#define BUTTON_VERY_LONG_MS     6000  /* hold >= this = very-long (deep sleep) */
+
+/* ---- D0 battery divider (GPIO1 = ADC1_CH0, 100k/100k, x2.0; spec 3.5) ----
+ * Ported from the selftest test_battery.c (commit 77fda41). ADC1 is safe
+ * alongside WiFi (ADC2 is NOT — WiFi steals it). 12 dB atten so a full 4.2 V
+ * LiPo (-> 2.1 V at the pin) fits the ADC range. 64-sample oversample drops
+ * the min/max for noise rejection. */
+#define VBAT_GPIO        1     /* D0, ADC1 channel 0 */
+#define VBAT_DIVIDER     2.0f   /* 100k/100k */
+#define VBAT_MIN_MV      3000   /* 0% (single-LiPo floor) */
+#define VBAT_FULL_MV     4100   /* 100% */
+#define VBAT_MAX_MV      4250   /* above this is an error */
+#define BATTERY_SAMPLE_INTERVAL_S  30
+#define BATTERY_OVERSAMPLE           64
+
 /* ---- Dual-mic DSP: NLMS adaptive differential noise cancellation ----
  * Pure fixed-point (int32 Q15). The reference mic (back, ambient) drives an
  * adaptive FIR that models the noise path to the primary (front, voice) mic;
