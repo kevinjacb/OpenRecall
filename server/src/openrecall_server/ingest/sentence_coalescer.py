@@ -63,9 +63,11 @@ from __future__ import annotations
 from .streaming_transcriber import Segment, StreamingTranscriber
 
 # A gap between consecutive words this wide is a sentence boundary even
-# without punctuation. 400 ms is a comfortable inter-sentence pause; below
-# it, words flow as one sentence. Tunable via OPENRECALL_SENTENCE_PAUSE_MS.
-DEFAULT_PAUSE_MS = 400
+# without punctuation. 1000 ms is a reliable inter-sentence pause; below it,
+# words flow as one sentence. The previous 400 ms fired inside a natural
+# thinking pause and split mid-thought utterances. Tunable via
+# OPENRECALL_SENTENCE_PAUSE_MS.
+DEFAULT_PAUSE_MS = 1000
 
 # Safety caps so a run-on with no punctuation and no pause cannot grow a
 # pending sentence without bound. These are deliberately generous — a

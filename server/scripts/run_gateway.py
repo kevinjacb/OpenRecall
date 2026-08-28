@@ -453,10 +453,11 @@ def main() -> None:
     # would otherwise be one word per Transcript line / one event per word).
     # Set OPENRECALL_SENTENCE_COALESCE=0 to revert to per-word emission
     # (for real-hardware debugging), and OPENRECALL_SENTENCE_PAUSE_MS to tune
-    # the inter-sentence pause threshold (default 400 ms).
+    # the inter-sentence pause threshold (default 1000 ms; 400 ms fired inside
+    # a natural thinking pause and split mid-thought utterances).
     _sentence_coalesce = _os.environ.get("OPENRECALL_SENTENCE_COALESCE", "1") != "0"
     try:
-        _sentence_pause_ms = int(_os.environ.get("OPENRECALL_SENTENCE_PAUSE_MS", "400"))
+        _sentence_pause_ms = int(_os.environ.get("OPENRECALL_SENTENCE_PAUSE_MS", "1000"))
     except ValueError:
         raise SystemExit(
             "OPENRECALL_SENTENCE_PAUSE_MS must be an integer number of milliseconds"

@@ -149,7 +149,7 @@ def test_trailing_silence_flushes_pending_without_a_new_word():
         [_S("hello", 0, 200)],
         None,   # silent hop
         None,   # silent hop
-    ]))
+    ]), pause_ms=400)
     s.feed(_hop_pcm(240))   # audio=240, hello.end=200, gap=40  -> hold
     assert s._pending  # still held
     out = s.feed(_hop_pcm(240))   # audio=480, gap=280 -> hold
@@ -268,10 +268,13 @@ def test_custom_pause_threshold():
     assert [seg.text for seg in out1] == ["hi"]
 
 
-def test_default_pause_threshold_holds_a_short_gap():
-    # Same word, but the default 400ms threshold: 140ms gap does NOT emit.
+def test_400ms_threshold_holds_a_short_gap():
+    # A 400 ms threshold (the previous default): 140 ms gap does NOT emit,
+    # 380 ms still held, 620 ms emits. The default is now 1000 ms (see
+    # test_default_pause_is_1000ms); this exercises the hold/emit logic at
+    # an explicit 400 ms.
     s = SentenceCoalescer(
-        FakeStreamer([[_S("hi", 0, 100)], None]), pause_ms=DEFAULT_PAUSE_MS,
+        FakeStreamer([[_S("hi", 0, 100)], None]), pause_ms=400,
     )
     out1 = s.feed(_hop_pcm(240))
     assert out1 == []
@@ -279,6 +282,30 @@ def test_default_pause_threshold_holds_a_short_gap():
     assert out2 == []
     out3 = s.feed(_hop_pcm(240))  # audio=720, gap=620 >= 400 -> emit
     assert [seg.text for seg in out3] == ["hi"]
+
+
+def test_default_pause_is_1000ms():
+    assert DEFAULT_PAUSE_MS == 1000
+
+
+def test_default_pause_1000ms_holds_midthought_trailing_silence():
+    # With the 1000 ms default, a word followed by silent hops must hold
+    # until the trailing silence reaches 1000 ms (not 400 ms). hop=240 ms,
+    # word "hello" ends at 200 ms; gap = audio_ms - 200.
+    s = SentenceCoalescer(FakeStreamer([
+        [_S("hello", 0, 200)],
+        None,  # hop2: audio=480, gap=280 -> hold
+        None,  # hop3: audio=720, gap=520 -> hold
+        None,  # hop4: audio=960, gap=760 -> hold
+        None,  # hop5: audio=1200, gap=1000 -> emit
+    ]))
+    assert s.feed(_hop_pcm(240)) == []   # hop1: audio=240, gap=40 -> hold
+    assert s.feed(_hop_pcm(240)) == []   # hop2: gap=280 -> hold
+    assert s.feed(_hop_pcm(240)) == []   # hop3: gap=520 -> hold
+    out = s.feed(_hop_pcm(240))           # hop4: gap=760 (< 1000) -> hold
+    assert out == []
+    out = s.feed(_hop_pcm(240))           # hop5: gap=1000 (>= 1000) -> emit
+    assert [seg.text for seg in out] == ["hello"]
 
 
 # ---------------------------------------------------------------------------
