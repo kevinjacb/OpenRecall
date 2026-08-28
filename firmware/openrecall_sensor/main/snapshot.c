@@ -171,7 +171,8 @@ esp_err_t snapshot_init(void) {
       return ESP_FAIL;
     }
   }
-  ESP_LOGI(TAG, "ambient snapshot timer @ %d s", (int)SNAPSHOT_INTERVAL_S);
+  ESP_LOGI(TAG, "ambient snapshot timer %s",
+           SNAPSHOT_INTERVAL_S > 0 ? "on" : "off (default; server/button can enable)");
   return ESP_OK;
 }
 

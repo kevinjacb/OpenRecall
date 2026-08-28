@@ -246,8 +246,14 @@ static const uint8_t SERVER_ED25519_PUBKEY[32] = {0};
 #define VIDEO_FPS      10   /* target; Spike-2 measured ~34 fps headroom at VGA */
 #define VIDEO_JPEG_QUALITY 12   /* 0-63, lower = better; OV2640 quantization */
 
-/* ---- P4b video: ambient snapshot cadence ---- */
-#define SNAPSHOT_INTERVAL_S 30          /* default; 0 = off. Server overrides via set_snapshot_interval */
+/* ---- P4b video: ambient snapshot cadence ----
+ * Default OFF (0): snapshots are the single biggest battery drain (OV2640 +
+ * SD write + JPEG encode on every interval), and the camera/PSRAM contention
+ * with the audio ring was a real-hardware e_pri spike (commit ba327dc). The
+ * server can re-enable per-session via set_snapshot_interval, and the button
+ * LONG gesture fires a one-shot capture on demand. Re-enable by default only
+ * once idle current is characterized on hardware (spec 3.6). */
+#define SNAPSHOT_INTERVAL_S 0           /* default; 0 = off. Server overrides via set_snapshot_interval */
 #define SNAPSHOT_INTERVAL_MIN 0         /* 0 = off */
 #define SNAPSHOT_INTERVAL_MAX 600       /* mirror server _TYPE_SCHEMAS */
 
