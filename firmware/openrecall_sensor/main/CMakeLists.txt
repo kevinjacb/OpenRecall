@@ -17,6 +17,7 @@ idf_component_register(
         "dc_blocker.c"
         "gain.c"
         "button.c"
+        "battery.c"
         "ring_buffer.c"
         "opus_stream.c"
         "ble_link.c"
@@ -39,6 +40,7 @@ idf_component_register(
         esp_timer
         driver
         esp_psram
+        esp_adc
         bt
         nvs_flash
         libsodium
