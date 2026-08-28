@@ -30,6 +30,7 @@
 #include "config.h"
 #include "dc_blocker.h"
 #include "executor.h"
+#include "gain.h"
 #include "opus_stream.h"
 #include "provisioning.h"
 #include "provisioning_core.h"
@@ -67,7 +68,11 @@ static void audio_task(void *arg) {
   static int16_t ref[FRAME_SAMPLES];   // reference mic (right, faces away) — cal log only
   static uint8_t opus_buf[MAX_OPUS_BYTES];
   vad_t vad;
-  vad_init(&vad, VAD_ENERGY_THRESHOLD, VAD_HANGOVER_FRAMES);
+  // Adaptive noise-floor VAD: the effective threshold tracks the room
+  // (max(FLOOR, noise_floor * MULTIPLIER)) so quiet consonants/word-bodies at
+  // wearable distance are encoded, not dropped as GAP. See vad.c.
+  vad_init_adaptive(&vad, VAD_ENERGY_THRESHOLD_FLOOR, VAD_NOISE_MULTIPLIER,
+                    VAD_HANGOVER_FRAMES);
   // DC blocker on the primary mic, before encode. The INMP441 has no
   // high-pass, so a DC bias accumulates (drifts with temp/handling) and would
   // otherwise eat Opus bits and bias the energy VAD. Stateful across frames
@@ -111,23 +116,25 @@ static void audio_task(void *arg) {
       acc_ref += (uint64_t)(r * r);
     }
 
-    // Single-mic energy VAD on the primary (mouth) mic. The dual-channel ratio
-    // gate + NLMS canceller are intentionally NOT used: two omnidirectional
-    // INMP441s with insufficient acoustic shadowing both hear the wearer's voice
-    // at ~equal level (ratio ~1), so the ratio gate would reject the voice and
-    // the canceller would adapt to subtract it. Encode the primary directly —
-    // same behaviour as the single-mic inbuilt PDM mic. The reference channel is
-    // still captured for the per-second cal log below.
-    uint8_t state = vad_process_single(&vad, pri, FRAME_SAMPLES);
+    // DC-block the primary on EVERY frame (not just voiced). The VAD runs on
+    // the DC-free signal so the adaptive noise floor tracks acoustic noise, not
+    // DC drift. Previously DC-block ran only on voiced frames after VAD; the
+    // reorder is required now that the VAD floor is adaptive (a DC bias would
+    // corrupt the EMA). The filter is stateful across frames; running it every
+    // frame keeps it continuous (it already validated that in its host test).
+    dc_blocker_process(&dc, pri, FRAME_SAMPLES);
+
+    // Single-mic adaptive VAD on the DC-blocked primary (mouth) mic. The
+    // dual-channel ratio gate + NLMS canceller are intentionally NOT used
+    // (two omnidirectional INMP441s with insufficient shadowing both hear the
+    // wearer at ~equal level -> ratio ~1 -> the gate would reject the voice).
+    uint8_t state = vad_process_single_adaptive(&vad, pri, FRAME_SAMPLES);
 
     if (state == C6_SPEECH || state == C6_HANGOVER) {
-      // Voiced frame: encode the primary mic and push the Opus packet. A
-      // failure here is fatal to the frame (it'll show up as a chunk_seq gap on
-      // the server, which the request_chunks + ring-buffer replay can recover).
-      // DC-block the primary before encode: the VAD above ran on the raw mic
-      // (unchanged behaviour — no VAD regression), but the encoder gets the
-      // DC-free signal so its bits go to voice, not to a slowly drifting bias.
-      dc_blocker_process(&dc, pri, FRAME_SAMPLES);
+      // Fixed gain before encode: the INMP441 sits at ~1.4% FS at wearable
+      // distance; x8 lifts it to ~11% FS so Opus/Whisper see a hotter signal.
+      // Saturates only on rare full-scale peaks.
+      gain_apply(pri, FRAME_SAMPLES, INPUT_GAIN_Q8);
       int n = opus_stream_encode(pri, opus_buf, sizeof opus_buf);
       if (n > 0 && n <= UINT8_MAX) {
         ring_buffer_push(state, rel_ts_ms, opus_buf, (uint8_t)n);
@@ -165,9 +172,11 @@ static void audio_task(void *arg) {
       // (ratio high). If voice is on the reference channel (L/R swapped), e_ref
       // >> e_pri while speaking (ratio < 1). If a mic is dead, its channel ~0.
       uint64_t ratio = acc_ref ? acc_pri / acc_ref : 0;
-      ESP_LOGI(TAG, "cal e_pri=%llu e_ref=%llu ratio=%llu",
+      ESP_LOGI(TAG, "cal e_pri=%llu e_ref=%llu ratio=%llu nf=%lu thresh=%lu",
                (unsigned long long)acc_pri, (unsigned long long)acc_ref,
-               (unsigned long long)ratio);
+               (unsigned long long)ratio,
+               (unsigned long)vad.noise_floor,
+               (unsigned long)(vad.noise_floor * VAD_NOISE_MULTIPLIER));
       total = 0;
       acc_pri = 0;
       acc_ref = 0;

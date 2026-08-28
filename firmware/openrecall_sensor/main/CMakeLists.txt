@@ -15,6 +15,7 @@ idf_component_register(
         "vad.c"
         "mic_dsp.c"
         "dc_blocker.c"
+        "gain.c"
         "ring_buffer.c"
         "opus_stream.c"
         "ble_link.c"
