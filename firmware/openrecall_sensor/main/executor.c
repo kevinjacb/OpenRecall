@@ -102,3 +102,15 @@ bool executor_submit(const char *type, const cJSON *params) {
   }
   return true;
 }
+
+bool executor_dispatch_local(const cmd_request_t *req) {
+  if (req == NULL || req->status != EXEC_OK) {
+    ESP_LOGW(TAG, "dispatch_local: bad req (status=%d)", req ? req->status : -1);
+    return false;
+  }
+  if (xQueueSend(s_queue, req, 0) != pdPASS) {
+    ESP_LOGW(TAG, "executor queue full — dropped local type=%d", req->type);
+    return false;
+  }
+  return true;
+}

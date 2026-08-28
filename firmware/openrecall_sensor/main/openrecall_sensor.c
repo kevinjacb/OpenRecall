@@ -22,8 +22,10 @@
  */
 #include "audio_capture.h"
 #include "audio_gate.h"
+#include "battery.h"
 #include "ble_drain.h"
 #include "boot_id.h"
+#include "button_task.h"
 #include "camera.h"
 #include "ble_link.h"
 #include "commands.h"
@@ -219,6 +221,23 @@ void app_main(void) {
 
   if (executor_init() != ESP_OK) {
     ESP_LOGE(TAG, "executor_init failed");
+  }
+
+  /* D0 battery monitor (ADC1_CH0/GPIO1 divider). Non-fatal: the device boots
+   * and captures fine without it; only the status characteristic + low-battery
+   * behavior are affected. The monitor task is low-priority (core 0, prio 1)
+   * so it never contends with audio/BLE real-time. */
+  if (battery_init() == ESP_OK) {
+    battery_start_monitor();
+  } else {
+    ESP_LOGW(TAG, "battery monitor disabled (init failed)");
+  }
+
+  /* D1 button (GPIO2) gestures: short=mark moment, double=toggle capture,
+   * long=snapshot, very-long=deep sleep. Dispatches through the executor queue
+   * (executor_dispatch_local). Low-priority poll task (core 0, prio 4). */
+  if (button_start() != ESP_OK) {
+    ESP_LOGW(TAG, "button gesture task disabled (init failed)");
   }
 
   /* P4b: mount the SD store up front so the first capture isn't delayed by the

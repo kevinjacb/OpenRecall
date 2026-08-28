@@ -26,6 +26,12 @@ esp_err_t executor_init(void);
    false if the queue is full (no ack). Runs on the NimBLE host task. */
 bool executor_submit(const char *type, const cJSON *params);
 
+/* Enqueue a pre-built, already-validated request directly (no parse). For
+   local issuers that build a cmd_request_t themselves — the D1 button has no
+   cJSON, so it bypasses executor_submit. The caller must set req.status =
+   EXEC_OK and fill the relevant field. Returns true on enqueue. */
+bool executor_dispatch_local(const cmd_request_t *req);
+
 #ifdef __cplusplus
 }
 #endif

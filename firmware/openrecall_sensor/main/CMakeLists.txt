@@ -17,6 +17,7 @@ idf_component_register(
         "dc_blocker.c"
         "gain.c"
         "button.c"
+        "button_task.c"
         "battery.c"
         "ring_buffer.c"
         "opus_stream.c"
