@@ -126,6 +126,19 @@
 #define BATTERY_SAMPLE_INTERVAL_S  30
 #define BATTERY_OVERSAMPLE           64
 
+/* ---- BLE power: connection params + slow advertising (spec 3.2) ----
+ * On connect we request a relaxed interval + slave latency so the phone's radio
+ * can doze between audio bursts (the central may refuse — defaults then apply,
+ * which is fine). Advertising only happens while disconnected, so a slow ~1 s
+ * interval is purely a disconnected-idle saving with no speech-path cost.
+ * Connection interval units = 1.25 ms; supervision timeout units = 10 ms. */
+#define BLE_CONN_ITVL_MIN_UNITS   60    /*  75 ms (60 * 1.25) */
+#define BLE_CONN_ITVL_MAX_UNITS  120    /* 150 ms (120 * 1.25) */
+#define BLE_CONN_LATENCY           4    /* skip 4 intervals (slave latency) */
+#define BLE_CONN_SUP_TIMEOUT_UNITS 600  /*  6 s (600 * 10) — > (1+lat)*itvl_max*2 */
+#define BLE_ADV_ITVL_MIN_UNITS   1280   /*  800 ms (1280 * 0.625) */
+#define BLE_ADV_ITVL_MAX_UNITS   1600   /* 1000 ms (1600 * 0.625) */
+
 /* ---- Dual-mic DSP: NLMS adaptive differential noise cancellation ----
  * Pure fixed-point (int32 Q15). The reference mic (back, ambient) drives an
  * adaptive FIR that models the noise path to the primary (front, voice) mic;

@@ -139,6 +139,20 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
       if (event->connect.status == 0) {
         s_conn_handle = event->connect.conn_handle;
         ESP_LOGI(TAG, "phone connected (handle %" PRIu16 ")", s_conn_handle);
+        /* Request a relaxed connection interval + slave latency so the phone's
+         * radio can doze between audio bursts (spec 3.2). The central may refuse
+         * — in that case the negotiated default applies and capture is
+         * unaffected. The accepted params are logged on CONN_UPDATED. */
+        struct ble_gap_upd_params upd = {
+          .itvl_min = BLE_CONN_ITVL_MIN_UNITS,
+          .itvl_max = BLE_CONN_ITVL_MAX_UNITS,
+          .latency = BLE_CONN_LATENCY,
+          .supervision_timeout = BLE_CONN_SUP_TIMEOUT_UNITS,
+        };
+        int rc = ble_gap_update_params(s_conn_handle, &upd);
+        if (rc != 0 && rc != BLE_HS_EALREADY) {
+          ESP_LOGW(TAG, "update_params rc=%d (central may keep defaults)", rc);
+        }
       } else {
         // A connect attempt that was in flight when ble_link_suspend() stopped
         // advertising can still fail and land here mid-window; respect the flag.
@@ -170,6 +184,20 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
         s_prov_state_subscribed = event->subscribe.cur_notify;
       }
       return 0;
+    case BLE_GAP_EVENT_CONN_UPDATE: {
+      /* The central may refuse our request and keep its own defaults. Log the
+       * params it actually accepted by reading the connection descriptor. */
+      struct ble_gap_conn_desc desc;
+      if (ble_gap_conn_find(event->conn_update.conn_handle, &desc) == 0) {
+        ESP_LOGI(TAG, "conn update status=%d itvl=%u (%.1fms) lat=%u sup=%u",
+                 event->conn_update.status,
+                 (unsigned)desc.conn_itvl, desc.conn_itvl * 1.25f,
+                 (unsigned)desc.conn_latency, (unsigned)desc.supervision_timeout);
+      } else {
+        ESP_LOGI(TAG, "conn update status=%d", event->conn_update.status);
+      }
+      return 0;
+    }
     default:
       return 0;
   }
@@ -192,12 +220,20 @@ static int start_advertising(void) {
   struct ble_gap_adv_params adv_params = {0};
   adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
   adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+  /* Slow advertising (~1 s) when disconnected/idle (spec 3.2). Advertising only
+   * happens while disconnected, so this is purely a disconnected-idle saving
+   * with no speech-path cost; the phone still discovers within ~1-2 s of
+   * scanning. Units are 0.625 ms. */
+  adv_params.itvl_min = BLE_ADV_ITVL_MIN_UNITS;
+  adv_params.itvl_max = BLE_ADV_ITVL_MAX_UNITS;
   rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &adv_params, gap_event, NULL);
   if (rc != 0) {
     ESP_LOGE(TAG, "adv_start rc=%d", rc);
     return rc;
   }
-  ESP_LOGI(TAG, "advertising as \"OpenRecall\"");
+  ESP_LOGI(TAG, "advertising as \"OpenRecall\" (itvl %u-%u ms)",
+           (unsigned)(BLE_ADV_ITVL_MIN_UNITS * 0.625f),
+           (unsigned)(BLE_ADV_ITVL_MAX_UNITS * 0.625f));
   return 0;
 }
 
@@ -338,6 +374,8 @@ void ble_link_resume(void) {
   struct ble_gap_adv_params adv_params = {0};
   adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
   adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+  adv_params.itvl_min = BLE_ADV_ITVL_MIN_UNITS;   /* slow adv, same as start */
+  adv_params.itvl_max = BLE_ADV_ITVL_MAX_UNITS;
   int rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &adv_params, gap_event, NULL);
   if (rc == 0 || rc == BLE_HS_EALREADY) {
     ESP_LOGI(TAG, "advertising as \"OpenRecall\"");
