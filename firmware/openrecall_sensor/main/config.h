@@ -68,6 +68,29 @@
  * ratio >> 1). Would require primary energy to exceed reference energy by this
  * factor to count as speech. */
 #define VAD_RATIO_THRESHOLD 4u
+/* ---- Adaptive noise-floor VAD (runtime audio path; see vad_process_single_adaptive)
+ *
+ * The fixed VAD_ENERGY_THRESHOLD above drops quiet consonants/word-bodies at
+ * wearable distance (speech ~1e5-2e5 at 10-15 cm, but the quiet parts dip to
+ * ~2e4-4e4, below 5e4 -> never encoded -> chopped audio). The adaptive VAD
+ * tracks the room's quiet-frame energy and sets the effective threshold per
+ * frame:  thresh = max(FLOOR, noise_floor * MULTIPLIER).
+ *
+ *   VAD_ENERGY_THRESHOLD_FLOOR : absolute floor; effective threshold never
+ *       drops below this (rejects room noise even in a silent room where the
+ *       tracked floor would collapse). 1e4 sits ~2-3x above the ~3e3-5e3 room
+ *       noise floor measured on this array.
+ *   VAD_NOISE_MULTIPLIER       : threshold = noise_floor * MULTIPLIER. 3 means
+ *       a frame must be ~3x the tracked noise to count as speech.
+ *   VAD_NOISE_ALPHA_DOWN_Q16   : 0.02 in Q16 — fast floor decay (~1 s to settle
+ *       when the room goes quiet). Update only on GAP frames.
+ *   VAD_NOISE_ALPHA_UP_Q16      : 0.002 in Q16 — slow floor rise (~10 s), and
+ *       only when e < 1.5*floor (a sudden loud burst does NOT raise the floor).
+ *       Stops a stray syllable from poisoning the noise estimate. */
+#define VAD_ENERGY_THRESHOLD_FLOOR 10000UL
+#define VAD_NOISE_MULTIPLIER       3u
+#define VAD_NOISE_ALPHA_DOWN_Q16   1311  /* 0.02 * 65536 */
+#define VAD_NOISE_ALPHA_UP_Q16     131   /* 0.002 * 65536 */
 
 /* ---- Dual-mic DSP: NLMS adaptive differential noise cancellation ----
  * Pure fixed-point (int32 Q15). The reference mic (back, ambient) drives an

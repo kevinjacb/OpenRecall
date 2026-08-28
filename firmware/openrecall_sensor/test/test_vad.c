@@ -93,6 +93,72 @@ int main(void) {
     check("cold start noise -> GAP", vad_process_single(&vd2, quiet, N) == C6_GAP_MARKER);
   }
 
+  /* ---- Adaptive noise-floor VAD (runtime audio path) ---- */
+  printf("adaptive noise-floor VAD host test\n");
+  {
+    const uint32_t floor = 10000;   /* VAD_ENERGY_THRESHOLD_FLOOR */
+    const uint32_t mult = 3;        /* VAD_NOISE_MULTIPLIER */
+    const int hangover = 3;
+    int16_t quiet[N], speech[N], mid[N], noisy80[N];
+    fill(quiet, 70);    /* room noise: ms 4900, below floor */
+    fill(speech, 300);  /* wearable-distance speech: ms 9e4 */
+    fill(mid, 200);     /* quiet consonant: ms 4e4 — below fixed 5e4, above adaptive */
+    fill(noisy80, 80);  /* gradual noise: ms 6400, sub-threshold, < 1.5*5e3 */
+
+    /* Cold start in a quiet room: floor seeds to 1e4, thresh = max(1e4,3e4)=3e4.
+     * Room noise 4900 < 3e4 -> GAP. */
+    vad_t va;
+    vad_init_adaptive(&va, floor, mult, hangover);
+    check("cold start quiet -> GAP",
+          vad_process_single_adaptive(&va, quiet, N) == C6_GAP_MARKER);
+
+    /* 50 quiet frames (1 s) decay the floor from 1e4 toward 4900; thresh ->
+     * max(1e4, ~5e3*3) = 1.5e4. A quiet consonant at 4e4 > 1.5e4 -> SPEECH.
+     * The fixed 5e4 would call 4e4 a GAP -> never encoded. Core win. */
+    for (int i = 0; i < 50; i++) vad_process_single_adaptive(&va, quiet, N);
+    check("sub-fixed-threshold consonant -> SPEECH (adaptive win)",
+          vad_process_single_adaptive(&va, mid, N) == C6_SPEECH);
+    /* speech frame must not raise the floor (frozen on speech). */
+    check("floor unchanged by speech frame", va.noise_floor < 7000);
+
+    /* Floor falls fast: seed 2e4 (noisy room), go quiet, drops in ~1 s. */
+    vad_t vb;
+    vad_init_adaptive(&vb, 20000, mult, hangover);
+    for (int i = 0; i < 50; i++) vad_process_single_adaptive(&vb, quiet, N);
+    check("floor falls fast in quiet (under 12000)", vb.noise_floor < 12000);
+
+    /* Floor rises slowly on gradual noise. Seed 5e3, feed ms-6400 frames
+     * (sub-threshold 1.5e4, and 6400 < 5e3*1.5=7500 so rise is allowed).
+     * 100 frames at alpha_up 0.002: floor ~5e3*0.82+6400*0.18 ~ 5260. */
+    vad_t vc;
+    vad_init_adaptive(&vc, 5000, mult, hangover);
+    for (int i = 0; i < 100; i++) vad_process_single_adaptive(&vc, noisy80, N);
+    check("floor rises slowly on gradual noise (over 5100)", vc.noise_floor > 5100);
+    check("floor rises only slowly (under 6000)", vc.noise_floor < 6000);
+
+    /* Loud burst guard: seed 5e3, feed a burst at ms 1.44e4 (amp 120). It is
+     * sub-threshold (1.44e4 < 1.5e4) so GAP, but 1.44e4 > 5e3*1.5=7500 so the
+     * rise guard REJECTS it — the floor must NOT jump toward the burst. */
+    vad_t vd;
+    vad_init_adaptive(&vd, 5000, mult, hangover);
+    int16_t burst120[N]; fill(burst120, 120);
+    for (int i = 0; i < 20; i++) vad_process_single_adaptive(&vd, burst120, N);
+    check("loud burst does not raise floor (guard)", vd.noise_floor < 5200);
+
+    /* Hangover still works on the adaptive path. */
+    vad_t ve;
+    vad_init_adaptive(&ve, floor, mult, hangover);
+    vad_process_single_adaptive(&ve, speech, N);   /* SPEECH, arms hangover */
+    check("adaptive hangover 1",
+          vad_process_single_adaptive(&ve, quiet, N) == C6_HANGOVER);
+    check("adaptive hangover 2",
+          vad_process_single_adaptive(&ve, quiet, N) == C6_HANGOVER);
+    check("adaptive hangover 3",
+          vad_process_single_adaptive(&ve, quiet, N) == C6_HANGOVER);
+    check("adaptive then GAP",
+          vad_process_single_adaptive(&ve, quiet, N) == C6_GAP_MARKER);
+  }
+
   printf(failures ? "\nFAILED (%d)\n" : "\nOK\n", failures);
   return failures ? 1 : 0;
 }
