@@ -100,6 +100,22 @@
  * Tunable here; runtime tunability is a Phase 3 concern. */
 #define INPUT_GAIN_Q8 2048u   /* x8 in Q8 (8 << 8) */
 
+/* ---- Wind-cut high-pass (post-DC-block, pre-VAD/gain; see hpf.c) ----
+ * 2nd-order Butterworth high-pass, fc = 180 Hz at fs = 16 kHz, Q = 0.7071.
+ * Derivation (bilinear transform, Audio-EQ-Cookbook form):
+ *   k  = tan(pi*fc/fs); norm = 1/(1 + k/Q + k^2)
+ *   b0 = b2 = norm; b1 = -2*norm
+ *   a1 = 2*norm*(k^2 - 1); a2 = norm*(1 - k/Q + k^2)
+ * Quantized to Q14 (round(coef * 16384)). Response with these integers:
+ * -22.3 dB @ 50 Hz, -10.6 dB @ 100 Hz, -3.0 dB @ 180 Hz, -0.07 dB @ 500 Hz.
+ * Wind/rumble/handling energy sits below ~200 Hz; speech harmonics above
+ * 300 Hz (telephone band) are untouched. */
+#define HPF_B0_Q14 15585
+#define HPF_B1_Q14 (-31170)
+#define HPF_B2_Q14 15585
+#define HPF_A1_Q14 (-31131)
+#define HPF_A2_Q14 14825
+
 /* ---- D1 button (GPIO2) gesture thresholds (spec 3.4) ----
  * Tunable. The classifier (button.c) is host-tested against these. The button
  * is on D1/GPIO2 (non-strapping; internal pull-up, press=LOW). Gestures:

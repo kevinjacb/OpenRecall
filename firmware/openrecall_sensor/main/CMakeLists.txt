@@ -16,6 +16,7 @@ idf_component_register(
         "mic_dsp.c"
         "dc_blocker.c"
         "gain.c"
+        "hpf.c"
         "button.c"
         "button_task.c"
         "battery.c"

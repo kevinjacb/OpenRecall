@@ -5,7 +5,7 @@ CFLAGS ?= -std=c11 -Wall -Wextra -I../main -I../managed_components/espressif__cj
 
 CJSON_SRC = ../managed_components/espressif__cjson/cJSON/cJSON.c
 
-test: c6 vad dsp dc gain button provisioning exec
+test: c6 vad dsp dc gain hpf button provisioning exec
 
 c6: /tmp/c6test
 	/tmp/c6test
@@ -21,6 +21,9 @@ dc: /tmp/dctest
 
 gain: /tmp/gaintest
 	/tmp/gaintest
+
+hpf: /tmp/hpftest
+	/tmp/hpftest
 
 button: /tmp/btntest
 	/tmp/btntest
@@ -49,6 +52,9 @@ exec: /tmp/exectest
 /tmp/gaintest: test_gain.c ../main/gain.c ../main/gain.h ../main/config.h
 	$(CC) $(CFLAGS) ../main/gain.c test_gain.c -o $@
 
+/tmp/hpftest: test_hpf.c ../main/hpf.c ../main/hpf.h ../main/config.h
+	$(CC) $(CFLAGS) ../main/hpf.c test_hpf.c -lm -o $@
+
 /tmp/btntest: test_button.c ../main/button.c ../main/button.h ../main/config.h
 	$(CC) $(CFLAGS) ../main/button.c test_button.c -o $@
 
@@ -56,6 +62,6 @@ exec: /tmp/exectest
 	$(CC) $(CFLAGS) $(CJSON_SRC) ../main/executor_core.c test_executors.c -o $@
 
 clean:
-	rm -f /tmp/c6test /tmp/vadtest /tmp/dsptest /tmp/dctest /tmp/gaintest /tmp/btntest /tmp/provtest /tmp/exectest
+	rm -f /tmp/c6test /tmp/vadtest /tmp/dsptest /tmp/dctest /tmp/gaintest /tmp/hpftest /tmp/btntest /tmp/provtest /tmp/exectest
 
-.PHONY: test c6 vad dsp dc gain button provisioning exec clean
+.PHONY: test c6 vad dsp dc gain hpf button provisioning exec clean

@@ -33,6 +33,7 @@
 #include "dc_blocker.h"
 #include "executor.h"
 #include "gain.h"
+#include "hpf.h"
 #include "opus_stream.h"
 #include "provisioning.h"
 #include "provisioning_core.h"
@@ -81,6 +82,13 @@ static void audio_task(void *arg) {
   // for the life of the audio task; runs on every voiced frame.
   dc_blocker_t dc;
   dc_blocker_init(&dc);
+  // Wind-cut high-pass (fc ~180 Hz) after the DC blocker, before the VAD and
+  // the gain stage. Wind/rumble/handling noise lives below ~200 Hz; without
+  // this it drives the energy VAD (gusts read as speech, the adaptive floor
+  // inflates until quiet speech is rejected) and clips under the x-gain.
+  // Stateful across frames for the life of the audio task. See hpf.c.
+  hpf_t hpf;
+  hpf_init(&hpf);
 
   uint32_t frames = 0, voiced = 0, gaps = 0, total = 0;
   uint32_t rel_ts_ms = 0;
@@ -125,6 +133,10 @@ static void audio_task(void *arg) {
     // corrupt the EMA). The filter is stateful across frames; running it every
     // frame keeps it continuous (it already validated that in its host test).
     dc_blocker_process(&dc, pri, FRAME_SAMPLES);
+
+    // Wind-cut high-pass on EVERY frame (like the DC blocker — the filter is
+    // stateful, and the VAD/noise floor must track the band-limited signal).
+    hpf_process(&hpf, pri, FRAME_SAMPLES);
 
     // Single-mic adaptive VAD on the DC-blocked primary (mouth) mic. The
     // dual-channel ratio gate + NLMS canceller are intentionally NOT used
