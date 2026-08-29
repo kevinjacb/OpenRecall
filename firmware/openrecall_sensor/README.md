@@ -148,6 +148,18 @@ Pins were chosen to avoid the microSD SPI bus (GPIO 7/8/9/21, preserved for futu
 EOD-video capture), strapping pins (0/3/45/46), and flash/PSRAM (26–32). The old
 onboard PDM mic (GPIO 41/42) is removed.
 
+### Wind noise: fit a windscreen
+
+For any outdoor or on-the-move use, put a **foam or fur windscreen** over the
+primary mic's port (a few millimetres of open-cell foam, or a "dead cat" fur
+patch, glued around — not over — the port opening). Wind noise is turbulence AT
+the port; once it is in the signal no DSP fully removes it. The firmware's
+180 Hz high-pass (`hpf.c`) cuts the rumble band so gusts stop tripping the VAD
+and clipping the gain stage, but mid-band wind roar overlaps speech — the
+windscreen is the only fix that removes it at the source, and it typically buys
+20+ dB in the worst band for a few cents. Sealing the enclosure so the mic port
+is the only opening (no air path across the PCB) helps a further few dB.
+
 ### Signal path
 
 ```
