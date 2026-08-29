@@ -106,11 +106,14 @@ def main() -> None:
              "speech), 2000 for parakeet (transducer, tuned for low-latency RTF). "
              "The low-latency refactor cut this 5000->2000 for parakeet's RTF but "
              "applied it to whisper too, gutting whisper's context window.")
-    ap.add_argument("--hop-ms", type=int, default=240,
+    ap.add_argument("--hop-ms", type=int, default=None,
                     help="transcription hop (output granularity); MUST be a multiple of "
-                         "FRAME_MS=20 (pipeline enforces it). 240 is the smallest multiple "
-                         "satisfying the Phase-0 sustainability inequality "
-                         "(140ms inference < 240*0.6=144ms; spec §6).")
+                         "FRAME_MS=20 (pipeline enforces it). None = backend-aware: "
+                         "240 for parakeet (the smallest multiple satisfying the Phase-0 "
+                         "sustainability inequality: 140ms inference < 240*0.6=144ms; "
+                         "spec §6), 1000 for whisper (a large-v3-turbo call on a 5s "
+                         "window cannot sustain 4 calls/s — a 240ms hop overloads the "
+                         "ASR worker and forces packet drops).")
     ap.add_argument("--model", default=None, help="override the MLX-whisper model repo")
     ap.add_argument("--db", default="data/events.db", help="durable capture-event store path")
     ap.add_argument("--key-file", default="data/server_ed25519.key",
@@ -349,16 +352,22 @@ def main() -> None:
     # OPENRECALL_RATE_LIMIT_PER_MIN from the process environment. Defaults match
     # the spec; a bad value aborts startup with a clear error.
     agent_config = load_agent_config(__import__("os").environ)
-    # Resolve the backend-aware transcription window. Whisper is context-hungry
-    # (5s window, as the streaming design was built around); Parakeet's
-    # transducer runs at 2s for low-latency RTF. An explicit --window-ms wins.
-    # The 5s overlap gives ~21x hop redundancy at 240ms, so the inference
-    # worker's drop-oldest stays lossless even if Whisper inference runs over
-    # the hop budget (a dropped hop's audio is covered by the adjacent ones).
+    # Resolve the backend-aware transcription window and hop. Whisper is
+    # context-hungry (5s window, as the streaming design was built around);
+    # Parakeet's transducer runs at 2s for low-latency RTF. Whisper also gets
+    # a 1000ms hop: a large-v3-turbo call on a 5s window cannot sustain the
+    # 240ms cadence Parakeet was tuned for — the ASR worker queue overflows
+    # and drops real audio packets (chunk_seq holes), which shreds the stream.
+    # Explicit --window-ms / --hop-ms always win.
     if args.window_ms is None:
         args.window_ms = 5000 if agent_config.asr.backend == "whisper" else 2000
         logging.info(
             "window_ms auto=%d (asr_backend=%s)", args.window_ms, agent_config.asr.backend,
+        )
+    if args.hop_ms is None:
+        args.hop_ms = 1000 if agent_config.asr.backend == "whisper" else 240
+        logging.info(
+            "hop_ms auto=%d (asr_backend=%s)", args.hop_ms, agent_config.asr.backend,
         )
     planner = Planner(
         retriever=Retriever(
