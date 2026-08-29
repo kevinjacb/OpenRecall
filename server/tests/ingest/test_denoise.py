@@ -210,14 +210,11 @@ class _RecordingDenoiser:
         self.seen.clear()
 
 
-def test_pipeline_invokes_wired_denoiser_on_each_frame():
-    """A wired denoiser sees every decoded frame, in order, before the PCM
-    reaches the buffer (and thus the transcriber + speaker embedder)."""
+def _make_denoise_pipe(denoiser):
     from openrecall_server.ingest.pipeline import AudioIngestPipeline
     from openrecall_server.ingest.reassembler import SessionReassembler
 
-    denoiser = _RecordingDenoiser()
-    pipe = AudioIngestPipeline(
+    return AudioIngestPipeline(
         reassembler=SessionReassembler(),
         decoder=_FakeDecoder(),
         transcriber=_NoTranscriber(),
@@ -225,10 +222,55 @@ def test_pipeline_invokes_wired_denoiser_on_each_frame():
         hop_ms=1000,
         denoiser=denoiser,
     )
-    pipe.ingest(_pkt(0, 10))  # 10 frames
-    assert len(denoiser.seen) == 10
-    # Each chunk is exactly one decoded frame.
-    assert all(len(c) == _FakeDecoder.BYTES_PER_FRAME for c in denoiser.seen)
+
+
+def test_pipeline_invokes_wired_denoiser_per_hop():
+    """A wired denoiser sees HOP-sized chunks, not 20 ms frames: the spectral
+    gate needs an STFT window (~128 ms) of context, so 320-sample frame
+    chunks would make it a no-op."""
+    denoiser = _RecordingDenoiser()
+    pipe = _make_denoise_pipe(denoiser)
+    pipe.ingest(_pkt(0, 50))  # 50 frames == 1s == exactly one 1000 ms hop
+    assert len(denoiser.seen) == 1
+    assert len(denoiser.seen[0]) == 50 * _FakeDecoder.BYTES_PER_FRAME
+
+
+def test_flush_denoises_the_partial_tail():
+    """The sub-hop tail at session end goes through the denoiser too."""
+    denoiser = _RecordingDenoiser()
+    pipe = _make_denoise_pipe(denoiser)
+    pipe.ingest(_pkt(0, 10))  # 200 ms — below the 1000 ms hop
+    assert denoiser.seen == []
+    pipe.flush()
+    assert len(denoiser.seen) == 1
+    assert len(denoiser.seen[0]) == 10 * _FakeDecoder.BYTES_PER_FRAME
+
+
+def test_synthesized_gap_silence_bypasses_denoiser():
+    """All-zero hops (synthesized VAD-gap silence) must not reach the
+    denoiser — a zeros noise profile would make the gate a no-op."""
+    import struct as _s
+
+    def _pkt_at(chunk_seq, n_frames, rel_ts_ms):
+        frames = [b"\x00"] * n_frames
+        header = _s.pack(
+            "<BIIBBB",
+            (1 << 4) | PacketType.MEMORY_CHUNK,
+            chunk_seq, rel_ts_ms, VadState.SPEECH, len(frames), 0,
+        )
+        body = b"".join(_s.pack("<B", len(f)) + f for f in frames)
+        return AudioPacket.parse(header + body)
+
+    denoiser = _RecordingDenoiser()
+    pipe = _make_denoise_pipe(denoiser)
+    # 1s speech at rel 0, then speech resuming at rel 2000 -> 1000 ms of
+    # synthesized zeros (one full all-zero hop) between them.
+    pipe.ingest(_pkt_at(0, 50, 0))
+    pipe.ingest(_pkt_at(1, 50, 2000))
+    pipe.flush()
+    assert denoiser.seen, "real audio must still be denoised"
+    for chunk in denoiser.seen:
+        assert chunk.count(0) != len(chunk), "all-zero hop reached the denoiser"
 
 
 # ---- real noisereduce (guarded) ---------------------------------------------

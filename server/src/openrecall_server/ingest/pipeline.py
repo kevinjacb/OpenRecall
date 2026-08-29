@@ -178,8 +178,9 @@ class AudioIngestPipeline:
         # to this speaker instead of dropping the label — see flush().
         self._last_speaker = None
         # Denoise on the decoded PCM before it reaches the transcriber and the
-        # speaker embedder (both read from `_pcm_buffer`). Defaults to a
-        # pass-through so a default install (no noisereduce) is unchanged;
+        # speaker embedder. Applied per HOP slice (see _denoise_hop), never per
+        # 20 ms frame — the spectral gate needs STFT-length context. Defaults
+        # to a pass-through so a default install (no noisereduce) is unchanged;
         # the production factory wires NoisereduceDenoiser when
         # OPENRECALL_DENOISE_ENABLED is set.
         self._denoiser: PcmDenoiser = denoiser if denoiser is not None else NoopDenoiser()
@@ -317,6 +318,19 @@ class AudioIngestPipeline:
         """Contiguous head gap ``[start, end)`` to backfill, or None (drives §E request_chunks)."""
         return self._reassembler.missing_range()
 
+    def _denoise_hop(self, pcm: bytes) -> bytes:
+        """Denoise one hop of PCM before it reaches the streamer/embedder.
+
+        Runs at hop granularity, NOT per 20 ms Opus frame: the spectral-gating
+        denoiser needs an STFT window (~128 ms) of context, so 320-sample
+        chunks are useless to it. An all-zero hop is synthesized gap silence —
+        bypassed so zeros never feed the denoiser's noise-profile accumulator
+        (a silent profile would make the gate a no-op).
+        """
+        if pcm.count(0) == len(pcm):
+            return pcm
+        return self._denoiser.process(pcm)
+
     def _gap_silence_for(self, pkt: AudioPacket) -> bytes:
         """Zero PCM for the VAD-suppressed span between the rel_ts cursor and
         ``pkt``, bounded by the per-run cap. Returns ``b""`` when there is no
@@ -354,7 +368,7 @@ class AudioIngestPipeline:
             if fill:
                 self._pcm_buffer.extend(fill)
             for frame in pkt.frames:
-                self._pcm_buffer.extend(self._denoiser.process(self._decoder.decode(frame)))
+                self._pcm_buffer.extend(self._decoder.decode(frame))
             if pkt.frames:
                 n_frames += len(pkt.frames)
                 self._silence_run_ms = 0
@@ -380,7 +394,7 @@ class AudioIngestPipeline:
         # backend supports them; for the str-returning fallback the
         # duration is naturally 0 in the segment, so we use hop_ms.
         while len(self._pcm_buffer) >= hop_bytes:
-            pcm = bytes(self._pcm_buffer[:hop_bytes])
+            pcm = self._denoise_hop(bytes(self._pcm_buffer[:hop_bytes]))
             del self._pcm_buffer[:hop_bytes]
             self._absolute_ms += self._streamer._hop_ms  # type: ignore[attr-defined]
             segments = self._streamer.feed(pcm)
@@ -415,7 +429,7 @@ class AudioIngestPipeline:
         out: list[Transcript] = []
         spk = None
         if self._pcm_buffer:
-            pcm = bytes(self._pcm_buffer)
+            pcm = self._denoise_hop(bytes(self._pcm_buffer))
             self._pcm_buffer.clear()
             self._absolute_ms += len(pcm) * 1000 // (self._sample_rate * 2)
             segments = self._streamer.feed(pcm)
