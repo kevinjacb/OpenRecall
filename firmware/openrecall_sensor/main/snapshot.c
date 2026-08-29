@@ -144,8 +144,12 @@ static void snapshot_timer_cb(TimerHandle_t handle) {
 
 esp_err_t snapshot_init(void) {
   if (s_timer) {
-    /* Already created; restart at the default period. */
-    xTimerChangePeriod(s_timer, pdMS_TO_TICKS(SNAPSHOT_INTERVAL_S * 1000), 0);
+    /* Already created; restart at the default period (or stop if off). */
+    if (SNAPSHOT_INTERVAL_S > 0) {
+      xTimerChangePeriod(s_timer, pdMS_TO_TICKS(SNAPSHOT_INTERVAL_S * 1000), 0);
+    } else {
+      xTimerStop(s_timer, 0);
+    }
     return ESP_OK;
   }
   /* Create the capture worker BEFORE the timer so the first fire can't race a
@@ -157,8 +161,12 @@ esp_err_t snapshot_init(void) {
     ESP_LOGE(TAG, "xTaskCreatePinnedToCore(snapwork) failed");
     return ESP_FAIL;
   }
-  s_timer = xTimerCreate("snap", pdMS_TO_TICKS(SNAPSHOT_INTERVAL_S * 1000),
-                         pdTRUE, 0, snapshot_timer_cb);
+  /* xTimerCreate asserts period > 0. When the default is OFF we still create
+   * the timer so snapshot_set_interval can enable it later — with a placeholder
+   * period and no start. */
+  TickType_t init_period = pdMS_TO_TICKS(SNAPSHOT_INTERVAL_S * 1000);
+  if (init_period == 0) init_period = pdMS_TO_TICKS(1000);  /* placeholder; not started */
+  s_timer = xTimerCreate("snap", init_period, pdTRUE, 0, snapshot_timer_cb);
   if (!s_timer) {
     ESP_LOGE(TAG, "xTimerCreate failed");
     return ESP_FAIL;
