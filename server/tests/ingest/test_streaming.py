@@ -461,3 +461,51 @@ def test_leading_space_tokens_join_single_spaced_in_flush():
     assert [seg.text for seg in feed_segs] == ["Hello,"]
     flush_segs = s.flush()
     assert [seg.text for seg in flush_segs] == ["world!"]
+
+
+# ---------------------------------------------------------------------------
+# Silent-window skip (synthesized gap silence must not cost backend calls)
+# ---------------------------------------------------------------------------
+def test_silent_window_hops_skip_the_backend_call():
+    """An all-zero hop (the pipeline's synthesized gap fill) with an
+    all-silent rolling window must not call the backend; a zero hop while
+    real audio is still in the window must (trailing words need their
+    commit call)."""
+    from openrecall_server.ingest.streaming_transcriber import streaming_from_tokens
+
+    calls: list[int] = []
+
+    class CountingBackend:
+        def transcribe(self, pcm: bytes, sample_rate: int):
+            calls.append(len(pcm))
+            return []
+
+    # window = 1000 ms (5 hops of 200 ms at 16 kHz -> hop = 6400 bytes).
+    # skip_silent_windows is opt-in (the production factory enables it);
+    # default-off keeps the zero-PCM-as-carrier convention of the other tests.
+    st = streaming_from_tokens(
+        CountingBackend(), hop_ms=200, window_ms=1000, skip_silent_windows=True,
+    )
+    hop_bytes = 16000 * 200 // 1000 * 2
+    zero_hop = b"\x00" * hop_bytes
+    audio_hop = b"\x64\x00" * (hop_bytes // 2)  # constant 100 > epsilon
+
+    # 1. Zero hops into an empty/silent buffer: skipped.
+    st.feed(zero_hop)
+    st.feed(zero_hop)
+    assert calls == []
+
+    # 2. Real audio: backend called.
+    st.feed(audio_hop)
+    assert len(calls) == 1
+
+    # 3. Zero hops while the audio is still inside the 5-hop window: the
+    #    backend must still be called (a trailing word may need committing).
+    for _ in range(4):
+        st.feed(zero_hop)
+    assert len(calls) == 5
+
+    # 4. One more zero hop scrolls the audio out; the window is silent
+    #    again -> skipped.
+    st.feed(zero_hop)
+    assert len(calls) == 5

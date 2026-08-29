@@ -45,6 +45,14 @@ _DEDUP_MAX_WORDS = 5
 # webrtcvad frame size: 20 ms at 16 kHz mono 16-bit == 640 bytes.
 _VAD_FRAME_BYTES = 640
 
+# Silent-window skip: |sample| below this (~ -60 dBFS) counts as silence.
+# When a fed hop is all zeros (which only the pipeline's synthesized gap
+# fill produces) AND every sample in the rolling window is below this
+# epsilon, there is no committable audio left in the window — the backend
+# call is skipped. Real decoded audio (room tone, hangover) exceeds this,
+# so the skip can never starve a trailing word of its commit call.
+_SILENCE_EPSILON = 32
+
 
 @dataclass(frozen=True, slots=True)
 class Token:
@@ -201,6 +209,7 @@ class StreamingTranscriber:
         is_token_backend: bool = False,
         vad_mode: str | None = None,
         vad_aggressiveness: int = 3,
+        skip_silent_windows: bool = False,
     ) -> None:
         """Construct the streaming transcriber.
 
@@ -216,6 +225,13 @@ class StreamingTranscriber:
         aggressiveness can drop quiet real speech. If webrtcvad is not
         installed, the gate logs a warning and disables itself rather
         than crash.
+
+        ``skip_silent_windows`` (opt-in; the production factory enables it):
+        skip the backend call when the fed hop is all zeros (the pipeline's
+        synthesized gap fill) and the whole rolling window is below the
+        silence epsilon — there is nothing left to commit. Off by default
+        because tests conventionally use zero PCM as an opaque carrier for
+        scripted fake backends.
         """
         if hop_ms <= 0 or hop_ms > window_ms:
             raise ValueError(
@@ -237,6 +253,7 @@ class StreamingTranscriber:
         self._window_ms = window_ms
         self._hop_bytes = (sample_rate * hop_ms // 1000) * 2  # 16-bit LE mono
         self._window_bytes = (sample_rate * window_ms // 1000) * 2
+        self._skip_silent_windows = skip_silent_windows
 
         # Rolling PCM buffer (most-recent ``window_ms`` of audio).
         self._buffer: bytearray = bytearray()
@@ -274,6 +291,19 @@ class StreamingTranscriber:
                     "disabled — Whisper will run on every hop as before."
                 )
                 self._vad = None
+
+    def _window_is_silent(self) -> bool:
+        """True when every int16 sample in the rolling buffer is below the
+        silence epsilon (see _SILENCE_EPSILON). Only evaluated for all-zero
+        hops, so the C-speed scan runs at most once per silent hop."""
+        from array import array
+
+        n = len(self._buffer) & ~1  # guard against a stray odd byte
+        if n == 0:
+            return True
+        samples = array("h")
+        samples.frombytes(bytes(self._buffer[:n]))
+        return max(samples) < _SILENCE_EPSILON and min(samples) > -_SILENCE_EPSILON
 
     def _hop_has_voiced_frames(self, pcm: bytes) -> bool:
         """True if any 20 ms frame of ``pcm`` is voiced speech per webrtcvad.
@@ -323,6 +353,20 @@ class StreamingTranscriber:
         # is still extended so the rolling context is preserved; we just avoid
         # the expensive, hallucination-prone decode this hop.
         if self._vad is not None and not self._hop_has_voiced_frames(pcm):
+            return []
+
+        # 2.6. Silent-window skip (opt-in): an all-zero hop is synthesized
+        # gap fill (the pipeline inserts exact zeros for VAD-suppressed
+        # silence). If the whole rolling window is also below the silence
+        # epsilon, every real word has long been committed and scrolled out —
+        # a backend call would transcribe silence for nothing. The buffer was
+        # still extended above, so downstream clocks (sentence coalescer
+        # trailing-silence) keep advancing.
+        if (
+            self._skip_silent_windows
+            and pcm.count(0) == len(pcm)
+            and self._window_is_silent()
+        ):
             return []
 
         # 3. Call the backend with the current buffer.
@@ -474,15 +518,18 @@ def streaming_from_tokens(
     window_ms: int = 5000,
     vad_mode: str | None = None,
     vad_aggressiveness: int = 3,
+    skip_silent_windows: bool = False,
 ) -> StreamingTranscriber:
     """Build a :class:`StreamingTranscriber` from a token-returning backend.
 
     Use this when the backend supports word-level timestamps
     (mlx-whisper with ``word_timestamps=True``). ``vad_mode`` opts into the
-    pre-Whisper spectral VAD gate (see :class:`StreamingTranscriber`)."""
+    pre-Whisper spectral VAD gate; ``skip_silent_windows`` opts into the
+    silent-window backend-call skip (see :class:`StreamingTranscriber`)."""
     return StreamingTranscriber(
         backend, sample_rate, hop_ms, window_ms, is_token_backend=True,
         vad_mode=vad_mode, vad_aggressiveness=vad_aggressiveness,
+        skip_silent_windows=skip_silent_windows,
     )
 
 

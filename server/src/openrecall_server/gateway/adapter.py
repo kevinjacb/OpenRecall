@@ -266,6 +266,10 @@ def build_pipeline_factory(
                 window_ms=window_ms,
                 vad_mode=vad_mode,
                 vad_aggressiveness=vad_aggressiveness,
+                # Skip the ASR call on hops that are pure synthesized gap
+                # silence once the rolling window is fully silent — reclaims
+                # the extra calls the pipeline's gap-silence fill would cost.
+                skip_silent_windows=True,
             )
         else:
             transcriber = (
