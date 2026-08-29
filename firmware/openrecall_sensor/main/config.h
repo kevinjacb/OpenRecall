@@ -92,13 +92,20 @@
 #define VAD_NOISE_ALPHA_DOWN_Q16   1311  /* 0.02 * 65536 */
 #define VAD_NOISE_ALPHA_UP_Q16     131   /* 0.002 * 65536 */
 
-/* ---- Input gain (pre-Opus, on the DC-blocked primary) ----
+/* ---- Input gain (pre-Opus, on the DC-blocked + high-passed primary) ----
  * Fixed Q8 multiply: out = sat_int16(in * INPUT_GAIN_Q8 >> 8). The INMP441 has
- * no AGC and sits at ~1.4% full scale at wearable distance (amp ~450); x8
- * (2048 in Q8) lifts it to ~11% FS — a hotter signal for Opus and Whisper with
- * no clipping risk on normal speech. Saturates only on rare full-scale peaks.
+ * no AGC and sits at ~1.4% full scale at wearable distance (amp ~450).
+ *
+ * x4 (1024 in Q8), down from the original x8: Parakeet (the production ASR)
+ * per-feature-normalizes its log-mel input, so absolute level barely affects
+ * recognition — x8 mostly amplified the mic's own noise floor (+18 dB of
+ * audible hiss in recordings) and clipped wind gusts / close speech into hard
+ * distortion, which DOES hurt the ASR. x4 still lifts wearable-distance
+ * speech to ~5-6% FS for Opus while keeping 2 bits of headroom; the wind-cut
+ * HPF ahead of this stage removes most of the low-frequency energy that used
+ * to eat that headroom. Revisit upward only with a Whisper A/B showing loss.
  * Tunable here; runtime tunability is a Phase 3 concern. */
-#define INPUT_GAIN_Q8 2048u   /* x8 in Q8 (8 << 8) */
+#define INPUT_GAIN_Q8 1024u   /* x4 in Q8 (4 << 8) */
 
 /* ---- Wind-cut high-pass (post-DC-block, pre-VAD/gain; see hpf.c) ----
  * 2nd-order Butterworth high-pass, fc = 180 Hz at fs = 16 kHz, Q = 0.7071.

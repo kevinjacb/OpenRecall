@@ -19,14 +19,17 @@ static void check(const char *name, int ok) {
 static void test_scales_signal(void) {
   int16_t buf[N];
   for (int i = 0; i < N; i++) buf[i] = 100;   /* amp 100 */
-  gain_apply(buf, N, INPUT_GAIN_Q8);           /* x8 -> 800 */
+  gain_apply(buf, N, INPUT_GAIN_Q8);
   int32_t peak = 0;
   for (int i = 0; i < N; i++) {
     int32_t v = buf[i] < 0 ? -(int32_t)buf[i] : buf[i];
     if (v > peak) peak = v;
   }
-  printf("  scale: in=100 out_peak=%d (expect ~800)\n", (int)peak);
-  check("x8 gain scales 100 -> 800", peak >= 790 && peak <= 810);
+  /* Derive the expectation from the config value so retuning the gain
+   * (x8 -> x4 for the Parakeet path) doesn't silently break this test. */
+  int32_t expect = (int32_t)((100u * INPUT_GAIN_Q8) >> 8);
+  printf("  scale: in=100 out_peak=%d (expect ~%d)\n", (int)peak, (int)expect);
+  check("configured gain scales amp 100", peak >= expect - 10 && peak <= expect + 10);
 }
 
 static void test_saturates_loud_positive(void) {
