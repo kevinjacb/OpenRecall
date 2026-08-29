@@ -149,17 +149,34 @@
 #define BATTERY_SAMPLE_INTERVAL_S  30
 #define BATTERY_OVERSAMPLE           64
 
-/* ---- BLE power: connection params + slow advertising (spec 3.2) ----
- * On connect we request a relaxed interval + slave latency so the phone's radio
- * can doze between audio bursts (the central may refuse — defaults then apply,
- * which is fine). Advertising only happens while disconnected, so a slow ~1 s
- * interval is purely a disconnected-idle saving with no speech-path cost.
- * Connection interval units = 1.25 ms; supervision timeout units = 10 ms. */
+/* ---- BLE power: connection params + advertising cadence (spec 3.2) ----
+ *
+ * Connection-param request: DISABLED BY DEFAULT. The relay app deliberately
+ * requests CONNECTION_PRIORITY_HIGH (7.5-15 ms) right after the MTU exchange
+ * to keep 200 ms audio chunks low-latency (SensorLink A1). The original
+ * connect-time ble_gap_update_params(75-150 ms, latency 4) fired at the same
+ * moment and fought it — two opposing link-layer update procedures during
+ * connection setup, which on Android stacks intermittently aborts the GATT
+ * setup (early disconnect / status 133) and slows service discovery to a
+ * crawl when accepted. Result on hardware: "device connects but the app
+ * doesn't detect it most of the time". Any future re-enable must (a) defer
+ * the request several seconds past subscribe-complete and (b) resolve the
+ * conflict with the app's HIGH-priority hint first.
+ *
+ * Advertising: fast for a short window after boot/disconnect (so the phone's
+ * scan + auto-reconnect backoff — attempts at ~1/2/4/8 s — find us at once),
+ * then downshift to a slow ~1 s interval for the disconnected-idle saving.
+ * Connection interval units = 1.25 ms; supervision units = 10 ms; advertising
+ * units = 0.625 ms. */
+#define BLE_CONN_PARAM_REQUEST_ENABLED 0
 #define BLE_CONN_ITVL_MIN_UNITS   60    /*  75 ms (60 * 1.25) */
 #define BLE_CONN_ITVL_MAX_UNITS  120    /* 150 ms (120 * 1.25) */
 #define BLE_CONN_LATENCY           4    /* skip 4 intervals (slave latency) */
 #define BLE_CONN_SUP_TIMEOUT_UNITS 600  /*  6 s (600 * 10) — > (1+lat)*itvl_max*2 */
-#define BLE_ADV_ITVL_MIN_UNITS   1280   /*  800 ms (1280 * 0.625) */
+#define BLE_ADV_FAST_ITVL_MIN_UNITS  48 /*  30 ms (48 * 0.625) */
+#define BLE_ADV_FAST_ITVL_MAX_UNITS  96 /*  60 ms (96 * 0.625) */
+#define BLE_ADV_FAST_WINDOW_MS    30000 /* fast adv for 30 s, then downshift */
+#define BLE_ADV_ITVL_MIN_UNITS   1280   /*  800 ms (1280 * 0.625) — slow/idle */
 #define BLE_ADV_ITVL_MAX_UNITS   1600   /* 1000 ms (1600 * 0.625) */
 
 /* ---- Dual-mic DSP: NLMS adaptive differential noise cancellation ----

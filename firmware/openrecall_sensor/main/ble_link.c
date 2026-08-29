@@ -51,6 +51,8 @@ static uint8_t s_addr_type;
 static ble_command_handler_t s_on_command;
 
 static int start_advertising(void);
+static int adv_start_with(uint16_t itvl_min_units, uint16_t itvl_max_units,
+                          int32_t duration_ms);
 
 // Notify chars are write-from-server-only; reads return empty.
 static int chr_noop_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt,
@@ -139,10 +141,15 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
       if (event->connect.status == 0) {
         s_conn_handle = event->connect.conn_handle;
         ESP_LOGI(TAG, "phone connected (handle %" PRIu16 ")", s_conn_handle);
-        /* Request a relaxed connection interval + slave latency so the phone's
-         * radio can doze between audio bursts (spec 3.2). The central may refuse
-         * — in that case the negotiated default applies and capture is
-         * unaffected. The accepted params are logged on CONN_UPDATED. */
+#if BLE_CONN_PARAM_REQUEST_ENABLED
+        /* DISABLED BY DEFAULT (see config.h). Requesting relaxed params here
+         * — during connection setup — collided with the relay app's own
+         * CONNECTION_PRIORITY_HIGH request fired right after MTU exchange:
+         * two opposing link-layer update procedures, which on Android stacks
+         * intermittently aborted GATT setup (early disconnect / status 133).
+         * That was the "device connects but the app doesn't detect it"
+         * regression. If re-enabled, this must be deferred well past
+         * subscribe-complete AND reconciled with the app's HIGH hint. */
         struct ble_gap_upd_params upd = {
           .itvl_min = BLE_CONN_ITVL_MIN_UNITS,
           .itvl_max = BLE_CONN_ITVL_MAX_UNITS,
@@ -153,6 +160,7 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
         if (rc != 0 && rc != BLE_HS_EALREADY) {
           ESP_LOGW(TAG, "update_params rc=%d (central may keep defaults)", rc);
         }
+#endif
       } else {
         // A connect attempt that was in flight when ble_link_suspend() stopped
         // advertising can still fail and land here mid-window; respect the flag.
@@ -184,6 +192,24 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
         s_prov_state_subscribed = event->subscribe.cur_notify;
       }
       return 0;
+    case BLE_GAP_EVENT_ADV_COMPLETE:
+      /* The fast advertising window elapsed without a connection: downshift
+       * to the slow ~1 s interval for the disconnected-idle power saving.
+       * Guarded like the other re-advertise paths: never during a suspend
+       * window, never while connected. */
+      if (!s_suspended && s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        int arc = adv_start_with(BLE_ADV_ITVL_MIN_UNITS, BLE_ADV_ITVL_MAX_UNITS,
+                                 BLE_HS_FOREVER);
+        if (arc == 0 || arc == BLE_HS_EALREADY) {
+          ESP_LOGI(TAG, "adv downshift: slow %u-%u ms (idle)",
+                   (unsigned)(BLE_ADV_ITVL_MIN_UNITS * 0.625f),
+                   (unsigned)(BLE_ADV_ITVL_MAX_UNITS * 0.625f));
+        } else {
+          ESP_LOGW(TAG, "adv downshift failed rc=%d; retrying fast", arc);
+          start_advertising();
+        }
+      }
+      return 0;
     case BLE_GAP_EVENT_CONN_UPDATE: {
       /* The central may refuse our request and keep its own defaults. Log the
        * params it actually accepted by reading the connection descriptor. */
@@ -203,6 +229,20 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
   }
 }
 
+/* Start undirected general-discoverable advertising with the given interval
+ * (0.625 ms units) and duration (ms, or BLE_HS_FOREVER). Shared by the fast
+ * and slow phases and by ble_link_resume(). */
+static int adv_start_with(uint16_t itvl_min_units, uint16_t itvl_max_units,
+                          int32_t duration_ms) {
+  struct ble_gap_adv_params adv_params = {0};
+  adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
+  adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+  adv_params.itvl_min = itvl_min_units;
+  adv_params.itvl_max = itvl_max_units;
+  return ble_gap_adv_start(s_addr_type, NULL, duration_ms, &adv_params,
+                           gap_event, NULL);
+}
+
 static int start_advertising(void) {
   struct ble_hs_adv_fields fields = {0};
   fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
@@ -217,23 +257,23 @@ static int start_advertising(void) {
     ESP_LOGE(TAG, "adv_set_fields rc=%d", rc);
     return rc;
   }
-  struct ble_gap_adv_params adv_params = {0};
-  adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
-  adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-  /* Slow advertising (~1 s) when disconnected/idle (spec 3.2). Advertising only
-   * happens while disconnected, so this is purely a disconnected-idle saving
-   * with no speech-path cost; the phone still discovers within ~1-2 s of
-   * scanning. Units are 0.625 ms. */
-  adv_params.itvl_min = BLE_ADV_ITVL_MIN_UNITS;
-  adv_params.itvl_max = BLE_ADV_ITVL_MAX_UNITS;
-  rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &adv_params, gap_event, NULL);
+  /* Fast-then-slow cadence (spec 3.2, reworked): advertise FAST for
+   * BLE_ADV_FAST_WINDOW_MS so the phone's scan and its auto-reconnect
+   * backoff (attempts at ~1/2/4/8 s) find us immediately, then downshift
+   * to the slow ~1 s interval on BLE_GAP_EVENT_ADV_COMPLETE for the
+   * disconnected-idle power saving. The original always-slow cadence
+   * stretched every reconnect attempt and helped exhaust the app's
+   * bounded retry schedule. */
+  rc = adv_start_with(BLE_ADV_FAST_ITVL_MIN_UNITS, BLE_ADV_FAST_ITVL_MAX_UNITS,
+                      BLE_ADV_FAST_WINDOW_MS);
   if (rc != 0) {
     ESP_LOGE(TAG, "adv_start rc=%d", rc);
     return rc;
   }
-  ESP_LOGI(TAG, "advertising as \"OpenRecall\" (itvl %u-%u ms)",
-           (unsigned)(BLE_ADV_ITVL_MIN_UNITS * 0.625f),
-           (unsigned)(BLE_ADV_ITVL_MAX_UNITS * 0.625f));
+  ESP_LOGI(TAG, "advertising as \"OpenRecall\" (fast %u-%u ms for %u s, then slow)",
+           (unsigned)(BLE_ADV_FAST_ITVL_MIN_UNITS * 0.625f),
+           (unsigned)(BLE_ADV_FAST_ITVL_MAX_UNITS * 0.625f),
+           (unsigned)(BLE_ADV_FAST_WINDOW_MS / 1000));
   return 0;
 }
 
@@ -366,19 +406,15 @@ void ble_link_resume(void) {
   // Re-advertise after the WiFi transfer window (spec §3.2). The adv fields
   // (name/UUID/flags) were set by the initial start_advertising() at sync and
   // persist in the controller across adv stop/start, so we only need to restart
-  // advertising — no full BLE stack re-init, no re-set_fields. Calling
-  // ble_gap_adv_start directly (rather than the start_advertising() helper) lets
-  // us inspect the raw NimBLE status and tolerate benign races: EALREADY means
-  // we're already advertising (the goal), EBUSY means a prior terminate is still
-  // in flight (transient, not a hard fault).
-  struct ble_gap_adv_params adv_params = {0};
-  adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
-  adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-  adv_params.itvl_min = BLE_ADV_ITVL_MIN_UNITS;   /* slow adv, same as start */
-  adv_params.itvl_max = BLE_ADV_ITVL_MAX_UNITS;
-  int rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &adv_params, gap_event, NULL);
+  // advertising — no full BLE stack re-init, no re-set_fields. Uses the shared
+  // adv_start_with helper (fast window first, like every other adv path — the
+  // phone reconnects right after a transfer window, so fast matters here) and
+  // tolerates the benign races: EALREADY means we're already advertising (the
+  // goal), EBUSY means a prior terminate is still in flight (transient).
+  int rc = adv_start_with(BLE_ADV_FAST_ITVL_MIN_UNITS, BLE_ADV_FAST_ITVL_MAX_UNITS,
+                          BLE_ADV_FAST_WINDOW_MS);
   if (rc == 0 || rc == BLE_HS_EALREADY) {
-    ESP_LOGI(TAG, "advertising as \"OpenRecall\"");
+    ESP_LOGI(TAG, "advertising as \"OpenRecall\" (fast window)");
   } else if (rc == BLE_HS_EBUSY) {
     ESP_LOGW(TAG, "resume: adv_start EBUSY (terminate still in flight)");
   } else {
