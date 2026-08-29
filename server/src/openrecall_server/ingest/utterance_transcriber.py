@@ -103,6 +103,11 @@ class UtteranceTranscriber:
         # streaming transcriber's.
         self._fed_ms = 0
         self._utterance_start_ms = 0
+        # The PCM of the most recently transcribed utterance. The pipeline
+        # reads this to fingerprint the speaker from the utterance's own
+        # audio (one clean multi-second embed per utterance) instead of a
+        # rolling per-hop window. None until the first utterance closes.
+        self.last_utterance_pcm: bytes | None = None
 
     @property
     def committed_ms(self) -> int:
@@ -155,6 +160,7 @@ class UtteranceTranscriber:
             return []
         if self._audible_ms(pcm) < self._min_speech_ms:
             return []
+        self.last_utterance_pcm = pcm
         tokens = self._backend.transcribe(pcm, self._sample_rate)
         if not tokens:
             return []

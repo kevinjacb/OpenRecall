@@ -60,10 +60,17 @@ def handle_message(core: GatewayCore, message: str | bytes) -> list[str]:
 def _select_embedder(cfg):
     """Pick the embedder from ``cfg.embed_model``.
 
-    ``"resemblyzer"`` (or any non-empty, non-"fake" value) -> the real local
-    backend; ``""`` / ``"fake"`` -> the deterministic fake. Heavy import is
-    lazy inside the real backend's ``_ensure_ready``, so constructing the real
-    backend here never loads the model.
+    ``""`` (unset) or any non-"fake" value -> the real local backend
+    (Resemblyzer); the deterministic fake requires an EXPLICIT
+    ``embed_model="fake"``. The old semantics (unset -> fake) were a
+    production footgun: speaker ID enabled without
+    OPENRECALL_SPEAKER_EMBED_MODEL silently fingerprinted with 16-dim hash
+    embeddings — real-device evidence 2026-08-29: 269 garbage speaker rows
+    minted (dim=16, model "unknown") after the env var was lost on 08-25,
+    while every real Resemblyzer row predates it. Enabled speaker ID now
+    always means real fingerprinting unless a test explicitly asks for the
+    fake. Heavy import stays lazy inside the real backend's
+    ``_ensure_ready``, so constructing it here never loads the model.
     """
     from ..ingest.speaker_embedder import (
         FakeSpeakerEmbedder,
@@ -71,11 +78,12 @@ def _select_embedder(cfg):
     )
 
     model = (cfg.embed_model or "").strip().lower()
-    if model and model != "fake":
-        return ResemblyzerSpeakerEmbedder(
-            min_speech_ms=cfg.min_speech_ms, model_name=cfg.embed_model,
-        )
-    return FakeSpeakerEmbedder(dim=16, min_speech_ms=cfg.min_speech_ms)
+    if model == "fake":
+        return FakeSpeakerEmbedder(dim=16, min_speech_ms=cfg.min_speech_ms)
+    return ResemblyzerSpeakerEmbedder(
+        min_speech_ms=cfg.min_speech_ms,
+        model_name=cfg.embed_model or "resemblyzer",
+    )
 
 
 def build_speaker_identifier(cfg, registry, embedder=None):

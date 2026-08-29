@@ -72,6 +72,22 @@ DEFAULT_GAP_SILENCE_CAP_MS = 1500
 logger = logging.getLogger(__name__)
 
 
+def _strip_gap_fill(pcm: bytes, frame_bytes: int = 640) -> bytes:
+    """Drop the all-zero 20 ms frames (synthesized VAD-gap fill) from an
+    utterance's PCM before speaker embedding — the fingerprint should be
+    computed from the speech, not diluted by inserted silence."""
+    out = bytearray()
+    n = len(pcm) // frame_bytes * frame_bytes
+    for i in range(0, n, frame_bytes):
+        chunk = pcm[i:i + frame_bytes]
+        if chunk.count(0) != len(chunk):
+            out += chunk
+    tail = pcm[n:]
+    if tail and tail.count(0) != len(tail):
+        out += tail
+    return bytes(out)
+
+
 def _peak_of(pcm: bytes) -> int:
     """Loudest 16-bit LE sample in ``pcm``, scaled to 0-255.
 
@@ -158,6 +174,13 @@ class AudioIngestPipeline:
             )
         self._pcm_buffer: bytearray = bytearray()  # decoded PCM, appended as frames arrive
         self._absolute_ms: int = 0  # total ms of audio fed to the streamer
+        # Utterance mode fingerprints the speaker from each utterance's own
+        # audio (UtteranceTranscriber.last_utterance_pcm) — one clean
+        # multi-second embed per utterance instead of a noisy rolling window
+        # every hop. The guard below prevents double-identifying the same
+        # utterance (which would double-count registry turns).
+        self._utterance_mode = isinstance(self._streamer, UtteranceTranscriber)
+        self._last_fingerprinted: bytes | None = None
         # VAD-gap silence synthesis (see DEFAULT_GAP_SILENCE_CAP_MS). The
         # cursor is the device-ms position just past the last audio we
         # decoded (or the last gap-marker we advanced over); the difference
@@ -292,6 +315,22 @@ class AudioIngestPipeline:
             peaks.append(_peak_of(pcm))
         return peaks
 
+    def _utterance_speaker(self) -> "SpeakerAssignment | None":
+        """Identify the speaker of the utterance that just closed.
+
+        Reads the utterance's own PCM from the transcriber, strips the
+        synthesized gap fill, and runs one identification for the whole
+        utterance. Returns None when no identifier is wired, no utterance
+        has closed, this one was already fingerprinted, or the speech is too
+        short for a stable embedding (the embedder's floor)."""
+        if self._identifier is None:
+            return None
+        pcm = getattr(self._streamer, "last_utterance_pcm", None)
+        if not pcm or pcm is self._last_fingerprinted:
+            return None
+        self._last_fingerprinted = pcm
+        return self._identifier.identify(_strip_gap_fill(pcm), self._sample_rate)
+
     def _speaker(self, pcm: bytes) -> "SpeakerAssignment | None":
         """Identify the speaker of the rolling window ending at this hop.
 
@@ -402,7 +441,12 @@ class AudioIngestPipeline:
             del self._pcm_buffer[:hop_bytes]
             self._absolute_ms += self._streamer._hop_ms  # type: ignore[attr-defined]
             segments = self._streamer.feed(pcm)
-            spk = self._speaker(pcm)
+            if self._utterance_mode:
+                # One fingerprint per closed utterance, from its own audio.
+                # No per-hop rolling-window embeds (noisy AND ~10x the cost).
+                spk = self._utterance_speaker() if segments else None
+            else:
+                spk = self._speaker(pcm)
             if spk is not None:
                 self._last_speaker = spk
             for seg in segments:
@@ -437,7 +481,10 @@ class AudioIngestPipeline:
             self._pcm_buffer.clear()
             self._absolute_ms += len(pcm) * 1000 // (self._sample_rate * 2)
             segments = self._streamer.feed(pcm)
-            spk = self._speaker(pcm)
+            if self._utterance_mode:
+                spk = self._utterance_speaker() if segments else None
+            else:
+                spk = self._speaker(pcm)
             if spk is not None:
                 self._last_speaker = spk
             for seg in segments:
@@ -455,8 +502,16 @@ class AudioIngestPipeline:
         # The tail sentence spans audio held across prior hops; attribute it to
         # the last identified speaker, not the trailing partial-PCM `spk`
         # (which is None whenever the hop buffer was already drained). Without
-        # this every end-of-session sentence lost its speaker label.
+        # this every end-of-session sentence lost its speaker label. In
+        # utterance mode the flush closes a real final utterance — fingerprint
+        # it from its own audio, falling back to the last known speaker only
+        # when the utterance is too short to embed.
         tail_spk = self._last_speaker
+        if self._utterance_mode and tail:
+            utt_spk = self._utterance_speaker()
+            if utt_spk is not None:
+                tail_spk = utt_spk
+                self._last_speaker = utt_spk
         for seg in tail:
             duration = seg.end_ms - seg.start_ms
             if duration <= 0:

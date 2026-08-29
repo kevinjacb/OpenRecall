@@ -615,7 +615,7 @@ def main() -> None:
                 worker.add_listener(speaker_nudge.on_session_completion)
                 print(
                     f"speaker recognition ENABLED "
-                    f"(model={speaker_cfg.embed_model or 'fake'})"
+                    f"(model={speaker_cfg.embed_model or 'resemblyzer'})"
                 )
             else:
                 print(

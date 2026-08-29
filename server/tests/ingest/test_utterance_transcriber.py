@@ -149,3 +149,68 @@ def test_duck_type_surface():
     t.feed(_hop(500))
     t.feed(_zeros(600))
     assert t.committed_ms == 1100  # everything emitted so far
+
+
+# ---------------------------------------------------------------------------
+# Utterance-level speaker fingerprinting (pipeline integration)
+# ---------------------------------------------------------------------------
+def test_last_utterance_pcm_exposed_on_close():
+    b = ScriptedBackend([Token("hi", 0, 100, 1)])
+    t = UtteranceTranscriber(b, end_silence_ms=560)
+    assert t.last_utterance_pcm is None
+    t.feed(_hop(500))
+    t.feed(_zeros(600))
+    assert t.last_utterance_pcm is not None
+    assert len(t.last_utterance_pcm) == (500 + 600) * BYTES_PER_MS
+
+
+def test_pipeline_fingerprints_once_per_utterance_from_utterance_audio():
+    """Utterance mode: the identifier runs ONCE per closed utterance on the
+    utterance's own PCM with the synthesized gap fill stripped — never on
+    per-hop rolling windows."""
+    import struct
+    from openrecall_server.ingest.audio_packet import AudioPacket, PacketType, VadState
+    from openrecall_server.ingest.pipeline import AudioIngestPipeline
+    from openrecall_server.ingest.reassembler import SessionReassembler
+
+    class Decoder:
+        def decode(self, frame):
+            return b"\x64\x00" * 320  # audible constant
+
+    class Identifier:
+        def __init__(self):
+            self.calls = []
+
+        def identify(self, pcm, sr):
+            self.calls.append(pcm)
+            from openrecall_server.ingest.speaker_identifier import SpeakerAssignment
+            return SpeakerAssignment("spk-1", 0.9, "confirmed")
+
+    def pkt(seq, n_frames, rel_ts, vad=VadState.SPEECH):
+        frames = [b"\x01"] * n_frames
+        header = struct.pack(
+            "<BIIBBB", (1 << 4) | PacketType.MEMORY_CHUNK, seq, rel_ts,
+            vad, len(frames), 0)
+        body = b"".join(struct.pack("<B", len(f)) + f for f in frames)
+        return AudioPacket.parse(header + body)
+
+    backend = ScriptedBackend([Token("hello", 0, 400, 1)])
+    ident = Identifier()
+    pipe = AudioIngestPipeline(
+        reassembler=SessionReassembler(),
+        decoder=Decoder(),
+        transcriber=UtteranceTranscriber(backend, end_silence_ms=560),
+        hop_ms=240, window_ms=2000,
+        speaker_identifier=ident,
+    )
+    # 1s of speech at rel 0; gap heartbeats push rel_ts to 2000 -> 1000ms of
+    # synthesized zeros -> utterance closes (560ms of zeros reached).
+    out = pipe.ingest(pkt(0, 50, 0))
+    assert ident.calls == []          # nothing closed yet, no per-hop embeds
+    out = pipe.ingest(pkt(1, 0, 2000, vad=VadState.GAP_MARKER))
+    all_t = out + pipe.flush()
+    labelled = [t for t in all_t if t.text]
+    assert len(ident.calls) == 1, "one fingerprint per utterance"
+    # Gap fill stripped: the identified PCM is exactly the 1s of real speech.
+    assert len(ident.calls[0]) == 50 * 640
+    assert all(t.speaker == "spk-1" for t in labelled)

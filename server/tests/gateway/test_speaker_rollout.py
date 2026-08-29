@@ -42,10 +42,24 @@ def test_resemblyzer_model_yields_resemblyzer_embedder():
     assert isinstance(ident._embedder, ResemblyzerSpeakerEmbedder)
 
 
-def test_unset_embed_model_yields_fake_embedder():
-    from openrecall_server.ingest.speaker_embedder import FakeSpeakerEmbedder
+def test_unset_embed_model_yields_the_real_embedder():
+    """Enabled speaker ID with no embed_model configured must fingerprint
+    with the REAL backend. The old unset->fake semantics were a production
+    footgun: a lost OPENRECALL_SPEAKER_EMBED_MODEL env var silently minted
+    hundreds of garbage 16-dim speakers (real-device incident 2026-08-29).
+    The fake now requires an explicit embed_model="fake"."""
+    from openrecall_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
 
     cfg = SpeakerConfig(enabled=True)  # embed_model defaults to ""
+    ident = build_speaker_identifier(cfg, InMemorySpeakerRegistry(cfg), embedder=None)
+    assert ident is not None
+    assert isinstance(ident._embedder, ResemblyzerSpeakerEmbedder)
+
+
+def test_explicit_fake_embed_model_yields_fake():
+    from openrecall_server.ingest.speaker_embedder import FakeSpeakerEmbedder
+
+    cfg = SpeakerConfig(enabled=True, embed_model="fake")
     ident = build_speaker_identifier(cfg, InMemorySpeakerRegistry(cfg), embedder=None)
     assert ident is not None
     assert isinstance(ident._embedder, FakeSpeakerEmbedder)
