@@ -186,9 +186,11 @@ def build_pipeline_factory(
     if asr_config is None:
         asr_backend = "whisper"
         parakeet_model = None
+        asr_mode = "hop"
     else:
         asr_backend = asr_config.backend
         parakeet_model = asr_config.parakeet_model
+        asr_mode = asr_config.resolved_mode()
 
     def factory(start_seq: int) -> AudioIngestPipeline:
         from ..ingest.opus_decoder import OpusStreamDecoder
@@ -259,18 +261,33 @@ def build_pipeline_factory(
                     inference_lock=_shared.inference_lock,
                 )
                 backend = WhisperStreamingBackend(**backend_kwargs)
-            transcriber = streaming_from_tokens(
-                backend,
-                sample_rate=16000,
-                hop_ms=hop_ms,
-                window_ms=window_ms,
-                vad_mode=vad_mode,
-                vad_aggressiveness=vad_aggressiveness,
-                # Skip the ASR call on hops that are pure synthesized gap
-                # silence once the rolling window is fully silent — reclaims
-                # the extra calls the pipeline's gap-silence fill would cost.
-                skip_silent_windows=True,
-            )
+            if asr_mode == "utterance":
+                # Utterance mode (the parakeet default): buffer speech and
+                # transcribe each utterance ONCE when the wearer pauses. No
+                # overlapping re-transcription — Parakeet's token timestamps
+                # shift between overlapping rolling-window calls, which
+                # defeated the streaming dedup and interleaved duplicate
+                # fragments into the transcript (real-device evidence
+                # 2026-08-29). One call per utterance is also ~10x less
+                # compute than the 240 ms hop cadence.
+                from ..ingest.utterance_transcriber import UtteranceTranscriber
+
+                transcriber = UtteranceTranscriber(
+                    backend, sample_rate=16000, hop_ms=hop_ms,
+                )
+            else:
+                transcriber = streaming_from_tokens(
+                    backend,
+                    sample_rate=16000,
+                    hop_ms=hop_ms,
+                    window_ms=window_ms,
+                    vad_mode=vad_mode,
+                    vad_aggressiveness=vad_aggressiveness,
+                    # Skip the ASR call on hops that are pure synthesized gap
+                    # silence once the rolling window is fully silent — reclaims
+                    # the extra calls the pipeline's gap-silence fill would cost.
+                    skip_silent_windows=True,
+                )
         else:
             transcriber = (
                 MlxWhisperTranscriber(model) if model else MlxWhisperTranscriber()

@@ -9,6 +9,10 @@ the heavy extras installed on the Mac:
     python scripts/run_gateway.py --port 8765
     # Parakeet backend (low-latency live transcription): OPENRECALL_ASR_BACKEND=parakeet
     #   pip install -e '.[parakeet]'  (parakeet-mlx>=0.5)
+    # OPENRECALL_ASR_MODE=auto|utterance|hop — transcription scheduling.
+    #   auto (default): utterance for parakeet (one ASR call per utterance,
+    #   emitted ~1s after the wearer pauses; no overlapping re-transcription),
+    #   hop for whisper (the rolling-window streaming path).
 
 Two servers share one event loop:
 

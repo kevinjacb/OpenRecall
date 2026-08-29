@@ -53,7 +53,18 @@ _VAD_MODES = ("webrtc",)
 # operator can flip back trivially (unset it -> whisper).
 ENV_ASR_BACKEND = "OPENRECALL_ASR_BACKEND"
 ENV_PARAKEET_MODEL = "OPENRECALL_PARAKEET_MODEL"
+ENV_ASR_MODE = "OPENRECALL_ASR_MODE"
 _ASR_BACKENDS = ("whisper", "parakeet")
+
+# Transcription scheduling mode. "utterance": buffer speech and transcribe
+# each utterance once when the wearer pauses — no overlapping re-transcription
+# (real-device evidence 2026-08-29: Parakeet's token timestamps shift between
+# overlapping rolling-window calls, defeating the streaming dedup and
+# interleaving duplicate fragments; the same audio batch-transcribes cleanly).
+# "hop": the original rolling-window streaming path. "auto": utterance for
+# parakeet, hop for whisper (whisper's word timestamps are stable enough for
+# the streaming dedup, and its filters are tuned for that path).
+_ASR_MODES = ("auto", "utterance", "hop")
 
 # --- command detector --------------------------------------------------------
 ENV_COMMAND_ENABLED = "OPENRECALL_COMMAND_DETECTOR_ENABLED"
@@ -236,6 +247,9 @@ class AsrConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     backend: str = "whisper"
     parakeet_model: str = "mlx-community/parakeet-tdt-0.6b-v3"
+    # Transcription scheduling: "auto" resolves per backend (utterance for
+    # parakeet, hop for whisper) — see _ASR_MODES and resolved_mode().
+    mode: str = "auto"
 
     @model_validator(mode="after")
     def _validate_backend(self) -> "AsrConfig":
@@ -244,12 +258,22 @@ class AsrConfig(BaseModel):
                 f"{ENV_ASR_BACKEND}={self.backend!r} must be one of "
                 f"{list(_ASR_BACKENDS)}"
             )
+        if self.mode not in _ASR_MODES:
+            raise ValueError(
+                f"{ENV_ASR_MODE}={self.mode!r} must be one of {list(_ASR_MODES)}"
+            )
         if not self.parakeet_model.strip():
             raise ValueError(
                 f"{ENV_PARAKEET_MODEL}={self.parakeet_model!r} must be a "
                 f"non-empty HuggingFace repo id"
             )
         return self
+
+    def resolved_mode(self) -> str:
+        """The effective scheduling mode: "utterance" or "hop"."""
+        if self.mode != "auto":
+            return self.mode
+        return "utterance" if self.backend == "parakeet" else "hop"
 
 
 class CommandDetectorConfig(BaseModel):
@@ -439,6 +463,10 @@ def load_agent_config(env: Mapping[str, str]) -> AgentConfig:
         raw_model = env[ENV_PARAKEET_MODEL].strip()
         if raw_model:
             asr_kwargs["parakeet_model"] = raw_model
+    if ENV_ASR_MODE in env:
+        raw_mode = env[ENV_ASR_MODE].strip().lower()
+        if raw_mode:
+            asr_kwargs["mode"] = raw_mode
     command_kwargs: dict = {}
     if ENV_COMMAND_ENABLED in env:
         command_kwargs["enabled"] = _parse_bool(

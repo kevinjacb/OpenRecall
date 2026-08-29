@@ -39,6 +39,7 @@ from .streaming_transcriber import (
     streaming_from_tokens,
 )
 from .transcriber import OpusDecoder, Transcript, Transcriber
+from .utterance_transcriber import UtteranceTranscriber
 
 if TYPE_CHECKING:
     from ..media.audio import AudioStore
@@ -126,8 +127,8 @@ class AudioIngestPipeline:
         self._decoder = decoder
         self._sample_rate = sample_rate
         self._hop_frames = hop_ms // FRAME_MS
-        self._streamer: StreamingTranscriber | SentenceCoalescer
-        if isinstance(transcriber, StreamingTranscriber):
+        self._streamer: StreamingTranscriber | SentenceCoalescer | UtteranceTranscriber
+        if isinstance(transcriber, (StreamingTranscriber, UtteranceTranscriber)):
             self._streamer = transcriber
         elif isinstance(transcriber, Transcriber):
             # Legacy str-returning transcriber; wrap via the text factory.
@@ -148,7 +149,10 @@ class AudioIngestPipeline:
         # accumulates those into sentence Segments so each Transcript is a
         # readable sentence, not a single word. The streamer's cursor/dedup
         # logic is left untouched — the coalescer is a transparent wrapper.
-        if sentence_coalesce:
+        # Utterance mode already emits one Segment per backend sentence (the
+        # sentence_id is meaningful within its single call), so the coalescer
+        # would be a no-op wrapper at best — skip it.
+        if sentence_coalesce and not isinstance(self._streamer, UtteranceTranscriber):
             self._streamer = SentenceCoalescer(
                 self._streamer, sample_rate=sample_rate, pause_ms=sentence_pause_ms,
             )

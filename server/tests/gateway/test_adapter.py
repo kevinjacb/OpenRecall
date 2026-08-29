@@ -252,19 +252,47 @@ def test_switching_back_to_whisper_restores_the_filters():
     assert backend._no_speech_threshold == 0.7
 
 
-def test_vad_gate_applies_to_the_parakeet_backend_too(fake_parakeet_loader):
+def test_vad_gate_applies_to_the_parakeet_hop_path_too(fake_parakeet_loader):
     """The backend-agnostic defenses live above the seam, so they must still
-    be wired when Parakeet is selected."""
+    be wired when Parakeet runs the rolling-window (hop) path. Utterance mode
+    (the parakeet default) has no per-hop ASR call to gate — its min-speech
+    check covers silence — so the gate only applies with mode=hop."""
     from openrecall_server.agent.config import load_agent_config
     from openrecall_server.gateway.adapter import build_pipeline_factory
 
     cfg = load_agent_config({
         "OPENRECALL_ASR_BACKEND": "parakeet",
+        "OPENRECALL_ASR_MODE": "hop",
         "OPENRECALL_WHISPER_VAD_MODE": "webrtc",
     })
     factory = build_pipeline_factory(whisper_config=cfg.whisper, asr_config=cfg.asr)
 
     assert _raw_streamer(factory)._vad is not None
+
+
+def test_parakeet_defaults_to_utterance_mode(fake_parakeet_loader):
+    """Parakeet's default is utterance-mode transcription: one backend call
+    per utterance, no overlapping re-transcription (the rolling-window dedup
+    fails on Parakeet's unstable cross-call token timestamps — real-device
+    evidence 2026-08-29)."""
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+    from openrecall_server.ingest.utterance_transcriber import UtteranceTranscriber
+
+    cfg = load_agent_config({"OPENRECALL_ASR_BACKEND": "parakeet"})
+    assert cfg.asr.resolved_mode() == "utterance"
+    factory = build_pipeline_factory(whisper_config=cfg.whisper, asr_config=cfg.asr)
+    pipe = factory(0)
+    assert isinstance(pipe._streamer, UtteranceTranscriber)
+
+
+def test_whisper_defaults_to_hop_mode():
+    """Whisper keeps the rolling-window path (its word timestamps are stable
+    enough for the streaming dedup, and its filters are tuned for it)."""
+    from openrecall_server.agent.config import load_agent_config
+
+    cfg = load_agent_config({})
+    assert cfg.asr.resolved_mode() == "hop"
 
 
 # --- S4: shared singleton ASR model (process-wide load-once cache) -----------
