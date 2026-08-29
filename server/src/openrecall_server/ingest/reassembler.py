@@ -57,18 +57,18 @@ class SessionReassembler:
         self._gap_timeout_ms = gap_timeout_ms
         self._clock = clock
         self._gap_opened_at: int | float | None = None
-        # Frames drained by a wall-clock gap-skip that fired from
+        # Packets drained by a wall-clock gap-skip that fired from
         # :meth:`missing_range` (i.e. outside any :meth:`accept` call). The
         # reassembler has no transcriber of its own — decoded frames only
         # reach the transcriber when :meth:`accept` returns them to
         # :meth:`AudioIngestPipeline.ingest`. So a skip triggered by
-        # ``missing_range()`` parks the drained frames here; the very next
+        # ``missing_range()`` parks the drained packets here; the very next
         # ``accept()`` flushes them into its delivered list, and the pipeline
         # transcribes them as usual. This keeps the skip's wall-clock trigger
         # (independent of ``accept()``) from silently dropping the buffered
-        # frames that were ahead of the gap — the 'no frames may be silently
+        # packets that were ahead of the gap — the 'no frames may be silently
         # dropped' correctness rule.
-        self._pending: list[bytes] = []
+        self._pending: list[AudioPacket] = []
 
     @property
     def next_expected_seq(self) -> int:
@@ -141,11 +141,22 @@ class SessionReassembler:
         # not lost, and the gap is closed immediately (no further
         # ``request_chunks`` spam for a gap that is already decided unfilled).
         while self._next in self._buffer:
-            self._pending.extend(self._buffer.pop(self._next).frames)
+            self._pending.append(self._buffer.pop(self._next))
             self._next += 1
 
     def accept(self, packet: AudioPacket) -> list[bytes]:
-        """Ingest one packet; return Opus frames now deliverable, in order."""
+        """Ingest one packet; return Opus frames now deliverable, in order.
+
+        A frames-only convenience over :meth:`accept_packets`; callers that
+        need the per-packet ``rel_ts_ms`` timeline (e.g. to synthesize
+        silence for VAD gaps) use :meth:`accept_packets` directly.
+        """
+        return [f for p in self.accept_packets(packet) for f in p.frames]
+
+    def accept_packets(self, packet: AudioPacket) -> list[AudioPacket]:
+        """Ingest one packet; return the packets now deliverable, in
+        ``chunk_seq`` order (gap-marker packets included — they carry the
+        silence span's ``rel_ts_ms`` and no frames)."""
         seq = packet.chunk_seq
 
         if not self._anchored:
@@ -181,10 +192,10 @@ class SessionReassembler:
 
         # seq == next_expected: deliver this packet, then drain any contiguous buffer.
         self._gap_opened_at = None  # the gap filled — clear the timer
-        delivered.extend(packet.frames)
+        delivered.append(packet)
         self._next += 1
         while self._next in self._buffer:
-            delivered.extend(self._buffer.pop(self._next).frames)
+            delivered.append(self._buffer.pop(self._next))
             self._next += 1
-        logger.debug("reassembler: seq=%d delivered %d frame(s), next=%d", seq, len(delivered), self._next)
+        logger.debug("reassembler: seq=%d delivered %d packet(s), next=%d", seq, len(delivered), self._next)
         return delivered

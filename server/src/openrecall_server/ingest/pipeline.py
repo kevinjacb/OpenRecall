@@ -56,6 +56,18 @@ DEFAULT_WINDOW_MS = 5000  # streaming context (5s of rolling audio)
 # 1.6s floor while keeping the hop at 1s.
 DEFAULT_SPEAKER_WINDOW_MS = 2000
 
+# Silence synthesis for VAD gaps. The firmware suppresses non-speech audio:
+# it encodes speech + ~600 ms of hangover, then sends empty gap-marker packets
+# (rel_ts_ms only, no frames). Decoding just the frames splices utterances
+# end-to-end, which (a) degrades ASR on the joined audio and (b) removes every
+# real pause from the transcript timeline, so the sentence coalescer's
+# pause / trailing-silence boundaries can never fire (the max observable gap
+# was the 600 ms hangover — below the 1000 ms pause threshold). We therefore
+# re-insert zero PCM for the missing span, capped per silence run so a
+# minutes-long quiet stretch doesn't flood the transcriber: the cap only
+# needs to comfortably exceed the pause threshold for boundaries to fire.
+DEFAULT_GAP_SILENCE_CAP_MS = 1500
+
 logger = logging.getLogger(__name__)
 
 
@@ -100,6 +112,7 @@ class AudioIngestPipeline:
         sentence_coalesce: bool = False,
         sentence_pause_ms: int = DEFAULT_PAUSE_MS,
         denoiser: PcmDenoiser | None = None,
+        gap_silence_cap_ms: int | None = None,
     ) -> None:
         if window_ms % FRAME_MS != 0:
             raise ValueError(f"window_ms must be a multiple of {FRAME_MS}")
@@ -141,6 +154,18 @@ class AudioIngestPipeline:
             )
         self._pcm_buffer: bytearray = bytearray()  # decoded PCM, appended as frames arrive
         self._absolute_ms: int = 0  # total ms of audio fed to the streamer
+        # VAD-gap silence synthesis (see DEFAULT_GAP_SILENCE_CAP_MS). The
+        # cursor is the device-ms position just past the last audio we
+        # decoded (or the last gap-marker we advanced over); the difference
+        # to the next packet's rel_ts_ms is real, VAD-suppressed silence.
+        # The per-run budget resets whenever audio-bearing frames arrive.
+        if gap_silence_cap_ms is None:
+            gap_silence_cap_ms = max(
+                DEFAULT_GAP_SILENCE_CAP_MS, sentence_pause_ms + 500,
+            )
+        self._gap_silence_cap_ms = gap_silence_cap_ms
+        self._rel_ts_cursor: int | None = None
+        self._silence_run_ms: int = 0
         self._identifier = speaker_identifier  # optional; None when disabled
         # Rolling speaker-ID window, decoupled from the transcription hop. The
         # embedder is fed the last `speaker_window_ms` of PCM on every hop, not
@@ -292,9 +317,26 @@ class AudioIngestPipeline:
         """Contiguous head gap ``[start, end)`` to backfill, or None (drives §E request_chunks)."""
         return self._reassembler.missing_range()
 
+    def _gap_silence_for(self, pkt: AudioPacket) -> bytes:
+        """Zero PCM for the VAD-suppressed span between the rel_ts cursor and
+        ``pkt``, bounded by the per-run cap. Returns ``b""`` when there is no
+        gap, the run budget is spent, or the timeline went backwards (device
+        reboot / historical replay — the cursor resyncs instead)."""
+        if self._rel_ts_cursor is None:
+            return b""
+        gap_ms = pkt.rel_ts_ms - self._rel_ts_cursor
+        if gap_ms <= 0:
+            return b""
+        budget_ms = self._gap_silence_cap_ms - self._silence_run_ms
+        insert_ms = min(gap_ms, max(0, budget_ms))
+        if insert_ms <= 0:
+            return b""
+        self._silence_run_ms += insert_ms
+        return bytes((self._sample_rate * insert_ms // 1000) * 2)
+
     def ingest(self, packet: AudioPacket) -> list[Transcript]:
         """Ingest one packet; return any transcripts completed as a result."""
-        delivered = self._reassembler.accept(packet)
+        delivered = self._reassembler.accept_packets(packet)
         if not self._enabled():
             # Still fed to the reassembler above so the chunk_seq cursor keeps
             # advancing — the §E ack must stay truthful, or re-enabling the
@@ -302,12 +344,31 @@ class AudioIngestPipeline:
             # Nothing is persisted, decoded or transcribed.
             return []
         self._persist(packet)
-        for frame in delivered:
-            self._pcm_buffer.extend(self._denoiser.process(self._decoder.decode(frame)))
-        if delivered:
+        n_frames = 0
+        for pkt in delivered:
+            # Re-insert bounded silence for the VAD gap ahead of this packet,
+            # so the transcriber hears real pauses instead of utterances
+            # spliced end-to-end, and the coalescer's pause / trailing-silence
+            # boundaries see the true timeline.
+            fill = self._gap_silence_for(pkt)
+            if fill:
+                self._pcm_buffer.extend(fill)
+            for frame in pkt.frames:
+                self._pcm_buffer.extend(self._denoiser.process(self._decoder.decode(frame)))
+            if pkt.frames:
+                n_frames += len(pkt.frames)
+                self._silence_run_ms = 0
+                self._rel_ts_cursor = pkt.rel_ts_ms + len(pkt.frames) * FRAME_MS
+            else:
+                # Gap-marker heartbeat: advance the cursor so the next
+                # marker/speech packet measures its gap incrementally. Never
+                # move backwards (a stale marker after a re-anchor).
+                if self._rel_ts_cursor is None or pkt.rel_ts_ms > self._rel_ts_cursor:
+                    self._rel_ts_cursor = pkt.rel_ts_ms
+        if n_frames:
             logger.info(
                 "pipeline: +%d frame(s) decoded -> %d bytes PCM buffered",
-                len(delivered), len(self._pcm_buffer),
+                n_frames, len(self._pcm_buffer),
             )
 
         out: list[Transcript] = []

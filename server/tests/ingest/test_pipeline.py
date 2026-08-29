@@ -388,3 +388,86 @@ def test_rolling_speaker_window_decouples_embedder_from_hop():
     assert speakers[2] == "you", "60ms window clears floor -> speaker"
     assert speakers[3] == "you", "80ms window clears floor -> speaker"
     assert speakers[4] == "you", "rolled 80ms window clears floor -> speaker"
+
+
+# ---------------------------------------------------------------------------
+# VAD-gap silence synthesis
+#
+# The firmware suppresses non-speech audio (speech + ~600ms hangover only)
+# and sends empty gap-marker packets carrying rel_ts_ms. Without synthesis
+# the decoded stream splices utterances end-to-end: Whisper hears no pauses
+# and the sentence coalescer's pause/trailing-silence boundaries can never
+# fire. The pipeline re-inserts zero PCM for the missing span, capped per
+# silence run.
+# ---------------------------------------------------------------------------
+def pkt_at(chunk_seq: int, n_frames: int, rel_ts_ms: int,
+           vad: int = VadState.SPEECH) -> AudioPacket:
+    """Like pkt() but with an explicit rel_ts_ms (device timeline)."""
+    frames = [bytes([chunk_seq & 0xFF])] * n_frames
+    header = struct.pack(
+        "<BIIBBB",
+        (1 << 4) | PacketType.MEMORY_CHUNK,
+        chunk_seq,
+        rel_ts_ms,
+        vad,
+        len(frames),
+        0,
+    )
+    body = b"".join(struct.pack("<B", len(f)) + f for f in frames)
+    return AudioPacket.parse(header + body)
+
+
+def test_gap_markers_synthesize_silence_between_utterances():
+    # Utterance A: 5 frames (100ms) at rel_ts 0 -> cursor at 100ms.
+    # Gap markers at rel_ts 100 and 500 (heartbeats during real silence).
+    # Utterance B: 5 frames at rel_ts 1300.
+    # Expected synthesized silence: (100->500) 400ms + (500->1300) 800ms
+    # = 1200ms (under the 1500ms cap). Total audio = 100+1200+100 = 1400ms
+    # -> 70 hops at 20ms.
+    pipe, dec, tr = make_pipeline(window_ms=100, hop_ms=20)
+
+    pipe.ingest(pkt_at(0, n_frames=5, rel_ts_ms=0))
+    pipe.ingest(pkt_at(1, n_frames=0, rel_ts_ms=100, vad=VadState.GAP_MARKER))
+    pipe.ingest(pkt_at(2, n_frames=0, rel_ts_ms=500, vad=VadState.GAP_MARKER))
+    pipe.ingest(pkt_at(3, n_frames=5, rel_ts_ms=1300))
+
+    assert dec.frames_decoded == 10  # only real frames are decoded
+    assert len(tr.calls) == 70       # 1400ms of PCM / 20ms hop
+
+
+def test_gap_silence_is_capped_per_run():
+    # A minutes-long quiet stretch must not flood the transcriber: the
+    # synthesized span is capped (default 1500ms with the 1000ms pause).
+    # 100ms speech + capped 1500ms silence + 100ms speech = 1700ms -> 85 hops.
+    pipe, dec, tr = make_pipeline(window_ms=100, hop_ms=20)
+
+    pipe.ingest(pkt_at(0, n_frames=5, rel_ts_ms=0))
+    pipe.ingest(pkt_at(1, n_frames=0, rel_ts_ms=100, vad=VadState.GAP_MARKER))
+    pipe.ingest(pkt_at(2, n_frames=5, rel_ts_ms=60_100))
+
+    assert dec.frames_decoded == 10
+    assert len(tr.calls) == 85
+
+
+def test_backwards_rel_ts_synthesizes_nothing():
+    # Historical replay / device reboot: rel_ts goes backwards. No silence
+    # is inserted and the cursor resyncs from the audio-bearing packet.
+    pipe, dec, tr = make_pipeline(window_ms=100, hop_ms=20)
+
+    pipe.ingest(pkt_at(0, n_frames=5, rel_ts_ms=10_000))
+    pipe.ingest(pkt_at(1, n_frames=5, rel_ts_ms=500))
+
+    assert dec.frames_decoded == 10
+    assert len(tr.calls) == 10  # 200ms of PCM, zero synthesized
+
+
+def test_contiguous_speech_synthesizes_nothing():
+    # Packets whose rel_ts continues exactly where the last one ended must
+    # not gain padding.
+    pipe, dec, tr = make_pipeline(window_ms=100, hop_ms=20)
+
+    pipe.ingest(pkt_at(0, n_frames=5, rel_ts_ms=0))
+    pipe.ingest(pkt_at(1, n_frames=5, rel_ts_ms=100))
+
+    assert dec.frames_decoded == 10
+    assert len(tr.calls) == 10
