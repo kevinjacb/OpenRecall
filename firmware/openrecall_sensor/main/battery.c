@@ -6,7 +6,10 @@
  * samples every BATTERY_SAMPLE_INTERVAL_S and caches the result.
  */
 #include "battery.h"
+#include "ble_link.h"
 #include "config.h"
+
+#include <stdio.h>
 
 #include "esp_log.h"
 #include "esp_adc/adc_oneshot.h"
@@ -91,6 +94,30 @@ uint8_t battery_percent(int vbat_mv) {
   return (uint8_t)pct;
 }
 
+/* Push one §E-shaped telemetry JSON over the ACK notify characteristic.
+ * The relay recognises a payload starting with '{' as device control JSON
+ * (a plain command-id ack never starts with '{'), injects the session id,
+ * and forwards it as the server's `telemetry` frame — which feeds the
+ * ReportedCapabilityProvider and the app's /device/status battery tile.
+ * notify() silently drops when the phone isn't subscribed; that's fine,
+ * the next sample retries. */
+static void telemetry_notify(int mv) {
+  char buf[96];
+  unsigned pct = battery_percent(mv);
+  int n;
+  if (pct >= 100) {
+    n = snprintf(buf, sizeof buf,
+                 "{\"type\":\"telemetry\",\"battery_pct\":1.00,\"state\":\"active\"}");
+  } else {
+    n = snprintf(buf, sizeof buf,
+                 "{\"type\":\"telemetry\",\"battery_pct\":0.%02u,\"state\":\"active\"}",
+                 pct);
+  }
+  if (n > 0 && n < (int)sizeof buf) {
+    ble_link_notify_ack((const uint8_t *)buf, (size_t)n);
+  }
+}
+
 static void battery_monitor_task(void *arg) {
   (void)arg;
   for (;;) {
@@ -98,6 +125,7 @@ static void battery_monitor_task(void *arg) {
     if (mv > 0) {
       s_latest_mv = mv;
       ESP_LOGI(TAG, "Vbat=%dmV (%d%%)", mv, battery_percent(mv));
+      telemetry_notify(mv);
     }
     vTaskDelay(pdMS_TO_TICKS(BATTERY_SAMPLE_INTERVAL_S * 1000));
   }

@@ -8,8 +8,12 @@ import com.openrecall.relay.protocol.CommandAck
 import com.openrecall.relay.protocol.Bye
 import com.openrecall.relay.protocol.Hello
 import com.openrecall.relay.protocol.ServerMessage
+import com.openrecall.relay.protocol.Wire
 import com.openrecall.relay.protocol.encode
 import com.openrecall.relay.protocol.parseServerMessage
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.ArrayDeque
@@ -177,8 +181,28 @@ class RelaySession(
 
     /** The device notified a command ack (the command_id bytes) — wrap it as §E. */
     fun onDeviceCommandAck(ackPayload: ByteArray): RelayAction {
-        val commandId = String(ackPayload, Charsets.UTF_8)
-        return RelayAction.SendServerText(CommandAck(sessionId, commandId).encode())
+        val text = String(ackPayload, Charsets.UTF_8)
+        // The ACK characteristic doubles as the device's control uplink: a
+        // payload starting with '{' is device control JSON (today: battery
+        // telemetry), while a plain command-id ack never starts with '{'.
+        // Telemetry gets the session id injected (only the relay knows it)
+        // and is forwarded verbatim as the server's §E `telemetry` frame,
+        // which feeds /device/status and the app's battery tile.
+        if (text.startsWith("{")) {
+            val obj = runCatching {
+                Wire.json.parseToJsonElement(text) as? JsonObject
+            }.getOrNull() ?: return RelayAction.Note("unparseable device control frame")
+            val type = (obj["type"] as? JsonPrimitive)?.contentOrNull
+            if (type == "telemetry" && started) {
+                val withSession = JsonObject(obj + ("session_id" to JsonPrimitive(sessionId)))
+                return RelayAction.SendServerText(withSession.toString())
+            }
+            // Unknown control JSON, or telemetry before hello — the server
+            // would close the socket on an unknown session, so drop it; the
+            // device re-sends every sample interval.
+            return RelayAction.Note("dropped device control frame: $type")
+        }
+        return RelayAction.SendServerText(CommandAck(sessionId, text).encode())
     }
 
     /**

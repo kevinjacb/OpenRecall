@@ -103,6 +103,47 @@ class RelaySessionTest {
     }
 
     @Test
+    fun device_telemetry_json_is_forwarded_with_session_id_injected() {
+        // The ACK characteristic doubles as the device control uplink: a
+        // '{'-prefixed payload is control JSON (battery telemetry), not a
+        // command-id ack. The relay injects the session id (only it knows
+        // it) and forwards the frame as the server's §E `telemetry`.
+        val session = RelaySession("sess-1")
+        session.start()
+        val payload = """{"type":"telemetry","battery_pct":0.87,"state":"active"}"""
+
+        val action = session.onDeviceCommandAck(payload.toByteArray())
+
+        val text = (action as RelayAction.SendServerText).text
+        assertEquals("telemetry", field(text, "type"))
+        assertEquals("sess-1", field(text, "session_id"))
+        assertEquals("active", field(text, "state"))
+        assertTrue("0.87" in text, "battery_pct must be preserved verbatim")
+    }
+
+    @Test
+    fun device_telemetry_before_hello_is_dropped_not_forwarded() {
+        // The server would close the socket on a control frame for a session
+        // it has not seen hello for; the device re-sends every sample
+        // interval, so dropping is safe.
+        val payload = """{"type":"telemetry","battery_pct":0.5,"state":"active"}"""
+
+        val action = RelaySession("sess-1").onDeviceCommandAck(payload.toByteArray())
+
+        assertTrue(action is RelayAction.Note)
+    }
+
+    @Test
+    fun unparseable_device_control_json_is_dropped_not_forwarded() {
+        val session = RelaySession("sess-1")
+        session.start()
+
+        val action = session.onDeviceCommandAck("{not json".toByteArray())
+
+        assertTrue(action is RelayAction.Note)
+    }
+
+    @Test
     fun ack_is_silently_consumed_and_transcript_is_noted() {
         val session = RelaySession("s")
         assertTrue(session.onServerMessage("""{"type":"ack","session_id":"s","next_seq":5}""").isEmpty())
