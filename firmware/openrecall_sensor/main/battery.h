@@ -37,6 +37,18 @@ void battery_start_monitor(void);
  * characteristic. Cheap atomic read of a 32-bit aligned value. */
 int battery_latest_mv(void);
 
+/* Mark that this boot was a deep-sleep wake from the button (ext0). The NEXT
+ * telemetry frame carries "wake_reason":"button" (consumed once) — the
+ * server's on_telemetry clears desired sleep mode on it (spec D2). Call from
+ * app_main before battery_start_monitor. */
+void battery_mark_wake_from_button(void);
+
+/* Push one "state":"sleeping" telemetry frame immediately (uses the last
+ * sampled Vbat; a no-op if no sample exists yet). Call right before an
+ * explicit deep sleep so the app/server see the device going down cleanly
+ * rather than as a drop. */
+void battery_notify_sleeping(void);
+
 #ifdef __cplusplus
 }
 #endif

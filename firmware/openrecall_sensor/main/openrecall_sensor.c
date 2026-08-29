@@ -43,6 +43,7 @@
 #include "vad.h"
 
 #include "esp_log.h"
+#include "esp_sleep.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -240,6 +241,13 @@ void app_main(void) {
    * behavior are affected. The monitor task is low-priority (core 0, prio 1)
    * so it never contends with audio/BLE real-time. */
   if (battery_init() == ESP_OK) {
+    /* A deep-sleep wake from the button (ext0, armed by the very-long
+     * gesture) tags the next telemetry frame with wake_reason:"button" —
+     * the server clears desired sleep mode on it (spec D2). */
+    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
+      ESP_LOGI(TAG, "woke from deep sleep by button press");
+      battery_mark_wake_from_button();
+    }
     battery_start_monitor();
   } else {
     ESP_LOGW(TAG, "battery monitor disabled (init failed)");

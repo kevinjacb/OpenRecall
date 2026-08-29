@@ -6,6 +6,7 @@
 #include "config.h"
 #include "executor.h"
 #include "audio_gate.h"
+#include "battery.h"
 
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -60,6 +61,10 @@ static void dispatch_gesture(button_gesture_t g) {
        * user-initiated sleep. ON-HW VALIDATION: confirm wake + reset behavior
        * (Task 8). */
       ESP_LOGI(TAG, "VERY_LONG -> deep sleep (explicit; wakes on next press)");
+      /* Tell the phone/server we are going down cleanly (state:"sleeping")
+       * rather than just dropping the link; the 500 ms release-wait below
+       * doubles as time for the notification to flush. */
+      battery_notify_sleeping();
       vTaskDelay(pdMS_TO_TICKS(500));
       esp_sleep_enable_ext0_wakeup(BUTTON_GPIO, 0);   /* wake when GPIO2 goes LOW */
       esp_deep_sleep_start();

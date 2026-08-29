@@ -9,6 +9,7 @@
 #include "ble_link.h"
 #include "config.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 
 #include "esp_log.h"
@@ -94,6 +95,13 @@ uint8_t battery_percent(int vbat_mv) {
   return (uint8_t)pct;
 }
 
+/* True until the first telemetry after a button (ext0) deep-sleep wake has
+ * been sent; that frame carries "wake_reason":"button" so the server clears
+ * desired sleep mode (spec D2). Set from app_main, consumed once here. */
+static volatile bool s_wake_from_button = false;
+
+void battery_mark_wake_from_button(void) { s_wake_from_button = true; }
+
 /* Push one §E-shaped telemetry JSON over the ACK notify characteristic.
  * The relay recognises a payload starting with '{' as device control JSON
  * (a plain command-id ack never starts with '{'), injects the session id,
@@ -101,21 +109,37 @@ uint8_t battery_percent(int vbat_mv) {
  * ReportedCapabilityProvider and the app's /device/status battery tile.
  * notify() silently drops when the phone isn't subscribed; that's fine,
  * the next sample retries. */
-static void telemetry_notify(int mv) {
-  char buf[96];
+static void telemetry_notify(int mv, const char *state) {
+  char pct_str[8];
   unsigned pct = battery_percent(mv);
-  int n;
   if (pct >= 100) {
+    snprintf(pct_str, sizeof pct_str, "1.00");
+  } else {
+    snprintf(pct_str, sizeof pct_str, "0.%02u", pct);
+  }
+  char buf[128];
+  int n;
+  if (s_wake_from_button) {
     n = snprintf(buf, sizeof buf,
-                 "{\"type\":\"telemetry\",\"battery_pct\":1.00,\"state\":\"active\"}");
+                 "{\"type\":\"telemetry\",\"battery_pct\":%s,\"state\":\"%s\","
+                 "\"wake_reason\":\"button\"}", pct_str, state);
   } else {
     n = snprintf(buf, sizeof buf,
-                 "{\"type\":\"telemetry\",\"battery_pct\":0.%02u,\"state\":\"active\"}",
-                 pct);
+                 "{\"type\":\"telemetry\",\"battery_pct\":%s,\"state\":\"%s\"}",
+                 pct_str, state);
   }
   if (n > 0 && n < (int)sizeof buf) {
-    ble_link_notify_ack((const uint8_t *)buf, (size_t)n);
+    if (ble_link_notify_ack((const uint8_t *)buf, (size_t)n) == 0) {
+      /* Delivered: the wake reason has been reported; do not repeat it. */
+      s_wake_from_button = false;
+    }
   }
+}
+
+void battery_notify_sleeping(void) {
+  int mv = s_latest_mv;
+  if (mv <= 0) return;  /* no sample yet — a stale 0% would mislead */
+  telemetry_notify(mv, "sleeping");
 }
 
 static void battery_monitor_task(void *arg) {
@@ -125,7 +149,7 @@ static void battery_monitor_task(void *arg) {
     if (mv > 0) {
       s_latest_mv = mv;
       ESP_LOGI(TAG, "Vbat=%dmV (%d%%)", mv, battery_percent(mv));
-      telemetry_notify(mv);
+      telemetry_notify(mv, "active");
     }
     vTaskDelay(pdMS_TO_TICKS(BATTERY_SAMPLE_INTERVAL_S * 1000));
   }
