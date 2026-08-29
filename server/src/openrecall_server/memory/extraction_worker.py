@@ -518,7 +518,13 @@ class ExtractionWorker:
         # 1. read events past the cursor
         cursor = self._atoms.get_cursor(session_id, extractor_version=self._extractor_version)
         all_events = self._events.events(session_id)
-        pending = [e for e in all_events if e.seq > cursor]
+        # Only transcripts carry extractable speech; a "moment" marker (button
+        # press) must not leak its label text into the LLM window. A trailing
+        # non-transcript event simply stays past the cursor — re-filtered on
+        # the next enqueue, which is cheap and safe.
+        pending = [
+            e for e in all_events if e.seq > cursor and e.kind == "transcript"
+        ]
         if not pending:
             log.debug(
                 "extraction_skip session=%s cursor=%d (no pending events)",

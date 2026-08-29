@@ -437,3 +437,58 @@ def test_emit_transcript_msg_name_none_when_speaker_unknown():
         # path's existence + default shape when a speaker row is missing.
         assert hasattr(tmsg, "speaker_name")
         assert hasattr(tmsg, "is_wearer")
+
+
+# ---------------------------------------------------------------------------
+# Button short-press: replay completion -> "moment" marker
+# ---------------------------------------------------------------------------
+def _replay_last_bytes(chunk_seq: int) -> bytes:
+    """A MEMORY_CHUNK packet with the LAST_OF_REQ flag (bit 1) — what the
+    device emits as the final packet of a button-press ring replay."""
+    header = struct.pack(
+        "<BIIBBB",
+        (1 << 4) | PacketType.MEMORY_CHUNK,
+        chunk_seq,
+        chunk_seq * 20,
+        VadState.GAP_MARKER,
+        0,       # replay boundary packets carry no frames
+        0b10,    # LAST_OF_REQ
+    )
+    return header
+
+
+def test_replay_last_packet_emits_a_moment_marker():
+    from openrecall_server.events.store import InMemoryEventStore
+    from openrecall_server.gateway.core import GatewayCore
+    from openrecall_server.ingest.pipeline import AudioIngestPipeline
+
+    store = InMemoryEventStore()
+
+    def factory(start_seq: int) -> AudioIngestPipeline:
+        return AudioIngestPipeline(
+            reassembler=SessionReassembler(start_seq=start_seq),
+            decoder=FakeDecoder(),
+            transcriber=FakeTranscriber(),
+            hop_ms=20, window_ms=100, sample_rate=16000,
+        )
+
+    core = GatewayCore(pipeline_factory=factory, event_store=store)
+    core.on_control(Hello(session_id="s1", start_seq=0))
+    core.on_audio(audio_bytes(0, n_frames=5))
+
+    out = core.on_audio(_replay_last_bytes(1))
+
+    moments = [m for m in out if isinstance(m, TranscriptMsg) and "Moment" in m.text]
+    assert len(moments) == 1
+    stored = [e for e in store.events("s1") if e.kind == "moment"]
+    assert len(stored) == 1
+    assert stored[0].duration_ms == 0
+
+
+def test_ordinary_audio_does_not_emit_moments():
+    core = make_core()
+    core.on_control(Hello(session_id="s1", start_seq=0))
+    out = core.on_audio(audio_bytes(0, n_frames=5))
+    assert not any(
+        isinstance(m, TranscriptMsg) and "Moment" in m.text for m in out
+    )

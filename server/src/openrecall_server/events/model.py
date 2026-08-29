@@ -23,7 +23,7 @@ class CaptureEvent(BaseModel):
     event_id: str  # idempotency key; stable across at-least-once redelivery
     session_id: str
     seq: int  # per-session monotonic order
-    kind: Literal["transcript"]
+    kind: Literal["transcript", "moment"]
     created_at: datetime
     text: str
     duration_ms: int

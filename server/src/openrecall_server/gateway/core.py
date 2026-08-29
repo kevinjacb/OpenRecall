@@ -29,7 +29,7 @@ from ..contracts.clock import Clock
 from ..contracts.metrics import Metrics
 from ..events.model import CaptureEvent
 from ..events.store import EventStore
-from ..ingest.audio_packet import AudioPacket
+from ..ingest.audio_packet import AudioPacket, PacketType
 from ..ingest.pipeline import AudioIngestPipeline, Transcript
 from ..protocol.messages import (
     Ack,
@@ -304,6 +304,12 @@ class GatewayCore:
             self._session_id, packet.chunk_seq, len(packet.frames), packet.vad_state.name,
         )
         out: list[Outbound] = list(self._emit(self._pipeline.ingest(packet)))
+        # Button short-press: the device replays its ring buffer as
+        # MEMORY_CHUNK packets and flags the final one LAST_OF_REQ. Record a
+        # "moment" marker event so the span is findable later (and visible in
+        # the app's live feed immediately — the §E message renders as a line).
+        if packet.ptype is PacketType.MEMORY_CHUNK and packet.is_last_of_request:
+            out.extend(self._emit_moment())
         gap = self._pipeline.missing_range()
         if gap is not None:
             # S5: emit ``request_chunks`` once per distinct open gap range.
@@ -567,6 +573,45 @@ class GatewayCore:
         logger.info(
             "enqueued finalize (disconnect) for session=%s", self._session_id,
         )
+
+    _MOMENT_TEXT = "\U0001F4CD Moment marked — the last minute was saved"
+
+    def _emit_moment(self) -> list[TranscriptMsg]:
+        """Record a button-press moment marker as a §F event + §E message.
+
+        Deliberately NOT routed through :meth:`_emit`: a moment is not
+        speech, so it must not be enqueued for memory extraction or fed to
+        the command detector (and the extraction worker filters
+        non-transcript kinds as defense in depth). The session/segment
+        indexes receive it and ignore non-transcript kinds themselves.
+        """
+        if self._session_id is None:
+            return []
+        event = CaptureEvent(
+            event_id=f"{self._session_id}:{self._event_seq}",
+            session_id=self._session_id,
+            seq=self._event_seq,
+            kind="moment",
+            created_at=datetime.now(timezone.utc),
+            text=self._MOMENT_TEXT,
+            duration_ms=0,
+            start_ms=self._cum_ms,
+        )
+        stored = True
+        if self._store is not None:
+            stored = self._store.append(event)
+        if stored and self._session_index is not None:
+            self._session_index.record(event)
+        if stored and self._segment_index is not None:
+            self._segment_index.record(event)
+        self._event_seq += 1
+        logger.info(
+            "moment: session=%s event=%s (button replay complete)",
+            self._session_id, event.event_id,
+        )
+        return [TranscriptMsg(
+            session_id=self._session_id, text=self._MOMENT_TEXT, duration_ms=0,
+        )]
 
     def _emit(self, transcripts: list[Transcript]) -> list[TranscriptMsg]:
         """Persist each transcript as a §F capture event and build its §E message.
