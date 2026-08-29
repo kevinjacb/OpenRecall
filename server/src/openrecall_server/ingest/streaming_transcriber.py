@@ -55,15 +55,15 @@ class Token:
     absolute session time. The :class:`StreamingTranscriber` translates
     to absolute time when emitting segments.
 
-    ``sentence_id`` carries the ASR backend's own sentence grouping:
-    tokens that belong to the same backend sentence/segment share an id
-    (> 0), so the :class:`StreamingTranscriber` can emit one Segment per
-    backend sentence and the coalescer can group by the model's boundary
-    instead of re-deriving it with punctuation/pause heuristics. ``0`` is
-    the sentinel for "no sentence structure" — the str-returning adapter
-    and the flattened ``AlignedResult.tokens`` fallback both use 0, which
-    makes the streamer fall back to one Segment per hop and the coalescer
-    fall back to heuristics.
+    ``sentence_id`` carries the ASR backend's sentence/segment grouping
+    WITHIN one transcribe() call: tokens that belong to the same backend
+    sentence share an id (> 0), so the :class:`StreamingTranscriber` can
+    emit one Segment per backend sentence per call. The id is call-local
+    (backends stamp the segment index, and the rolling window renumbers
+    segments every hop), so it must never be compared across calls. ``0``
+    is the sentinel for "no sentence structure" — the str-returning
+    adapter and the flattened ``AlignedResult.tokens`` fallback both use
+    0, which collapses a call's tokens into one Segment.
     """
 
     text: str

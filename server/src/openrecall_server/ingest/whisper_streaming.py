@@ -213,9 +213,14 @@ def _mlx_segments_to_tokens(
 
     Note: mlx-whisper prefixes non-first word-tokens with a single
     space (a tokenization marker, NOT content). The streaming wrapper
-    joins tokens with ``""`` (empty string) so the leading space IS
-    the word boundary — it reconstructs ``"Hello, world!"`` from
-    ``["Hello,", " world!"]``. We preserve the leading space here.
+    strips it per token and joins with a single space, so preserving
+    the marker here is harmless and keeps this translation lossless.
+
+    ``sentence_id`` (``seg_idx + 1``) is the segment's index within THIS
+    call only. The streamer uses it to group one Segment per backend
+    segment inside a single transcribe() call; it is meaningless across
+    calls (the rolling window renumbers segments every hop), so nothing
+    downstream may treat it as a stable sentence identity.
     """
     blocklist = _resolve_blocklist(
         hallucination_blocklist_enabled, hallucination_phrases,

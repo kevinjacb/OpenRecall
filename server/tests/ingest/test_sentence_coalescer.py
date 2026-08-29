@@ -309,39 +309,63 @@ def test_default_pause_1000ms_holds_midthought_trailing_silence():
 
 
 # ---------------------------------------------------------------------------
-# Model sentence boundary (primary) — sentence_id change
+# sentence_id is call-local and must be IGNORED for boundaries
 #
-# When the backend exposes sentence structure (sentence_id > 0), the
-# coalescer groups by the model's own boundary: a sentence_id change closes
-# the pending sentence. These tests use a hop large enough that the
-# inter-word pause (< pause_ms) does NOT fire, so the ONLY thing emitting
-# is the model boundary — proving it is the primary signal.
+# Both production backends stamp sentence_id with the segment's index within
+# one transcribe() call (seg_idx + 1). The streamer calls the backend once
+# per hop on a rolling window, so the id restarts every hop and carries no
+# meaning across hops. An earlier revision treated id changes as model
+# boundaries and suppressed punctuation while ids were "stable" — producing
+# 40-word run-ons (id stuck at 1) and random mid-sentence splits (window
+# segment count shifted). These tests pin the corrected behavior.
 # ---------------------------------------------------------------------------
-def test_model_boundary_emits_when_sentence_id_changes():
-    """Two backend sentences (ids 1 and 2) with a sub-pause gap between
-    hops: only the sentence_id change emits the first sentence; the
-    second flushes at session end."""
-    # hop=240: inter-hop gap is 240ms < 400ms pause, so the pause heuristic
-    # does NOT fire. The model boundary (1 -> 2) is the sole emitter.
+def test_id_change_alone_does_not_split():
+    """An id flip with no punctuation and a sub-pause gap must NOT split:
+    the id is call-local churn, not a model boundary."""
     streamer = FakeStreamer([
         [_Ss("hello", 0, 200, 1)],
-        [_Ss("world", 240, 440, 2)],
+        [_Ss("world", 240, 440, 2)],   # id 1 -> 2: call-local renumbering
     ], hop_ms=240)
     s = SentenceCoalescer(streamer, pause_ms=DEFAULT_PAUSE_MS)
 
-    out1 = s.feed(_hop_pcm(240))
-    assert out1 == [], "first sentence held — id unchanged, no pause, no punct"
-    out2 = s.feed(_hop_pcm(240))
-    # id changed 1 -> 2: sentence 1 emits, sentence 2 starts pending.
-    assert [seg.text for seg in out2] == ["hello"]
+    assert s.feed(_hop_pcm(240)) == []
+    assert s.feed(_hop_pcm(240)) == []
     tail = s.flush()
-    assert [seg.text for seg in tail] == ["world"]
+    assert [seg.text for seg in tail] == ["hello world"]
 
 
-def test_model_boundary_same_id_accumulates_across_hops():
-    """Same sentence_id across hops with a sub-pause gap and no
-    punctuation: the words accumulate into one sentence, emitted on
-    flush. The pause (240ms < 400ms) and the unchanged id both hold."""
+def test_punctuation_closes_sentence_even_with_nonzero_ids():
+    """The run-on bug: with a constant id (> 0) the old coalescer suppressed
+    punctuation, so "world." never closed the sentence. Punctuation must
+    fire regardless of ids."""
+    streamer = FakeStreamer([
+        [_Ss("Hello", 0, 200, 1)],
+        [_Ss("world.", 240, 440, 1)],
+    ], hop_ms=240)
+    s = SentenceCoalescer(streamer, pause_ms=DEFAULT_PAUSE_MS)
+
+    assert s.feed(_hop_pcm(240)) == []
+    out2 = s.feed(_hop_pcm(240))
+    assert [seg.text for seg in out2] == ["Hello world."]
+
+
+def test_pause_boundary_fires_even_with_nonzero_ids():
+    """The pause heuristic must not be gated on sentence_id == 0."""
+    streamer = FakeStreamer([
+        [_Ss("hello", 0, 200, 1)],
+        [_Ss("again", 1400, 1600, 1)],   # 1200 ms gap >= 1000 ms pause
+    ], hop_ms=240)
+    s = SentenceCoalescer(streamer, pause_ms=DEFAULT_PAUSE_MS)
+
+    assert s.feed(_hop_pcm(240)) == []
+    out2 = s.feed(_hop_pcm(240))
+    assert [seg.text for seg in out2] == ["hello"]
+    assert [seg.text for seg in s.flush()] == ["again"]
+
+
+def test_same_id_accumulates_across_hops():
+    """Unpunctuated words with sub-pause gaps accumulate into one sentence,
+    emitted on flush — ids present or not."""
     streamer = FakeStreamer([
         [_Ss("dr", 0, 200, 1)],
         [_Ss("smith", 240, 440, 1)],
@@ -357,12 +381,9 @@ def test_model_boundary_same_id_accumulates_across_hops():
     assert tail[0].text.split() == ["dr", "smith", "went"]
 
 
-def test_model_boundary_does_not_split_on_midsentence_period():
-    """The heuristic punctuation rule would split "Dr." into its own
-    sentence. The model keeps "Dr" and "Smith" in the same sentence
-    (same id), so the period must NOT close the sentence — the whole
-    "Dr. Smith went home." stays one sentence until the id changes or
-    flush."""
+def test_abbreviation_period_does_not_split():
+    """"Dr." ends with a period but is a mid-sentence abbreviation; the
+    sentence must stay whole and close on "home."."""
     streamer = FakeStreamer([
         [_Ss("Dr.", 0, 200, 1)],
         [_Ss("Smith", 240, 440, 1)],
@@ -371,26 +392,23 @@ def test_model_boundary_does_not_split_on_midsentence_period():
     ], hop_ms=240)
     s = SentenceCoalescer(streamer, pause_ms=DEFAULT_PAUSE_MS)
 
-    # "Dr." ends with a period — but same id, so the coalescer holds it.
-    assert s.feed(_hop_pcm(240)) == []
-    # "home." ends with a period too; still same id 1 — no emit. (The
-    # punctuation fallback does fire here because there's no id change to
-    # have already closed it, but the test's point is the EARLY "Dr."
-    # period did not split: all four words land in ONE sentence.)
     out = []
-    for _ in range(3):
+    for _ in range(4):
         out.extend(s.feed(_hop_pcm(240)))
     tail = s.flush()
-    # Exactly one sentence containing all four words, in order.
     sentences = [seg.text for seg in out] + [seg.text for seg in tail]
-    flat = " ".join(sentences)
-    assert flat.split() == ["Dr.", "Smith", "went", "home."]
+    assert sentences == ["Dr. Smith went home."]
 
 
-def test_model_boundary_zero_id_falls_back_to_punctuation():
-    """sentence_id == 0 (no structure) must use the punctuation heuristic,
-    not the model boundary. A period-bearing segment with id 0 closes the
-    sentence — the original no-structure behavior."""
+def test_single_initial_period_does_not_split():
+    assert not _ends_sentence("J.")
+    assert not _ends_sentence("e.g.")
+    assert _ends_sentence("home.")
+
+
+def test_zero_id_punctuation_unchanged():
+    """The original no-structure path: a period-bearing id-0 segment closes
+    the sentence."""
     streamer = FakeStreamer([
         [_S("hello", 0, 200)],
         [_S("world.", 240, 440)],
@@ -399,26 +417,4 @@ def test_model_boundary_zero_id_falls_back_to_punctuation():
 
     assert s.feed(_hop_pcm(240)) == []
     out2 = s.feed(_hop_pcm(240))
-    # id 0 -> punctuation fires on "world.".
     assert [seg.text for seg in out2] == ["hello world."]
-
-
-def test_model_boundary_emits_each_sentence_as_ids_change():
-    """A fully-structured multi-sentence utterance: each id change closes
-    the pending sentence. No punctuation, sub-pause gaps — the model
-    boundary is the sole emitter mid-stream."""
-    streamer = FakeStreamer([
-        [_Ss("hello", 0, 200, 1)],
-        [_Ss("world", 240, 440, 1)],
-        [_Ss("how", 480, 680, 2)],
-        [_Ss("are", 720, 920, 2)],
-        [_Ss("you", 960, 1160, 3)],
-    ], hop_ms=240)
-    s = SentenceCoalescer(streamer, pause_ms=DEFAULT_PAUSE_MS)
-
-    out = []
-    for _ in range(5):
-        out.extend(s.feed(_hop_pcm(240)))
-    tail = s.flush()
-    assert [seg.text for seg in out] == ["hello world", "how are"]
-    assert [seg.text for seg in tail] == ["you"]

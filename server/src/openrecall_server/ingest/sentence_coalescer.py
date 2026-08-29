@@ -12,38 +12,34 @@ touching the streamer's delicate committed-cursor / overlap-dedup logic.
 It accumulates the streamer's word Segments and emits a single sentence
 Segment when a boundary is detected:
 
-  1. **Model sentence boundary (primary)** — the ASR backend tags each
-     token with its sentence id (> 0); the streamer emits one Segment per
-     backend sentence, carrying that id. When the id changes between the
-     pending run and a new segment, the model closed the pending
-     sentence — emit it. This uses the model's own segmentation, which
-     handles a mid-sentence period ("Dr. Smith went home.") and
-     unpunctuated speech correctly, where the heuristics below get it
-     wrong.
-  2. **Punctuation** — a segment whose text ends with a sentence
-     terminator (``. ! ?``). The fallback boundary for backends with no
-     sentence structure (id 0, e.g. the str-returning adapter) and a
-     reinforcement for a final punctuation-bearing segment.
-  3. **Inter-word pause** — a gap of ``>= pause_ms`` between the end of
+  1. **Punctuation** — a segment whose text ends with a sentence
+     terminator (``. ! ?``), unless the terminating word is a common
+     abbreviation ("Dr.", "Mr.", a single initial) — those are
+     mid-sentence periods, not boundaries.
+  2. **Inter-word pause** — a gap of ``>= pause_ms`` between the end of
      the last pending segment and the start of the next one. Catches the
-     end of an utterance that was not punctuated; also the fallback when
-     either side has no sentence id.
-  4. **Trailing silence** — the audio clock has advanced ``>= pause_ms``
+     end of an utterance that was not punctuated.
+  3. **Trailing silence** — the audio clock has advanced ``>= pause_ms``
      past the last pending segment's end with no new segment arriving.
      This is what flushes the *last* sentence of an utterance, which
      otherwise waits for a next word that never comes (until session
      end). The audio clock is derived from the PCM fed in, so it
      advances even on silent hops.
-  5. **Safety cap** — ``MAX_SENTENCE_WORDS`` or ``MAX_SENTENCE_MS`` to
-     bound a run-on with no punctuation and no pause. Also bounds the
-     rare cross-hop re-segmentation case where the model merges two
-     sentences into one id (under-segmentation degrades to the cap).
-  6. **Flush** — ``flush()`` (session end) emits whatever is pending.
+  4. **Safety cap** — ``MAX_SENTENCE_WORDS`` or ``MAX_SENTENCE_MS`` to
+     bound a run-on with no punctuation and no pause.
+  5. **Flush** — ``flush()`` (session end) emits whatever is pending.
 
-A ``sentence_id`` of 0 means "no structure" (the str-returning adapter,
-or a backend that didn't expose sentence boundaries): the model boundary
-(1) is skipped and the coalescer falls back to punctuation (2) / pause
-(3) — the original heuristic behavior.
+``sentence_id`` is deliberately IGNORED for boundary decisions. Both
+production backends stamp it with the segment's index *within one
+transcribe() call* (``seg_idx + 1``), and the streamer calls the backend
+once per hop on a rolling window — so the id is call-local and carries no
+meaning across hops. Treating it as a stable model boundary (as an
+earlier revision did) produced both failure modes at once: continuous
+speech transcribed as one segment per window kept id 1 forever, so
+punctuation was suppressed and sentences merged into 40-word run-ons;
+and whenever the window's segment count shifted between hops, the id
+changed mid-sentence and split it at a random word. The id is still
+carried on the emitted sentence Segment for observability, nothing more.
 
 The emitted sentence Segment spans the whole sentence
 (``start_ms`` of the first word, ``end_ms`` of the last), so the
@@ -79,14 +75,35 @@ MAX_SENTENCE_MS = 10_000
 # not sentence breaks, so they do not trigger a boundary.
 _SENTENCE_TERMINATORS = (".", "!", "?")
 
+# Period-bearing words that are almost always mid-sentence: honorifics and
+# similar abbreviations. A sentence genuinely ending in one of these is rare,
+# and the pause / trailing-silence boundaries still close it, so the cost of
+# a false hold is one merged clause, while a false split cuts "Dr. Smith"
+# in half. Lowercased for the comparison.
+_ABBREVIATIONS = frozenset({
+    "mr.", "mrs.", "ms.", "dr.", "prof.", "st.", "sr.", "jr.",
+    "vs.", "e.g.", "i.e.", "no.",
+})
+
 
 def _ends_sentence(text: str) -> bool:
     """True if ``text`` (stripped) ends with a sentence terminator.
 
     Handles both an attached terminator (``"hello."``) and a standalone
-    punctuation token (``"."``). Whitespace is stripped first.
+    punctuation token (``"."``). Whitespace is stripped first. A trailing
+    abbreviation ("Dr.", "e.g.") or single initial ("J.") is a mid-sentence
+    period, not a boundary.
     """
-    return text.rstrip().endswith(_SENTENCE_TERMINATORS)
+    stripped = text.rstrip()
+    if not stripped.endswith(_SENTENCE_TERMINATORS):
+        return False
+    last = stripped.split()[-1].lower()
+    if last in _ABBREVIATIONS:
+        return False
+    # A single initial ("J.") — one letter plus a period.
+    if len(last) == 2 and last[0].isalpha() and last[1] == ".":
+        return False
+    return True
 
 
 def _word_count(text: str) -> int:
@@ -149,56 +166,34 @@ class SentenceCoalescer:
         out: list[Segment] = []
         for seg in raw:
             if self._pending:
-                boundary = False
-                # 1. Model sentence boundary (PRIMARY): both the pending run
-                #    and this segment carry a real sentence id (> 0), and the
-                #    id changed — the ASR backend closed the pending sentence.
-                #    This uses the model's own segmentation, which handles a
-                #    mid-sentence period ("Dr. Smith went home.") and
-                #    unpunctuated speech correctly, where the heuristics below
-                #    get it wrong. When the model provides structure it is
-                #    authoritative: punctuation is suppressed (step 3) and the
-                #    pause heuristic (step 2) is skipped.
-                if (
-                    self._pending_sentence_id != 0
-                    and seg.sentence_id != 0
-                    and seg.sentence_id != self._pending_sentence_id
-                ):
-                    boundary = True
-                # 2. Inter-word pause (fallback): reached only when at least
-                #    one side has no sentence structure (id 0). A gap >= pause_ms
-                #    before this segment means the pending words are a
-                #    complete sentence.
-                elif self._pending_sentence_id == 0 or seg.sentence_id == 0:
-                    gap = seg.start_ms - self._pending[-1].end_ms
-                    if gap >= self._pause_ms:
-                        boundary = True
-                if boundary:
+                # 1. Inter-word pause: a gap >= pause_ms before this segment
+                #    means the pending words are a complete sentence. The
+                #    sentence_id is call-local (see module docstring) and is
+                #    deliberately NOT consulted.
+                gap = seg.start_ms - self._pending[-1].end_ms
+                if gap >= self._pause_ms:
                     out.extend(self._emit_pending())
             self._pending.append(seg)
             if len(self._pending) == 1:
-                # First segment of a fresh run sets its sentence id.
+                # First segment of a fresh run sets its sentence id (carried
+                # on the emitted Segment for observability only).
                 self._pending_sentence_id = seg.sentence_id
-            # 3. Punctuation (fallback): this segment ends a sentence. ONLY
-            #    in the no-structure path (id 0): when the model provides
-            #    sentence ids, its id-change boundary (step 1) is authoritative
-            #    and a mid-sentence period ("Dr.") must NOT close the sentence.
-            #    The model closes it via the next hop's id change (or flush).
-            if self._pending_sentence_id == 0 and _ends_sentence(seg.text):
+            # 2. Punctuation: this segment ends a sentence (abbreviations and
+            #    initials excluded — see _ends_sentence).
+            if _ends_sentence(seg.text):
                 out.extend(self._emit_pending())
                 continue
-            # 4. Safety cap (always applies — bounds even a model that merges
-            #    many sentences into one id across hops).
+            # 3. Safety cap — bounds a run-on with no punctuation and no pause.
             if self._cap_reached():
                 out.extend(self._emit_pending())
                 continue
-        # 5. Trailing silence: audio has advanced >= pause_ms past the
+        # 4. Trailing silence: audio has advanced >= pause_ms past the
         #    last pending segment with no new segment arriving. Only
-        #    evaluated mid-stream; finalize (6) handles session end.
+        #    evaluated mid-stream; finalize (5) handles session end.
         if not finalize and self._pending:
             if self._audio_ms - self._pending[-1].end_ms >= self._pause_ms:
                 out.extend(self._emit_pending())
-        # 6. Finalize: emit whatever is pending at session end.
+        # 5. Finalize: emit whatever is pending at session end.
         if finalize and self._pending:
             out.extend(self._emit_pending())
         return out
