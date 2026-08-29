@@ -7,9 +7,12 @@ or ``GatewayError``) are posted back to the event loop via
 ``loop.call_soon_threadsafe`` so a reply-sender task can write them to the
 WebSocket.
 
-Overflow policy: when the queue is full, drop the OLDEST unprocessed hop
-(rolling-window audio — a stale hop is correct to drop, lossless for the
-current window) and log a warning.
+Overflow policy: when the queue is full, drop the OLDEST unprocessed inbound
+frame and log a warning. This is a last resort, not a lossless operation —
+each queued binary frame is a whole §C.6 audio packet that has not reached
+the reassembler, so a drop opens a chunk_seq hole (backfill round-trip, or
+audio loss on a gap-timeout re-anchor). The default queue depth (32) is
+sized so this only fires when the ASR is persistently slower than real time.
 
 Error contract (preserved exactly from the synchronous ``to_thread`` path):
 
@@ -61,7 +64,7 @@ class InferenceWorker:
         core: Any,
         loop: Any,  # asyncio.AbstractEventLoop
         sink: Callable[[Any], None],
-        max_queue: int = 4,
+        max_queue: int = 32,
     ) -> None:
         self._handle = handle_fn
         self._core = core
@@ -78,16 +81,23 @@ class InferenceWorker:
         self._thread.start()
 
     def enqueue(self, message: "str | bytes") -> None:
-        """Put a message on the queue; on full, drop the oldest stale hop.
+        """Put a message on the queue; on full, drop the oldest message.
 
         Called from the event loop thread. ``queue.Queue.put_nowait`` is
         thread-safe, so this is safe even though the worker thread may be
         pulling from the same queue concurrently.
 
-        Dropping the oldest (not the newest) is correct for rolling-window
-        audio: a stale hop is lossless to drop because the current window
-        already contains its audio; dropping the newest would lose fresh
-        audio that hasn't been transcribed yet.
+        Dropping is a LAST RESORT and it is NOT lossless: each queued message
+        is an undecoded inbound frame — for binary frames, a whole §C.6 audio
+        packet (up to 200 ms of Opus) that has not reached the reassembler
+        yet. Dropping one opens a real chunk_seq hole, which costs a
+        request_chunks backfill round-trip at best and, on a gap timeout, a
+        re-anchor that loses the audio for good. The queue is sized (default
+        32 ≈ 6.4 s of packets) so overflow only happens when the ASR is
+        persistently slower than real time; if this warning appears in steady
+        state, fix the load (bigger hop, faster backend), don't shrug it off.
+        Oldest-first keeps the freshest audio, which minimizes how far the
+        transcript falls behind while the hole is repaired.
         """
         try:
             self._q.put_nowait(message)
@@ -96,7 +106,9 @@ class InferenceWorker:
                 dropped = self._q.get_nowait()
                 _len = len(dropped) if hasattr(dropped, "__len__") else -1
                 logger.warning(
-                    "asr queue full; dropped oldest hop (len=%d)", _len,
+                    "asr queue full; dropped oldest inbound frame (len=%d) — "
+                    "this is a real audio packet (chunk_seq hole -> backfill/"
+                    "re-anchor); ASR is not keeping up with real time", _len,
                 )
             except _queue.Empty:
                 pass  # raced — queue emptied between put and get

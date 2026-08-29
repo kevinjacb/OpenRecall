@@ -6,7 +6,7 @@ loop; results are posted back via ``call_soon_threadsafe``. These tests pin
 the five contract points:
 
 (a) the event loop is NOT blocked while inference runs,
-(b) overflow drops the oldest stale hop (rolling-window audio),
+(b) overflow drops the oldest inbound frame (last resort; opens a chunk_seq hole),
 (c) replies are delivered in enqueue order,
 (d) ``GatewayError`` propagates to the sink (so the outer handler closes 1002),
 (e) any other exception is logged + skipped (the link stays up).
@@ -60,13 +60,28 @@ async def test_loop_not_blocked_during_inference():
     assert processed == [b"a"]
 
 
-# --- (b) overflow drops the oldest stale hop ---------------------------------
+# --- (b) overflow drops the oldest inbound frame (last resort) ---------------
+
+
+def test_default_queue_depth_is_32():
+    """Each queued frame is a real audio packet (dropping one opens a
+    chunk_seq hole), so the default depth must be generous — 32 packets
+    (~6.4 s) absorbs replay bursts and slow hops."""
+    loop = asyncio.new_event_loop()
+    try:
+        worker = InferenceWorker(
+            lambda core, msg: [], core=None, loop=loop, sink=lambda _: None,
+        )
+        assert worker._q.maxsize == 32
+    finally:
+        loop.close()
 
 
 @pytest.mark.asyncio
 async def test_overflow_drops_oldest():
-    """When the queue is full, the OLDEST unprocessed hop is dropped (not
-    the newest) — correct for rolling-window audio."""
+    """When the queue is full, the OLDEST unprocessed frame is dropped (not
+    the newest) — keeps the freshest audio; the dropped packet's chunk_seq
+    hole is repaired by the backfill path."""
     processed: list[bytes] = []
     started = threading.Event()
     block = threading.Event()
