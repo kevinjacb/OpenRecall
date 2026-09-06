@@ -67,3 +67,39 @@ def test_proactive_request_may_not_issue_command():
 
 def test_unknown_request_may_not_issue_command():
     assert _ledger().may_issue_command("ghost") is False
+
+
+def test_expired_request_may_not_issue_command():
+    """Pins the proactive prohibition through the expiry path too: a naive
+    dict lookup that bypasses get()'s eviction would keep an expired entry's
+    trigger_kind alive and let a dead request issue a command."""
+    clock = FakeClock(datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc))
+    led = RequestLedger(clock)
+    led.open("r1", session_id=None, trigger_kind="user_request", ttl_s=60)
+    clock.advance(61)
+    assert led.may_issue_command("r1") is False
+
+
+def test_cited_returns_an_immutable_snapshot():
+    led = _ledger()
+    led.open("r1", session_id=None, trigger_kind="user_request")
+    led.record_atoms("r1", ["a1"])
+    snapshot = led.cited("r1")
+    with pytest.raises(AttributeError):
+        snapshot.add("a2")
+    led.record_atoms("r1", ["a2"])
+    assert snapshot == frozenset({"a1"})
+    assert led.cited("r1") == frozenset({"a1", "a2"})
+
+
+def test_reopen_after_expiry_starts_with_no_citations():
+    clock = FakeClock(datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc))
+    led = RequestLedger(clock)
+    led.open("r1", session_id=None, trigger_kind="user_request", ttl_s=60)
+    led.record_atoms("r1", ["a1"])
+    clock.advance(61)
+    assert led.get("r1") is None
+
+    led.open("r1", session_id=None, trigger_kind="user_request")
+    assert led.get("r1") is not None
+    assert led.cited("r1") == frozenset()
