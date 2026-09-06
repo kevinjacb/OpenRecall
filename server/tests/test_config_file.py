@@ -164,6 +164,18 @@ def test_example_config_keys_all_map_to_real_env_vars():
             declared[f"OPENRECALL_{section.upper()}_{key.upper()}"
                      if section else key] = (section, key)
 
+    # Floor guards against a vacuous pass: an emptied/truncated example file
+    # (or a section-tracking regression above) would make `declared` empty
+    # and the `dead` assertion below trivially succeed. Real count is 47;
+    # 30 leaves room to shrink legitimately without masking a broken parser.
+    assert len(declared) >= 30, f"parsed only {len(declared)} keys — parser likely broken"
+
+    # Scans for quoted OPENRECALL_* literals only. This only catches every
+    # real var today because each one is defined via an `ENV_X =
+    # "OPENRECALL_..."` string constant, so the literal appears somewhere
+    # even though call sites reference the constant, not the literal. A var
+    # introduced purely by f-string interpolation (no literal constant)
+    # would not be found here and would show up as a false "dead key".
     real = set()
     for path in list((root / "src").rglob("*.py")) + list((root / "scripts").rglob("*.py")):
         real |= set(re.findall(r'"(OPENRECALL_[A-Z_0-9]+)"', path.read_text()))
