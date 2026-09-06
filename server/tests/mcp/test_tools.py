@@ -45,6 +45,13 @@ async def test_memory_search_returns_atoms_and_records_citations(mcp_env):
     atoms = (await r.json())["result"]["structuredContent"]["atoms"]
     assert atoms, "expected at least one seeded atom"
     assert ledger.cited("r1") == frozenset(a["atom_id"] for a in atoms)
+    # Exact key-set equality, not a `"provenance" not in a` check — a newly
+    # added leaked field (ScoredAtom.provenance carries session_id,
+    # source_event_id and a majority-speaker id) must fail this test too,
+    # not just the one field we thought of.
+    for a in atoms:
+        assert set(a) == {"atom_id", "session_id", "kind", "text",
+                          "created_at", "start_ms", "score"}
 
 
 async def test_memory_search_limit_is_capped_at_20(mcp_env):
@@ -52,7 +59,7 @@ async def test_memory_search_limit_is_capped_at_20(mcp_env):
     ledger.open("r1", session_id="s1", trigger_kind="user_request")
     r = await _call(client, "memory.search",
                     {"request_id": "r1", "query": "roadmap", "limit": 500})
-    assert len((await r.json())["result"]["structuredContent"]["atoms"]) <= 20
+    assert len((await r.json())["result"]["structuredContent"]["atoms"]) == 20
 
 
 async def test_memory_get_requires_an_open_request_id_and_records_citations(mcp_env):
@@ -77,6 +84,14 @@ async def test_memory_get_requires_an_open_request_id_and_records_citations(mcp_
     assert ledger.cited("r1") == frozenset({"a00", "a01"})
 
 
+async def test_speakers_list_requires_an_open_request_id(mcp_env):
+    client, ledger = mcp_env
+    r = await _call(client, "speakers.list", {"request_id": "never-opened"})
+    body = await r.json()
+    assert body["result"]["isError"] is True
+    assert "request not open" in body["result"]["content"][0]["text"]
+
+
 async def test_speakers_list_never_returns_embeddings(mcp_env):
     """The security boundary: speakers.list exposes identity, never biometrics.
 
@@ -99,6 +114,14 @@ async def test_speakers_list_never_returns_embeddings(mcp_env):
     assert SEEDED_SPEAKER.centroid
 
 
+async def test_sessions_list_requires_an_open_request_id(mcp_env):
+    client, ledger = mcp_env
+    r = await _call(client, "sessions.list", {"request_id": "never-opened"})
+    body = await r.json()
+    assert body["result"]["isError"] is True
+    assert "request not open" in body["result"]["content"][0]["text"]
+
+
 async def test_sessions_list_maps_summary_id_to_session_id(mcp_env):
     """SessionSummary's field is `id`; every other Sense surface says
     `session_id`, and MCP clients must see the common name."""
@@ -110,6 +133,14 @@ async def test_sessions_list_maps_summary_id_to_session_id(mcp_env):
     assert sessions[0]["session_id"] == SEEDED_SESSION_ID
     assert "id" not in sessions[0]
     assert sessions[0]["transcript_count"] == 1
+
+
+async def test_device_status_requires_an_open_request_id(mcp_env):
+    client, ledger = mcp_env
+    r = await _call(client, "device.status", {"request_id": "never-opened"})
+    body = await r.json()
+    assert body["result"]["isError"] is True
+    assert "request not open" in body["result"]["content"][0]["text"]
 
 
 async def test_device_status_reports_battery_and_capabilities(mcp_env):

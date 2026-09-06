@@ -107,6 +107,20 @@ async def test_relay_token_sees_relay_principal_on_request():
         await client.close()
 
 
+async def test_no_token_configured_blocks_mcp_with_403():
+    """The `token is None` branch (auth not configured) still treats the
+    caller as the relay principal, which `may_reach` blocks from `/mcp` —
+    this must hold even with no Authorization header at all."""
+    app = build_app(token=None, hermes_token=None, get_pubkey=lambda: bytes(32))
+    client = await _client(app)
+    try:
+        r = await client.post("/mcp", json={"jsonrpc": "2.0", "id": 1,
+                                            "method": "ping"})
+        assert r.status == 403
+    finally:
+        await client.close()
+
+
 async def test_no_token_configured_sees_relay_principal_on_request():
     app = build_app(token=None, get_pubkey=lambda: bytes(32))
     app.router.add_get("/test-echo-principal", _echo_principal)

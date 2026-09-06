@@ -182,7 +182,12 @@ def test_retriever_ordering_tiebreaker_score_desc():
 
 
 def test_retriever_ordering_tiebreaker_created_at_desc():
-    """INV-7: created_at desc when scores tie (identical text)."""
+    """INV-7: timeline_at desc when scores tie (identical text).
+
+    These atoms have no `occurred_at`, so `timeline_at` falls back to
+    `created_at` — this test exercises that `occurred_at is None` fallback,
+    not a `created_at`-specific sort.
+    """
     idx = InMemoryMemoryIndex()
     _add(idx, "a_old", "s1", "x", created_at=datetime(2026, 7, 1, tzinfo=timezone.utc))
     _add(idx, "a_new", "s1", "x", created_at=datetime(2026, 7, 5, tzinfo=timezone.utc))

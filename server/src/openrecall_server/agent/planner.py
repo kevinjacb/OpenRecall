@@ -351,7 +351,8 @@ class Planner:
                 validator_latency_ms=validator_latency_ms,
                 guardrails_latency_ms=guardrails_latency_ms,
             )
-        if self._command_validator is None or self._dispatcher is None:
+        if (self._command_validator is None or self._dispatcher is None
+                or self._command_guardrails is None):
             # No command path wired (P2-answers default). Refuse with
             # a clear message; the operator should set up the command
             # components to enable IssueCommand.

@@ -135,9 +135,12 @@ def build_app(
     add_settings(app)
     add_device(app)
     add_media(app)
-    # Always registered: the route itself answers 503 when no registry was
-    # wired, which is a clearer signal to an MCP client than a 404 that looks
-    # like the wrong host.
+    # Always registered: an authenticated hermes client with no registry
+    # wired would hit the route's own 503, a clearer signal than a 404 that
+    # looks like the wrong host. In practice a forgotten mcp_registry means a
+    # forgotten hermes_token too (they're wired together in run_gateway.py),
+    # so the caller never gets that far — the middleware blocks the relay
+    # principal at 403 before routing even runs.
     add_mcp(app)
     if command_store is not None and command_dispatcher is not None:
         add_commands(app)

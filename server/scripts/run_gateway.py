@@ -521,14 +521,16 @@ def main() -> None:
     # compromised MCP client drive the whole control API.
     #
     # Without these three kwargs the hermes principal is unreachable outside
-    # tests and POST /mcp answers 503 — and pytest can't catch that, because
-    # it never imports this file (same trap as speaker_registry above). Smoke
-    # it by hand after editing.
+    # tests and POST /mcp answers 403 — the middleware treats the caller as
+    # the relay principal and `may_reach` blocks it before the request ever
+    # reaches the route (mcp/principal.py) — and pytest can't catch that,
+    # because it never imports this file (same trap as speaker_registry
+    # above). Smoke it by hand after editing.
     from openrecall_server.mcp.ledger import RequestLedger
     from openrecall_server.mcp.tools import build_registry as build_mcp_registry
 
     hermes_token = load_or_create_token(
-        args.db.replace("events.db", "hermes.token"))
+        str(Path(args.db).with_name("hermes.token")))
     mcp_ledger = RequestLedger(SystemClock())
     mcp_registry = build_mcp_registry(
         retriever=planner._retriever,
@@ -541,7 +543,8 @@ def main() -> None:
     # `print`, not `logging.info`, matching the relay token below: a secret
     # handed to the logging system reaches every configured handler, including
     # files and any aggregator an operator has attached.
-    print(f"hermes bearer token (for MCP clients): {hermes_token}")
+    print(f"hermes bearer token (for MCP clients): {hermes_token} "
+          "(tools/list only until Phase 2 — every tools/call returns isError)")
 
     app = build_app(
         token=token,
