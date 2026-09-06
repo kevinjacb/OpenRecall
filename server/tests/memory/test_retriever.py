@@ -307,6 +307,47 @@ def test_recency_tiebreaker_uses_conversation_time_not_ingest_time():
     assert [a.atom_id for a in rc.atoms] == ["z_new", "a_old"]
 
 
+def test_recency_score_uses_conversation_time_not_ingest_time():
+    """Isolates the age-computation site from the sort tiebreaker.
+
+    Every other recency test here gives both atoms the SAME created_at, so
+    a broken age computation produces an exact score tie that the (correct)
+    tiebreaker then silently resolves — hiding the regression. This fixture
+    instead gives the atoms DIFFERENT created_at values, with conversation
+    order and ingest order deliberately opposed, and uses the real
+    SimRecencyScorer with a short half-life so a broken age computation
+    produces a large, unambiguous score gap the tiebreaker cannot override
+    either way. Only a correct age computation (timeline_at, not
+    created_at) produces the right order here.
+    """
+    now = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
+
+    idx = InMemoryMemoryIndex()
+    recent_talk = MemoryAtom(
+        atom_id="a_recent_talk", session_id="s1", source_event_id="e1", kind="fact",
+        text="gamma topic", start_ms=0,
+        created_at=now - timedelta(days=10),   # extracted long ago (batch lag)
+        occurred_at=now - timedelta(hours=1),  # said an hour ago
+    )
+    old_talk = MemoryAtom(
+        atom_id="z_old_talk", session_id="s1", source_event_id="e2", kind="fact",
+        text="gamma topic", start_ms=0,
+        created_at=now,                         # extracted just now
+        occurred_at=now - timedelta(hours=14),  # said 14 hours ago
+    )
+    idx.add(recent_talk, FakeDeterministicEmbedder().embed(["gamma topic"])[0])
+    idx.add(old_talk, FakeDeterministicEmbedder().embed(["gamma topic"])[0])
+
+    r = _retriever(
+        idx,
+        clock=FakeClock(now),
+        scorer=SimRecencyScorer(half_life_s=3600),  # 1 hour: a large, unambiguous gap
+    )
+    rc = r.retrieve(RetrieverContext(session_id="s1", query_text="gamma topic", limit=2))
+
+    assert [a.atom_id for a in rc.atoms] == ["a_recent_talk", "z_old_talk"]
+
+
 def test_memory_retriever_kept_for_backward_compat_with_warning():
     """M3.2: keep the old MemoryRetriever class, deprecate it."""
     idx = InMemoryMemoryIndex()
