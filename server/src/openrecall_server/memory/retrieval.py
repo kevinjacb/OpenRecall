@@ -96,44 +96,49 @@ class Retriever:
         candidates = self._index.search(ctx.session_id, query_vec, ctx.limit * 4)
         # 4. score. now() comes from the injected clock.
         now = self._clock.now()
-        scored: list[ScoredAtom] = []
+        scored: list[tuple[ScoredAtom, datetime]] = []
         for sr in candidates:
-            age_s = max(0.0, (now - sr.atom.created_at).total_seconds())
+            age_s = max(0.0, (now - sr.atom.timeline_at).total_seconds())
             score = self._scorer.score(query_vec, sr.vector, age_s)
             if score <= 0.0:
                 continue
             scored.append(
-                ScoredAtom(
-                    atom_id=sr.atom.atom_id,
-                    session_id=sr.atom.session_id,
-                    kind=sr.atom.kind,
-                    text=sr.atom.text,
-                    created_at=sr.atom.created_at,
-                    start_ms=sr.atom.start_ms,
-                    score=score,
-                    source_event_id=sr.atom.source_event_id,
-                    provenance=sr.atom.to_provenance() if hasattr(sr.atom, "to_provenance") else None,
+                (
+                    ScoredAtom(
+                        atom_id=sr.atom.atom_id,
+                        session_id=sr.atom.session_id,
+                        kind=sr.atom.kind,
+                        text=sr.atom.text,
+                        created_at=sr.atom.created_at,
+                        start_ms=sr.atom.start_ms,
+                        score=score,
+                        source_event_id=sr.atom.source_event_id,
+                        provenance=sr.atom.to_provenance() if hasattr(sr.atom, "to_provenance") else None,
+                    ),
+                    sr.atom.timeline_at,
                 )
             )
-        # 5. deterministic ordering: score desc, created_at desc, atom_id asc (INV-7).
+        # 5. deterministic ordering: score desc, conversation time desc,
+        #    atom_id asc (INV-7). Conversation time, not ingest time — a
+        #    batch-extracted session must not rank as "just now" (spec D6).
         scored.sort(
-            key=lambda a: (
-                -a.score,
-                -a.created_at.timestamp(),
-                a.atom_id,
+            key=lambda pair: (
+                -pair[0].score,
+                -pair[1].timestamp(),
+                pair[0].atom_id,
             )
         )
-        scored = scored[: ctx.limit]
+        scored_atoms = [pair[0] for pair in scored][: ctx.limit]
         elapsed_ms = int((time.monotonic() - start) * 1000)
         return RetrievedContext(
-            atoms=tuple(scored),
+            atoms=tuple(scored_atoms),
             retrieval_strategy=self._scorer.name,
             scorer_version=self._scorer.version,
             index_name=self._index.name,
             index_version=self._index.version,
-            top_score=scored[0].score if scored else float("-inf"),
-            lowest_score=scored[-1].score if scored else float("-inf"),
-            returned_count=len(scored),
+            top_score=scored_atoms[0].score if scored_atoms else float("-inf"),
+            lowest_score=scored_atoms[-1].score if scored_atoms else float("-inf"),
+            returned_count=len(scored_atoms),
             retrieval_latency_ms=elapsed_ms,
             candidate_count=len(candidates),
             session_filter=ctx.session_id,

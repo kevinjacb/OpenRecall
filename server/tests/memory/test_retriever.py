@@ -244,6 +244,35 @@ def test_retriever_recency_decreases_old_atoms():
     assert rc.atoms[0].atom_id == "a_new"
 
 
+def test_recency_uses_conversation_time_not_ingest_time():
+    """An atom said last night must not outrank one said an hour ago just
+    because both were extracted at the same moment (spec D6)."""
+    now = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
+    extracted = now - timedelta(minutes=5)  # both learned 5 min ago
+
+    # atom_ids are picked so that ascending atom_id order (the INV-7
+    # tiebreaker of last resort) disagrees with the correct conversation-time
+    # order — otherwise the atom_id tiebreak could mask a created_at-based bug.
+    idx = InMemoryMemoryIndex()
+    old_talk = MemoryAtom(
+        atom_id="a_old", session_id="s1", source_event_id="e1", kind="fact",
+        text="alpha topic", created_at=extracted, start_ms=0,
+        occurred_at=now - timedelta(hours=14),  # said last night
+    )
+    new_talk = MemoryAtom(
+        atom_id="z_new", session_id="s1", source_event_id="e2", kind="fact",
+        text="alpha topic", created_at=extracted, start_ms=0,
+        occurred_at=now - timedelta(hours=1),  # said an hour ago
+    )
+    idx.add(old_talk, FakeDeterministicEmbedder().embed(["alpha topic"])[0])
+    idx.add(new_talk, FakeDeterministicEmbedder().embed(["alpha topic"])[0])
+
+    r = _retriever(idx, clock=FakeClock(now))
+    rc = r.retrieve(RetrieverContext(session_id="s1", query_text="alpha topic", limit=2))
+
+    assert [a.atom_id for a in rc.atoms] == ["z_new", "a_old"]
+
+
 def test_memory_retriever_kept_for_backward_compat_with_warning():
     """M3.2: keep the old MemoryRetriever class, deprecate it."""
     idx = InMemoryMemoryIndex()
