@@ -28,6 +28,7 @@ def build_app(
     *,
     token,
     get_pubkey,
+    hermes_token: str | None = None,
     event_store: EventStore | None = None,
     session_index: SessionIndex | None = None,
     session_lifecycle: SessionLifecycle | None = None,
@@ -72,6 +73,7 @@ def build_app(
     """
     app = web.Application(middlewares=[bearer_auth_middleware])
     app["sense_token"] = token
+    app["sense_hermes_token"] = hermes_token
     app["sense_get_pubkey"] = get_pubkey
     app["sense_event_store"] = event_store
     app["sense_session_index"] = session_index
