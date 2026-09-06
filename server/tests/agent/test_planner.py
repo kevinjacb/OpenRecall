@@ -201,6 +201,19 @@ async def test_planner_records_metrics():
 
 
 @pytest.mark.asyncio
+async def test_planner_records_outcome_metric():
+    atoms = (_atom("a1", "hello"),)
+    parsed = AgentAction(kind=AgentActionKind.ANSWER, text="x",
+                         atom_ids=("a1",), confidence=0.9)
+    metrics = InMemoryMetricsRecorder()
+    p = _planner(FakeRetriever(atoms), FakeAgentLLM(parsed=parsed),
+                 metrics=metrics)
+    await p.plan(_ctx())
+    assert metrics.counter(Metrics.PLANNER_OUTCOME_TOTAL,
+                           {"outcome": "return"}) == 1
+
+
+@pytest.mark.asyncio
 async def test_planner_is_stateless_across_calls():
     """INV-1: the planner is stateless; two identical calls produce identical
     content (answer, confidence, atom_ids), with request_id and trace_id

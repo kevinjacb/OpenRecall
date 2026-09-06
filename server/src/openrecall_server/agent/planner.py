@@ -95,6 +95,16 @@ class Planner:
         # P2-answers slice (which doesn't dispatch commands) can wire a
         # Planner without them; tests that exercise IssueCommand must
         # pass all three.
+        #
+        # command_validator: NOT used to validate commands anymore — since
+        # command dispatch was routed through commands.issue.validate_and_issue
+        # (which builds its own StrictCommandValidator internally), this
+        # injected instance is read only as the `is None` guard for "is the
+        # command path configured?" in _dispatch_command. That is deliberate:
+        # keeping the actual validator un-injectable inside validate_and_issue
+        # is what makes the safety chain un-bypassable by a future untrusted
+        # caller. Do not restore this parameter to being consulted for
+        # validation.
         command_validator: CommandValidator | None = None,
         command_guardrails: CommandGuardrails | None = None,
         dispatcher: CommandDispatcher | None = None,
@@ -577,6 +587,12 @@ class Planner:
         # ``atom_ids`` field carries the cited ones.
         total_latency = retrieval_latency_ms + llm_latency_ms + validator_latency_ms + guardrails_latency_ms
         self._metrics.observe(Metrics.PLANNER_LATENCY_MS, total_latency)
+        # Outcome distribution — the baseline any future planner backend
+        # is compared against (spec Roadmap 0.3). Tagged, not name-suffixed:
+        # the recorder rejects names outside KNOWN_METRICS.
+        self._metrics.increment(
+            Metrics.PLANNER_OUTCOME_TOTAL, {"outcome": outcome.value},
+        )
         return PlannerResult(
             request_id=ctx.request_id,
             retrieval_trace_id=retrieved.retrieval_trace_id,
