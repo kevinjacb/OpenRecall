@@ -29,6 +29,8 @@ def build_app(
     token,
     get_pubkey,
     hermes_token: str | None = None,
+    mcp_registry=None,
+    mcp_ledger=None,
     event_store: EventStore | None = None,
     session_index: SessionIndex | None = None,
     session_lifecycle: SessionLifecycle | None = None,
@@ -74,6 +76,8 @@ def build_app(
     app = web.Application(middlewares=[bearer_auth_middleware])
     app["sense_token"] = token
     app["sense_hermes_token"] = hermes_token
+    app["sense_mcp_registry"] = mcp_registry
+    app["sense_mcp_ledger"] = mcp_ledger
     app["sense_get_pubkey"] = get_pubkey
     app["sense_event_store"] = event_store
     app["sense_session_index"] = session_index
@@ -118,6 +122,7 @@ def build_app(
     from openrecall_server.http.routes.device import add_routes as add_device
     from openrecall_server.http.routes.reminders import add_routes as add_reminders
     from openrecall_server.http.routes.media import add_routes as add_media
+    from openrecall_server.http.routes.mcp import add_routes as add_mcp
 
     add_provisioning(app)
     add_sessions(app)
@@ -130,6 +135,10 @@ def build_app(
     add_settings(app)
     add_device(app)
     add_media(app)
+    # Always registered: the route itself answers 503 when no registry was
+    # wired, which is a clearer signal to an MCP client than a 404 that looks
+    # like the wrong host.
+    add_mcp(app)
     if command_store is not None and command_dispatcher is not None:
         add_commands(app)
     if reminders is not None:

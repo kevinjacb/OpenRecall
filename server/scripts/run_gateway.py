@@ -513,8 +513,38 @@ def main() -> None:
             denoiser=_denoiser,
         )
     factory = _make_factory()
+
+    # --- MCP (spec §5.2) -------------------------------------------------
+    # A *second* bearer token, distinct from the relay's: the hermes
+    # principal reaches /mcp and nothing else, the relay reaches everything
+    # else and never /mcp (mcp/principal.py). One shared token would let a
+    # compromised MCP client drive the whole control API.
+    #
+    # Without these three kwargs the hermes principal is unreachable outside
+    # tests and POST /mcp answers 503 — and pytest can't catch that, because
+    # it never imports this file (same trap as speaker_registry above). Smoke
+    # it by hand after editing.
+    from openrecall_server.mcp.ledger import RequestLedger
+    from openrecall_server.mcp.tools import build_registry as build_mcp_registry
+
+    hermes_token = load_or_create_token(
+        args.db.replace("events.db", "hermes.token"))
+    mcp_ledger = RequestLedger(SystemClock())
+    mcp_registry = build_mcp_registry(
+        retriever=planner._retriever,
+        atom_store=atom_store,
+        session_index=session_index,
+        speaker_registry=speaker_registry,
+        capability_provider=capability_provider,
+        ledger=mcp_ledger,
+    )
+    logging.info("hermes bearer token (for MCP clients): %s", hermes_token)
+
     app = build_app(
         token=token,
+        hermes_token=hermes_token,
+        mcp_registry=mcp_registry,
+        mcp_ledger=mcp_ledger,
         get_pubkey=lambda: signer.public_key_bytes,
         event_store=store,
         session_index=session_index,
