@@ -17,6 +17,12 @@
 # OPENRECALL_ASR_BACKEND — "whisper" (default; mlx-whisper) or "parakeet"
 #   (NVIDIA Parakeet-TDT; transducer, no Whisper near-silence phantoms).
 # backend = "whisper"
+# OPENRECALL_ASR_MODE — "auto" (default), "utterance", or "hop".
+#   "auto" resolves per backend: utterance for parakeet, hop for whisper.
+#   NOTE: with the default backend "whisper" this resolves to "hop", i.e. the
+#   pre-utterance-mode path. Set backend = "parakeet" (or mode = "utterance")
+#   to get one ASR call per detected utterance.
+# mode = "auto"
 
 [parakeet]
 # OPENRECALL_PARAKEET_MODEL — parakeet-mlx model id (parakeet backend only).
@@ -61,7 +67,7 @@
 # OPENRECALL_SENTENCE_COALESCE — on by default; set false to revert to per-word.
 # coalesce = true
 # OPENRECALL_SENTENCE_PAUSE_MS — inter-sentence pause threshold (ms).
-# pause_ms = 400
+# pause_ms = 1000
 
 # ---- Proactive listener (background extraction) ----
 [proactive]
@@ -80,11 +86,13 @@
 
 [confidence]
 # OPENRECALL_CONFIDENCE_AUTONOMOUS — auto-act threshold (must be > confirm).
-# confidence_autonomous = 0.70
+# autonomous = 0.85
 # OPENRECALL_CONFIDENCE_CONFIRM — confirm-with-user threshold.
-# confidence_confirm = 0.78
+# confirm = 0.60
+
+[rate_limit]
 # OPENRECALL_RATE_LIMIT_PER_MIN — proactive plan rate cap.
-# rate_limit_per_min = 6
+# per_min = 20
 
 # ---- Speech->command channel (off by default) ----
 [command]

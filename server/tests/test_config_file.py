@@ -142,3 +142,31 @@ def test_apply_defaults_to_real_environ(tmp_path, monkeypatch):
         assert os.environ["OPENRECALL_DENOISE_ENABLED"] == "true"
     finally:
         os.environ.pop("OPENRECALL_DENOISE_ENABLED", None)
+
+
+def test_example_config_keys_all_map_to_real_env_vars():
+    """Every key in config.example.toml — including commented-out ones —
+    must flatten to a var the source actually reads."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]           # server/
+    example = root / "config.example.toml"
+
+    section, declared = None, {}
+    for line in example.read_text().splitlines():
+        s = line.strip()
+        if m := re.match(r"^\[([a-z_]+)\]", s):
+            section = m.group(1)
+            continue
+        if m := re.match(r"^#?\s*([a-z_0-9]+)\s*=", s):
+            key = m.group(1)
+            declared[f"OPENRECALL_{section.upper()}_{key.upper()}"
+                     if section else key] = (section, key)
+
+    real = set()
+    for path in list((root / "src").rglob("*.py")) + list((root / "scripts").rglob("*.py")):
+        real |= set(re.findall(r'"(OPENRECALL_[A-Z_0-9]+)"', path.read_text()))
+
+    dead = sorted(set(declared) - real)
+    assert not dead, f"config.example.toml keys map to nothing: {dead}"
