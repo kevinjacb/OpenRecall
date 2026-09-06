@@ -36,7 +36,7 @@ import time
 from typing import Protocol, runtime_checkable
 
 from ..commands.dispatcher import CommandDispatcher
-from ..commands.model import Command
+from ..commands.issue import validate_and_issue
 from ..contracts.clock import Clock
 from ..contracts.id_generator import IdGenerator
 from ..contracts.metrics import Metrics
@@ -360,81 +360,44 @@ class Planner:
                 guardrails_latency_ms=guardrails_latency_ms,
             )
 
-        # 1. Validate (allowlist + param bounds).
-        v_out = self._command_validator.validate(action.command)
-        if v_out.rejection is not None:
-            return self._build_result(
-                ctx, retrieved,
-                outcome=PlannerOutcome.REFUSE,
-                guarded=GuardedAction(
-                    outcome=_REFUSE,
-                    action=action,
-                    refusal_reason=_map_validator_rejection(v_out.rejection),
-                    refusal_message=v_out.message or "command rejected by validator",
-                ),
-                retrieval_latency_ms=retrieval_latency_ms,
-                llm_latency_ms=llm_latency_ms,
-                validator_latency_ms=validator_latency_ms,
-                guardrails_latency_ms=guardrails_latency_ms,
-            )
-
-        # 2. Guardrails (capability + resource + confidence).
-        # Use the current capability / resource snapshot — the
-        # guardrails read the live device state, not a stale one.
-        # The command guardrails default constructor takes explicit
-        # CapabilitySet / DeviceResourceStatus; we snapshot from the
-        # provider here so the Planner stays stateless.
-        from .guardrails_command import StrictCommandGuardrails as _SCG
-        per_call_guardrails = _SCG(
-            capabilities=self._caps.capabilities(),
-            resources=self._caps.resources(),
+        # Validate -> guardrails -> sign, through the one choke point.
+        # Rejection mapping stays here because PlannerResult speaks
+        # RejectionReason from contracts, not the commands enum.
+        issued = validate_and_issue(
+            command_type=action.command.command_type,
+            params=action.command.params,
+            idempotency_key=action.command.idempotency_key,
+            dispatcher=self._dispatcher,
+            ids=self._ids,
+            clock=self._clock,
+            capability_provider=self._caps,
+            session_id=ctx.session_id or "",
+            confidence=action.command.confidence,
             confidence_autonomous=self._command_guardrails._autonomous,
+            ttl=_default_ttl(),
         )
-        g_out = per_call_guardrails.check(v_out.command)
-        if not g_out.allowed:
+        if not issued.ok:
+            if issued.stage == "guardrails":
+                reason = _map_guardrail_rejection(issued.rejection)
+            elif issued.stage == "validate":
+                reason = _map_validator_rejection(issued.rejection)
+            else:
+                reason = RejectionReason.UNKNOWN
             return self._build_result(
                 ctx, retrieved,
                 outcome=PlannerOutcome.REFUSE,
                 guarded=GuardedAction(
                     outcome=_REFUSE,
                     action=action,
-                    refusal_reason=_map_guardrail_rejection(g_out.rejection),
-                    refusal_message=g_out.message or "command rejected by guardrails",
+                    refusal_reason=reason,
+                    refusal_message=issued.message or "command rejected",
                 ),
                 retrieval_latency_ms=retrieval_latency_ms,
                 llm_latency_ms=llm_latency_ms,
                 validator_latency_ms=validator_latency_ms,
                 guardrails_latency_ms=guardrails_latency_ms,
             )
-
-        # 3. Dispatch (sign + track + idempotency dedup).
-        try:
-            signed = self._dispatcher.issue(Command(
-                command_id=self._ids.new(),
-                session_id=ctx.session_id or "",
-                type=v_out.command.command_type,
-                params=v_out.command.params,
-                issued_at=self._clock.now(),
-                expires_at=self._clock.now() + _default_ttl(),
-                idempotency_key=v_out.command.idempotency_key,
-            ))
-            command_id = signed.command.command_id
-        except Exception as exc:
-            # H3: dispatch failure is a refusal, not a crash.
-            return self._build_result(
-                ctx, retrieved,
-                outcome=PlannerOutcome.REFUSE,
-                guarded=GuardedAction(
-                    outcome=_REFUSE,
-                    action=action,
-                    refusal_reason=RejectionReason.UNKNOWN,
-                    refusal_message=f"failed to issue command: {exc}",
-                ),
-                retrieval_latency_ms=retrieval_latency_ms,
-                llm_latency_ms=llm_latency_ms,
-                validator_latency_ms=validator_latency_ms,
-                guardrails_latency_ms=guardrails_latency_ms,
-            )
+        command_id = issued.signed.command.command_id
 
         result = self._build_result(
             ctx, retrieved,

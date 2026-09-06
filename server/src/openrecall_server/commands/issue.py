@@ -7,7 +7,8 @@ second issue path in the route — would have meant two implementations of
 validate → guardrails → sign, and they would drift. The one that drifts
 silently is the safety chain.
 
-So both callers come through here. The chain is unchanged:
+So every caller comes through here: the HTTP route, the settings reconciler,
+and the agent Planner. The chain is unchanged:
 
 1. **Validate** against ``ALLOWLIST`` + the per-type param schemas. The
    allowlist is the binding claim that firmware knows how to execute a type.

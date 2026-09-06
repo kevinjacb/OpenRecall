@@ -386,6 +386,47 @@ async def test_issue_command_with_dispatcher_failure_becomes_refuse():
     assert "issue" in (result.refusal_message or "").lower() or "fail" in (result.refusal_message or "").lower()
 
 
+# --- single choke point ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_planner_dispatch_goes_through_validate_and_issue(monkeypatch):
+    """The Planner must not reimplement the guard chain (spec §2 correction a)."""
+    import openrecall_server.agent.planner as planner_mod
+
+    calls = []
+    real = planner_mod.validate_and_issue
+
+    def spy(**kwargs):
+        calls.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(planner_mod, "validate_and_issue", spy)
+
+    payload = IssueCommandPayload(
+        command_type="capture_photo",
+        params={},
+        idempotency_key="user-1-photo-choke-point",
+        confidence=0.9,
+    )
+    parsed = AgentAction(
+        kind=AgentActionKind.ISSUE_COMMAND,
+        text="",
+        atom_ids=(),
+        confidence=0.9,
+        command=payload,
+    )
+    llm = FakeAgentLLM(parsed=parsed)
+    planner = _build_planner(llm)
+
+    result = await planner.plan(_ctx())
+
+    assert result.outcome == PlannerOutcome.ISSUE_COMMAND
+    assert len(calls) == 1, "Planner bypassed validate_and_issue"
+    assert calls[0]["command_type"] == "capture_photo"
+    assert calls[0]["capability_provider"] is not None
+
+
 # --- non-command paths still work -----------------------------------------
 
 
