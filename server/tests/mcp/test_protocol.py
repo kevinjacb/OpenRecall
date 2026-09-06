@@ -80,3 +80,29 @@ async def test_handler_exception_becomes_tool_error_not_transport_error():
 async def test_notification_returns_none():
     out = await dispatch(_registry(), {"jsonrpc": "2.0", "method": "ping"})
     assert out is None
+
+
+async def test_ping_with_id_returns_response_carrying_that_id():
+    out = await dispatch(_registry(), {"jsonrpc": "2.0", "id": 99,
+                                       "method": "ping"})
+    assert out is not None
+    assert out["id"] == 99
+    assert out["result"] == {}
+
+
+def test_register_rejects_duplicate_name():
+    reg = ToolRegistry()
+
+    async def handler(args: dict) -> dict:
+        return {}
+
+    reg.register(ToolSpec(name="dup", description="", input_schema={},
+                          handler=handler))
+    with pytest.raises(ValueError):
+        reg.register(ToolSpec(name="dup", description="", input_schema={},
+                              handler=handler))
+
+
+async def test_missing_method_is_32600_invalid_request():
+    out = await dispatch(_registry(), {"jsonrpc": "2.0", "id": 7})
+    assert out["error"]["code"] == -32600
