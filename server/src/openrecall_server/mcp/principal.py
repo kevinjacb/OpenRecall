@@ -34,4 +34,9 @@ def may_reach(principal: str, path: str) -> bool:
     is_mcp = path == MCP_PREFIX or path.startswith(MCP_PREFIX + "/")
     if principal == PRINCIPAL_HERMES:
         return is_mcp
-    return not is_mcp
+    if principal == PRINCIPAL_RELAY:
+        return not is_mcp
+    # Fail closed: an unrecognized principal (a future third principal, or a
+    # typo'd constant) gets no access rather than silently inheriting relay
+    # privileges.
+    return False
