@@ -21,8 +21,10 @@ from aiohttp.test_utils import TestClient, TestServer
 from openrecall_server.agent.capability import ConstantCapabilityProvider
 from openrecall_server.contracts.clock import FakeClock, SystemClock
 from openrecall_server.contracts.id_generator import DeterministicIdGenerator
+from openrecall_server.events.model import CaptureEvent
 from openrecall_server.http.app import build_app
 from openrecall_server.ingest.speaker_config import SpeakerConfig
+from openrecall_server.memory.speaker_registry import Speaker
 from openrecall_server.mcp.ledger import RequestLedger
 from openrecall_server.mcp.tools import build_registry
 from openrecall_server.memory.atom import MemoryAtom
@@ -80,6 +82,45 @@ class _SpyRetriever:
         return self._inner.retrieve(ctx)
 
 
+class _SpyAtomStore:
+    """AtomStore wrapper recording every `iter_atoms` scan.
+
+    The memory.get counterpart of `_SpyRetriever`, for the same reason: a
+    no-op `_require_open` would still surface "request not open" from
+    `record_atoms` further down the handler.
+    """
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.scans = 0
+
+    def iter_atoms(self):
+        self.scans += 1
+        return self._inner.iter_atoms()
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+# One speaker WITH a non-empty centroid. The centroid is the point: it is the
+# voice embedding that `speakers.list` must never return, and an empty
+# registry would let a leak ship green.
+SEEDED_SPEAKER = Speaker(
+    speaker_id="spk-1",
+    display_name="Alice",
+    is_wearer=False,
+    enrollment_status="confirmed",
+    centroid=[0.11, 0.22, 0.33, 0.44],
+    embedding_model="test-embed",
+    dim=4,
+    turn_count=7,
+    first_seen=_NOW.isoformat(),
+    updated_at=_NOW.isoformat(),
+)
+
+SEEDED_SESSION_ID = "s1"
+
+
 def _atom(i: int) -> MemoryAtom:
     return MemoryAtom(
         atom_id=f"a{i:02d}",
@@ -98,13 +139,27 @@ async def mcp_env():
     built with."""
     ledger = RequestLedger(SystemClock())
 
-    atom_store = InMemoryAtomStore()
+    inner_atom_store = InMemoryAtomStore()
     index = InMemoryMemoryIndex()
     embedder = _HashEmbedder()
     for i in range(_SEEDED_ATOMS):
         atom = _atom(i)
-        atom_store.append(atom)
+        inner_atom_store.append(atom)
         index.add(atom, embedder.embed([atom.text])[0])
+    atom_store = _SpyAtomStore(inner_atom_store)
+
+    # A non-empty session index and speaker registry: with either left empty,
+    # `sessions.list` and `speakers.list` return [] in every test and their
+    # projection code never executes — which is exactly how an embedding leak
+    # in the speakers DTO would ship green.
+    session_index = SessionIndex()
+    session_index.record(CaptureEvent(
+        event_id="ev-1", session_id=SEEDED_SESSION_ID, seq=0, kind="transcript",
+        created_at=_NOW, text="the roadmap review", duration_ms=1000,
+        start_ms=0,
+    ))
+    speaker_registry = InMemorySpeakerRegistry(SpeakerConfig())
+    speaker_registry.add_speaker(SEEDED_SPEAKER)
 
     retriever = _SpyRetriever(Retriever(
         embedder=embedder,
@@ -117,17 +172,19 @@ async def mcp_env():
     registry = build_registry(
         retriever=retriever,
         atom_store=atom_store,
-        session_index=SessionIndex(),
-        speaker_registry=InMemorySpeakerRegistry(SpeakerConfig()),
+        session_index=session_index,
+        speaker_registry=speaker_registry,
         capability_provider=ConstantCapabilityProvider(),
         ledger=ledger,
     )
     app = build_app(
         token="aaa", hermes_token="bbb", get_pubkey=lambda: bytes(32),
         mcp_registry=registry, mcp_ledger=ledger,
-        # Same object the registry holds — production wires it here too, and
-        # it gives tests a handle on the spy via client.app["sense_retriever"].
+        # Same objects the registry holds — production wires these here too,
+        # and it gives tests a handle on the spies via
+        # client.app["sense_retriever"] / client.app["sense_atom_store"].
         retriever=retriever,
+        atom_store=atom_store,
     )
     server = TestServer(app)
     client = TestClient(server)

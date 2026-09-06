@@ -7,6 +7,16 @@ what makes Phase 2's provenance gate enforceable.
 Deliberately absent: raw audio, speaker embeddings, settings writes,
 provisioning, and any delete. A capability Hermes needs is added here with a
 guard, never by handing it the relay token.
+
+**INERT UNTIL PHASE 2.** Nothing in `src/` or `scripts/` calls
+`RequestLedger.open()`, and the JSON-RPC surface exposes no method that opens
+one. A real MCP client can therefore `initialize`, `ping` and `tools/list`, but
+every `tools/call` returns `isError: true — request not open`, permanently,
+until Phase 2 wires a request-opening path (`agent.respond`, or an equivalent
+that opens a ledger entry for the turn). The tool list advertising five tools
+is not evidence that any of them can be executed today. This is by design —
+the ledger is what makes provenance enforceable, so a call with no scope is
+refused rather than served unscoped — but read the list with that in mind.
 """
 from __future__ import annotations
 
@@ -85,7 +95,9 @@ def build_registry(*, retriever, atom_store, session_index, speaker_registry,
         request_id = _require_open(ledger, args)
         if atom_store is None:
             raise RuntimeError("memory is not configured on this server")
-        wanted = set(args["atom_ids"])
+        # Capped like memory.search: this is a full scan of the atom store,
+        # so an unbounded id list is an unbounded amount of work per call.
+        wanted = set(args["atom_ids"][:MAX_LIMIT])
         found = [a for a in atom_store.iter_atoms() if a.atom_id in wanted]
         ledger.record_atoms(request_id, [a.atom_id for a in found])
         return {"atoms": [_atom_dto(a) for a in found]}
@@ -97,7 +109,8 @@ def build_registry(*, retriever, atom_store, session_index, speaker_registry,
             "type": "object",
             "properties": {
                 **_REQUEST_ID_PROP,
-                "atom_ids": {"type": "array", "items": {"type": "string"}},
+                "atom_ids": {"type": "array", "items": {"type": "string"},
+                             "maxItems": MAX_LIMIT},
             },
             "required": ["request_id", "atom_ids"],
         },

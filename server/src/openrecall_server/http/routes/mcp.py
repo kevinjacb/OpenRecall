@@ -10,11 +10,16 @@ import json
 
 from aiohttp import web
 
-from ...mcp.protocol import PARSE_ERROR, dispatch
+from ...mcp.protocol import INVALID_REQUEST, PARSE_ERROR, dispatch
 
 
 def add_routes(app: web.Application) -> None:
     app.router.add_post("/mcp", post_mcp)
+
+
+def _invalid_request(message: str) -> dict:
+    return {"jsonrpc": "2.0", "id": None,
+            "error": {"code": INVALID_REQUEST, "message": message}}
 
 
 async def post_mcp(request: web.Request) -> web.Response:
@@ -28,10 +33,27 @@ async def post_mcp(request: web.Request) -> web.Response:
         return web.json_response({"jsonrpc": "2.0", "id": None,
                                   "error": {"code": PARSE_ERROR,
                                             "message": "invalid JSON"}})
+    # `dispatch` reads `request.get("id")`, so anything that is not a dict (a
+    # bare `5`, a string, a null, or a list member that is not an object)
+    # would raise AttributeError and surface as a 500. JSON-RPC calls that
+    # Invalid Request, and a well-formed error is far more useful to a client
+    # than a stack trace.
     if isinstance(body, list):                        # JSON-RPC batch
-        out = [r for r in [await dispatch(registry, m) for m in body]
-               if r is not None]
+        if not body:
+            # An empty batch is Invalid Request per JSON-RPC 2.0 §6, not an
+            # empty result array.
+            return web.json_response(_invalid_request("empty batch"))
+        out = [
+            r for r in [
+                await dispatch(registry, m) if isinstance(m, dict)
+                else _invalid_request("request must be an object")
+                for m in body
+            ]
+            if r is not None
+        ]
         return web.json_response(out)
+    if not isinstance(body, dict):
+        return web.json_response(_invalid_request("request must be an object"))
     result = await dispatch(registry, body)
     if result is None:
         return web.Response(status=202)

@@ -538,7 +538,10 @@ def main() -> None:
         capability_provider=capability_provider,
         ledger=mcp_ledger,
     )
-    logging.info("hermes bearer token (for MCP clients): %s", hermes_token)
+    # `print`, not `logging.info`, matching the relay token below: a secret
+    # handed to the logging system reaches every configured handler, including
+    # files and any aggregator an operator has attached.
+    print(f"hermes bearer token (for MCP clients): {hermes_token}")
 
     app = build_app(
         token=token,
