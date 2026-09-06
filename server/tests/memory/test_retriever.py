@@ -273,6 +273,40 @@ def test_recency_uses_conversation_time_not_ingest_time():
     assert [a.atom_id for a in rc.atoms] == ["z_new", "a_old"]
 
 
+def test_recency_tiebreaker_uses_conversation_time_not_ingest_time():
+    """Isolates the sort tiebreaker from the age-computation site.
+
+    FixedScorer ties every candidate's score at 1.0 regardless of age, so
+    the age-computation fix (using timeline_at instead of created_at) can
+    have no effect here — only the sort tiebreaker decides the order. Both
+    atoms also share created_at, so a tiebreaker still keyed on created_at
+    would tie too, and the result would fall through to atom_id asc
+    ("a_old" before "z_new" — the wrong order). This test only passes if
+    the tiebreaker itself reads timeline_at.
+    """
+    now = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
+    extracted = now - timedelta(minutes=5)  # both learned 5 min ago
+
+    idx = InMemoryMemoryIndex()
+    old_talk = MemoryAtom(
+        atom_id="a_old", session_id="s1", source_event_id="e1", kind="fact",
+        text="alpha topic", created_at=extracted, start_ms=0,
+        occurred_at=now - timedelta(hours=14),  # said last night
+    )
+    new_talk = MemoryAtom(
+        atom_id="z_new", session_id="s1", source_event_id="e2", kind="fact",
+        text="alpha topic", created_at=extracted, start_ms=0,
+        occurred_at=now - timedelta(hours=1),  # said an hour ago
+    )
+    idx.add(old_talk, FakeDeterministicEmbedder().embed(["alpha topic"])[0])
+    idx.add(new_talk, FakeDeterministicEmbedder().embed(["alpha topic"])[0])
+
+    r = _retriever(idx, clock=FakeClock(now), scorer=FixedScorer())
+    rc = r.retrieve(RetrieverContext(session_id="s1", query_text="alpha topic", limit=2))
+
+    assert [a.atom_id for a in rc.atoms] == ["z_new", "a_old"]
+
+
 def test_memory_retriever_kept_for_backward_compat_with_warning():
     """M3.2: keep the old MemoryRetriever class, deprecate it."""
     idx = InMemoryMemoryIndex()
