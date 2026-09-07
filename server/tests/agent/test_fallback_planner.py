@@ -104,6 +104,44 @@ async def test_fallback_failure_propagates():
         await p.plan(_ctx())
 
 
+async def test_half_open_probe_success_closes_breaker():
+    clock = FakeClock(datetime(2026, 9, 7, tzinfo=timezone.utc))
+    primary = Stub(raises=RuntimeError("boom"))
+    fallback = Stub("fallback")
+    breaker = CircuitBreaker(clock=clock, reset_after_s=120.0)
+    p = FallbackPlanner(primary=primary, fallback=fallback, breaker=breaker)
+    for _ in range(3):
+        await p.plan(_ctx())
+    assert breaker.is_open is True
+
+    clock.advance(121)
+    primary.raises = None
+    primary.answer = "recovered"
+    result = await p.plan(_ctx())
+    assert result.answer == "recovered"
+    assert breaker.is_open is False, "a successful probe must close the breaker"
+
+
+async def test_half_open_probe_failure_reopens_breaker_immediately():
+    clock = FakeClock(datetime(2026, 9, 7, tzinfo=timezone.utc))
+    primary = Stub(raises=RuntimeError("boom"))
+    fallback = Stub("fallback")
+    breaker = CircuitBreaker(clock=clock, reset_after_s=120.0)
+    p = FallbackPlanner(primary=primary, fallback=fallback, breaker=breaker)
+    for _ in range(3):
+        await p.plan(_ctx())
+
+    clock.advance(121)
+    await p.plan(_ctx())          # the probe itself also fails
+    assert breaker.is_open is True, "a failed probe must reopen the breaker immediately"
+
+    calls_after_probe = primary.calls
+    await p.plan(_ctx())          # no clock advance — must not re-probe
+    assert primary.calls == calls_after_probe, (
+        "breaker should not grant another probe before the reset window elapses again"
+    )
+
+
 def test_fallback_planner_satisfies_plannerlike():
     from openrecall_server.agent.planner import PlannerLike
     p = FallbackPlanner(primary=Stub(), fallback=Stub(),

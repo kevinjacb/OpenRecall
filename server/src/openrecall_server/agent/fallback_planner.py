@@ -28,6 +28,12 @@ class CircuitBreaker:
         self._reset_after_s = reset_after_s
         self._failures = 0
         self._opened_at = None
+        # Set only while a half-open probe is outstanding (between the
+        # `allow()` call that grants it and the matching record_*()).
+        # Tracked separately from `_failures` so a probe that fails can
+        # reopen the breaker immediately, rather than needing `_threshold`
+        # more consecutive failures to re-trip it.
+        self._half_open = False
 
     @property
     def is_open(self) -> bool:
@@ -41,14 +47,22 @@ class CircuitBreaker:
         if elapsed >= self._reset_after_s:
             self._opened_at = None          # half-open: allow one probe
             self._failures = 0
+            self._half_open = True
             return True
         return False
 
     def record_success(self) -> None:
         self._failures = 0
         self._opened_at = None
+        self._half_open = False
 
     def record_failure(self) -> None:
+        if self._half_open:
+            # The probe failed: the primary is still down. Reopen at once —
+            # do not make this outage wait for `_threshold` more failures.
+            self._half_open = False
+            self._opened_at = self._clock.now()
+            return
         self._failures += 1
         if self._failures >= self._threshold:
             self._opened_at = self._clock.now()
@@ -62,6 +76,9 @@ class FallbackPlanner:
         self._primary = primary
         self._fallback = fallback
         self._breaker = breaker
+        # Forward plumbing: not read yet. Task 4 wires the fallback-engaged /
+        # breaker-open counters once the metric names are decided alongside
+        # the rest of the Hermes rollout's observability surface.
         self._metrics = metrics
 
     async def plan(self, ctx: PlannerContext) -> PlannerResult:
