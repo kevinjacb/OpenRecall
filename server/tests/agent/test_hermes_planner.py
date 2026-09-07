@@ -42,9 +42,11 @@ def _ctx(trigger=None):
 
 async def test_result_is_built_from_the_ledger_not_stdout():
     async def on_run(prompt, request_id):
+        # confidence above the default autonomous threshold (0.85) so this
+        # test isolates "ledger vs stdout", not the confidence gate.
         ledger.record_response(request_id, AgentResponse(
             kind="answer", text="from the ledger", atom_ids=(),
-            confidence=0.8, command_id=None, memory_atom_id=None,
+            confidence=0.95, command_id=None, memory_atom_id=None,
             reminder_id=None))
         return "THIS STDOUT MUST BE IGNORED"
 
@@ -166,3 +168,130 @@ def test_hermes_planner_satisfies_plannerlike():
     from openrecall_server.agent.planner import PlannerLike
     p, _ = _planner(lambda *_: None)
     assert isinstance(p, PlannerLike)
+
+
+# ---------------------------------------------------------------------------
+# Kind coverage (all four non-answer/no_memory kinds, plus no_memory itself).
+# Follow-up to review of ad1c034: only "answer" was exercised above.
+# ---------------------------------------------------------------------------
+
+def _respond(ledger, request_id, **overrides):
+    fields = dict(kind="answer", text="", atom_ids=(), confidence=0.95,
+                  command_id=None, memory_atom_id=None, reminder_id=None)
+    fields.update(overrides)
+    ledger.record_response(request_id, AgentResponse(**fields))
+
+
+async def test_no_memory_kind_refuses_with_no_supporting_memory():
+    # Mirrors agent/guardrails.py's ConfidenceGateGuardrails: NO_MEMORY is
+    # ALWAYS a REFUSE with NO_SUPPORTING_MEMORY, never an autonomous RETURN
+    # — regardless of any confidence the agent attaches.
+    async def on_run(prompt, request_id):
+        _respond(ledger, request_id, kind="no_memory", text="", confidence=0.99)
+        return ""
+
+    p, ledger = _planner(on_run)
+    out = await p.plan(_ctx())
+    assert out.outcome is PlannerOutcome.REFUSE
+    assert out.refusal_reason is RejectionReason.NO_SUPPORTING_MEMORY
+    assert out.answer is None
+
+
+async def test_issue_command_kind_reaches_issue_command_outcome():
+    async def on_run(prompt, request_id):
+        _respond(ledger, request_id, kind="issue_command",
+                 command_id="cmd-1")
+        return ""
+
+    p, ledger = _planner(on_run)
+    out = await p.plan(_ctx())
+    assert out.outcome is PlannerOutcome.ISSUE_COMMAND
+    assert out.command_id == "cmd-1"
+
+
+async def test_create_memory_kind_reaches_create_memory_outcome():
+    async def on_run(prompt, request_id):
+        _respond(ledger, request_id, kind="create_memory",
+                 memory_atom_id="atom-1")
+        return ""
+
+    p, ledger = _planner(on_run)
+    out = await p.plan(_ctx())
+    assert out.outcome is PlannerOutcome.CREATE_MEMORY
+    assert out.memory_atom_id == "atom-1"
+
+
+async def test_create_reminder_kind_reaches_create_reminder_outcome():
+    async def on_run(prompt, request_id):
+        _respond(ledger, request_id, kind="create_reminder",
+                 reminder_id="rem-1")
+        return ""
+
+    p, ledger = _planner(on_run)
+    out = await p.plan(_ctx())
+    assert out.outcome is PlannerOutcome.CREATE_REMINDER
+    assert out.reminder_id == "rem-1"
+
+
+# ---------------------------------------------------------------------------
+# Confidence gate on "answer" (finding 2 on review of ad1c034): mirrors
+# ConfidenceGateGuardrails.decide's three-tier mapping exactly, with defaults
+# confidence_autonomous=0.85 / confidence_confirm=0.60.
+# ---------------------------------------------------------------------------
+
+async def test_confidence_at_autonomous_threshold_returns():
+    async def on_run(prompt, request_id):
+        _respond(ledger, request_id, confidence=0.85)
+        return ""
+
+    p, ledger = _planner(on_run)
+    out = await p.plan(_ctx())
+    assert out.outcome is PlannerOutcome.RETURN
+
+
+async def test_confidence_just_below_autonomous_is_uncertain():
+    async def on_run(prompt, request_id):
+        _respond(ledger, request_id, confidence=0.849999)
+        return ""
+
+    p, ledger = _planner(on_run)
+    out = await p.plan(_ctx())
+    assert out.outcome is PlannerOutcome.RETURN_WITH_UNCERTAINTY
+
+
+async def test_confidence_at_confirm_threshold_is_uncertain():
+    async def on_run(prompt, request_id):
+        _respond(ledger, request_id, confidence=0.60)
+        return ""
+
+    p, ledger = _planner(on_run)
+    out = await p.plan(_ctx())
+    assert out.outcome is PlannerOutcome.RETURN_WITH_UNCERTAINTY
+
+
+async def test_confidence_just_below_confirm_refuses():
+    async def on_run(prompt, request_id):
+        _respond(ledger, request_id, confidence=0.599999)
+        return ""
+
+    p, ledger = _planner(on_run)
+    out = await p.plan(_ctx())
+    assert out.outcome is PlannerOutcome.REFUSE
+    assert out.refusal_reason is RejectionReason.NOT_AUTONOMOUS
+    assert out.answer is None
+    assert out.confidence is None
+
+
+async def test_confidence_none_refuses_rather_than_returning_autonomously():
+    # AgentResponse.confidence is Optional; guardrails.py has no precedent
+    # for a missing confidence (AgentAction.confidence is a required float
+    # there). Treated as a floor failure: an unreported confidence must
+    # never present as autonomous.
+    async def on_run(prompt, request_id):
+        _respond(ledger, request_id, confidence=None)
+        return ""
+
+    p, ledger = _planner(on_run)
+    out = await p.plan(_ctx())
+    assert out.outcome is PlannerOutcome.REFUSE
+    assert out.refusal_reason is RejectionReason.NOT_AUTONOMOUS

@@ -17,7 +17,6 @@ from typing import Awaitable, Callable, Protocol, runtime_checkable
 
 from ..contracts.types import (
     PlannerContext, PlannerOutcome, PlannerResult, Proactive, RejectionReason,
-    UserRequest,
 )
 from ..mcp.ledger import RequestLedger
 
@@ -65,14 +64,25 @@ class HermesPlanner:
     def __init__(self, *, transport: HermesTransport, ledger: RequestLedger,
                  clock, ids, timeout_s: float = 45.0,
                  proactive_timeout_s: float = 90.0,
-                 strict_provenance: bool = False) -> None:
+                 strict_provenance: bool = False,
+                 confidence_autonomous: float = 0.85,
+                 confidence_confirm: float = 0.60) -> None:
         self._transport = transport
         self._ledger = ledger
+        # Forward plumbing: not read yet. A later task (audit_id / timestamped
+        # ledger correlation) is expected to use this; kept as a constructor
+        # dependency now rather than added as a breaking change later.
         self._clock = clock
         self._ids = ids
         self._timeout_s = timeout_s
         self._proactive_timeout_s = proactive_timeout_s
         self._strict = strict_provenance
+        # Mirrors agent/guardrails.py ConfidenceGateGuardrails' two
+        # thresholds exactly (defaults match GuardrailsConfig). Task 4 wires
+        # these from config; here they're plain constructor kwargs so the
+        # gate is unit-testable without config plumbing.
+        self._confidence_autonomous = confidence_autonomous
+        self._confidence_confirm = confidence_confirm
 
     def build_prompt(self, ctx: PlannerContext) -> str:
         text = getattr(ctx.trigger, "text", None) or getattr(
@@ -100,6 +110,44 @@ class HermesPlanner:
 
         if response is None:
             return self._no_response(ctx)
+
+        # NO_MEMORY mirrors agent/guardrails.py's ConfidenceGateGuardrails
+        # short-circuit exactly (checked BEFORE the confidence gate there,
+        # and before rate-limiting): it is always a REFUSE with
+        # NO_SUPPORTING_MEMORY and the same canned message, never an
+        # autonomous RETURN. It cannot live in _OUTCOME_BY_KIND because
+        # REFUSE needs refusal_reason set, which the dict has no slot for.
+        if response.kind == "no_memory":
+            return PlannerResult(
+                request_id=ctx.request_id,
+                retrieval_trace_id=self._ids.new(),
+                outcome=PlannerOutcome.REFUSE,
+                refusal_reason=RejectionReason.NO_SUPPORTING_MEMORY,
+                refusal_message="No relevant memory found.",
+            )
+
+        if response.kind == "answer":
+            outcome, refusal_reason, refusal_message = self._gate_confidence(
+                response.confidence)
+            if outcome is PlannerOutcome.REFUSE:
+                # Mirrors planner.py:602-603 — a REFUSE carries no answer and
+                # no confidence, only the refusal reason/message.
+                return PlannerResult(
+                    request_id=ctx.request_id,
+                    retrieval_trace_id=self._ids.new(),
+                    outcome=outcome,
+                    refusal_reason=refusal_reason,
+                    refusal_message=refusal_message,
+                )
+            return PlannerResult(
+                request_id=ctx.request_id,
+                retrieval_trace_id=self._ids.new(),
+                outcome=outcome,
+                answer=response.text or None,
+                confidence=response.confidence,
+                atom_ids=response.atom_ids,
+            )
+
         return PlannerResult(
             request_id=ctx.request_id,
             retrieval_trace_id=self._ids.new(),
@@ -111,6 +159,35 @@ class HermesPlanner:
             memory_atom_id=response.memory_atom_id,
             reminder_id=response.reminder_id,
         )
+
+    def _gate_confidence(
+        self, confidence: float | None
+    ) -> tuple[PlannerOutcome, RejectionReason | None, str | None]:
+        """Mirrors ConfidenceGateGuardrails.decide's confidence tiers exactly
+        (agent/guardrails.py): >= autonomous -> RETURN; >= confirm ->
+        RETURN_WITH_UNCERTAINTY; below confirm -> REFUSE/NOT_AUTONOMOUS with
+        guardrails' own message text.
+
+        guardrails.py's gate is reached only after its NO_MEMORY
+        short-circuit (handled separately above, before this is called) and
+        its rate-limit check (out of scope for Phase 2 — HermesPlanner has no
+        equivalent yet). It does NOT check atom_ids; the "must cite at least
+        one atom" rule (NO_ATOM_CITED) lives in validator.py, a different
+        module this gate does not reproduce.
+
+        `confidence=None` has no guardrails.py precedent (AgentAction.confidence
+        there is a required float) — AgentResponse.confidence is Optional, so
+        an agent can omit it. Treated as a floor failure (REFUSE) rather than
+        RETURN: the whole point of this gate is that an unverified confidence
+        must never present as autonomous, and "no confidence reported" is the
+        least verified case there is.
+        """
+        if confidence is not None and confidence >= self._confidence_autonomous:
+            return PlannerOutcome.RETURN, None, None
+        if confidence is not None and confidence >= self._confidence_confirm:
+            return PlannerOutcome.RETURN_WITH_UNCERTAINTY, None, None
+        return (PlannerOutcome.REFUSE, RejectionReason.NOT_AUTONOMOUS,
+                "Confidence too low to answer.")
 
     def _no_response(self, ctx: PlannerContext) -> PlannerResult:
         """The agent exited without calling agent.respond.
@@ -138,9 +215,10 @@ class HermesPlanner:
         )
 
 
+# "answer" and "no_memory" are handled explicitly in plan() (confidence gate,
+# and the fixed REFUSE/NO_SUPPORTING_MEMORY mapping, respectively) and are
+# intentionally absent here.
 _OUTCOME_BY_KIND = {
-    "answer": PlannerOutcome.RETURN,
-    "no_memory": PlannerOutcome.RETURN,
     "issue_command": PlannerOutcome.ISSUE_COMMAND,
     "create_memory": PlannerOutcome.CREATE_MEMORY,
     "create_reminder": PlannerOutcome.CREATE_REMINDER,

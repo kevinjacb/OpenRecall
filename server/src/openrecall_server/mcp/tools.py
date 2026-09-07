@@ -218,9 +218,19 @@ def build_registry(*, retriever, atom_store, session_index, speaker_registry,
         if uncited:
             raise ValueError(
                 f"uncited atoms (not retrieved by this request): {uncited}")
+        text = args.get("text") or ""
+        # Mirrors validator.py's NO_MEMORY handling: a no_memory result is
+        # always surfaced with a fixed refusal message, never the agent's own
+        # prose (the in-process path never lets action.text reach the user
+        # for a REFUSE outcome). Refusing here — rather than silently
+        # discarding the text — makes a chatty agent's mistake visible to it
+        # as a tool error instead of a silently-dropped write.
+        if kind == "no_memory" and text:
+            raise ValueError(
+                "no_memory must not carry free-form text; leave text empty")
         ledger.record_response(request_id, AgentResponse(
             kind=kind,
-            text=args.get("text") or "",
+            text=text,
             atom_ids=atom_ids,
             confidence=args.get("confidence"),
             command_id=args.get("command_id"),

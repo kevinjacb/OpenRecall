@@ -212,12 +212,32 @@ async def test_agent_respond_rejects_uncited_atoms(mcp_env):
 async def test_agent_respond_is_once_per_request(mcp_env):
     client, ledger = mcp_env
     ledger.open("r1", session_id="s1", trigger_kind="user_request")
-    args = {"request_id": "r1", "kind": "no_memory", "text": "nothing found",
+    # text="" — a no_memory response with free-form text is rejected on its
+    # own terms (see test_agent_respond_rejects_no_memory_with_free_text);
+    # this test isolates the once-per-request property instead.
+    args = {"request_id": "r1", "kind": "no_memory", "text": "",
             "atom_ids": [], "confidence": 0.5}
     first = await _call(client, "agent.respond", args)
     assert (await first.json())["result"]["isError"] is False
     second = await _call(client, "agent.respond", args)
     assert (await second.json())["result"]["isError"] is True
+
+
+async def test_agent_respond_rejects_no_memory_with_free_text(mcp_env):
+    # Mirrors validator.py's NO_MEMORY handling: no_memory is always
+    # surfaced with a fixed refusal message, never the agent's own prose. A
+    # chatty agent attaching text to a no_memory result must be refused at
+    # the tool boundary, not silently accepted and then dropped downstream.
+    client, ledger = mcp_env
+    ledger.open("r1", session_id="s1", trigger_kind="user_request")
+    r = await _call(client, "agent.respond", {
+        "request_id": "r1", "kind": "no_memory",
+        "text": "I looked but found nothing, sorry!",
+        "atom_ids": [], "confidence": 0.5,
+    })
+    body = (await r.json())["result"]
+    assert body["isError"] is True
+    assert ledger.response("r1") is None
 
 
 async def test_agent_respond_requires_an_open_request_id(mcp_env):
