@@ -397,3 +397,16 @@ def test_hermes_defaults():
     assert cfg.hermes.timeout_s == 45.0
     assert cfg.hermes.proactive_timeout_s == 90.0
     assert cfg.hermes.strict_provenance is False
+
+
+def test_agent_shadow_reads_env_true():
+    cfg = load_agent_config({"OPENRECALL_AGENT_SHADOW": "true"})
+    assert cfg.backend.shadow is True
+
+
+def test_hermes_timeouts_must_be_positive():
+    import pytest
+    with pytest.raises(ValueError):
+        load_agent_config({"OPENRECALL_HERMES_TIMEOUT_S": "0"})
+    with pytest.raises(ValueError):
+        load_agent_config({"OPENRECALL_HERMES_PROACTIVE_TIMEOUT_S": "-1"})

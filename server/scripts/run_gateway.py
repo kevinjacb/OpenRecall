@@ -418,12 +418,21 @@ def main() -> None:
         recent_transcript=recent_transcript,
     )
 
-    # P3 proactive engine: the same Planner serves both inbound user
-    # requests (HTTP /agent) and proactive triggers fired by the
-    # extraction worker. The engine never blocks the worker loop —
+    # P3 proactive engine. The engine never blocks the worker loop —
     # 2s timeout, every drop counted. The placeholder ws_sender is
     # replaced on every WebSocket connect in serve() via
     # ProactiveTriggerEngine.set_ws_sender.
+    #
+    # Deliberately wired to `base_planner`, NOT the backend-selected
+    # `planner` constructed below (§5.2 [agent] backend) — and this is
+    # intentional, not an ordering accident. `[agent] backend` selects the
+    # HTTP /agent path only. Proactive intentionally does not follow it
+    # until the §5.5 queue/triage redesign ships (a real transport is not
+    # safe to drive from an unattended background trigger yet). Do not
+    # "fix" this by hoisting the backend-selection block above this point
+    # and passing `planner` here — that would route proactive traffic to
+    # an out-of-process agent the moment Phase 3 lands a transport, which
+    # is exactly what §5.5 forbids.
     from openrecall_server.agent.proactive import ProactiveTriggerEngine, plan_timeout_from_env
 
     class _PlaceholderWsSender:
@@ -547,7 +556,9 @@ def main() -> None:
     print(f"hermes bearer token (for MCP clients): {hermes_token} "
           "(tools/list only until Phase 2 — every tools/call returns isError)")
 
-    # Which reasoning layer serves POST /agent and the proactive path.
+    # Which reasoning layer serves POST /agent — the HTTP path only. The
+    # proactive path (ProactiveTriggerEngine, constructed above) does NOT
+    # follow this switch; see the comment at its construction site.
     # "planner" (the default) is the pre-Hermes behaviour and the rollback.
     _backend = agent_config.backend.backend
     if _backend == "planner":
