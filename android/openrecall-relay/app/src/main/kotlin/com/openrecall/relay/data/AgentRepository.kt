@@ -62,7 +62,15 @@ open class AgentRepository(private val apiProvider: suspend () -> AgentApi) {
                 text = dto.answer.orEmpty(),
                 atoms = dto.atoms.map { it.toChip() },
                 confidence = dto.confidence ?: 0.0,
-                confidenceBand = dto.confidence_band ?: "low",
+                // A missing band means the server never scored/verified this
+                // answer at all (e.g. HermesPlanner's no-response and
+                // unknown-kind paths carry confidence_band="unverified" but
+                // an "answer"-kind RETURN_WITH_UNCERTAINTY carries a raw
+                // confidence with no discrete band). Defaulting that to
+                // "low" would assert a specific (and possibly wrong) band
+                // for an answer we know nothing about; "unverified" says
+                // exactly what we know, which is nothing.
+                confidenceBand = dto.confidence_band ?: "unverified",
                 outcome = if (dto.outcome == "return") AgentOutcomeKind.RETURN
                           else AgentOutcomeKind.RETURN_WITH_UNCERTAINTY,
                 trace = TraceContext(

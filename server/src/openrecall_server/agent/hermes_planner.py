@@ -93,8 +93,15 @@ class HermesPlanner:
         proactive = isinstance(ctx.trigger, Proactive)
         trigger_kind = "proactive" if proactive else "user_request"
         timeout_s = self._proactive_timeout_s if proactive else self._timeout_s
-        # The ledger entry is what re-imposes the proactive ISSUE_COMMAND
-        # prohibition (planner.py:231) across a process boundary.
+        # The ledger entry RECORDS trigger_kind so a proactive run is
+        # distinguishable from a user_request one across a process boundary
+        # (RequestLedger.may_issue_command reads it) — it does not yet
+        # ENFORCE anything: may_issue_command has zero callers in src/, and
+        # issue_command is not an accepted agent.respond kind (RESPONSE_KINDS
+        # in mcp/tools.py). The proactive ISSUE_COMMAND prohibition
+        # (planner.py:231) becomes live across this boundary only when
+        # Phase 4 re-admits issue_command as a response kind and wires a
+        # caller to this check.
         self._ledger.open(ctx.request_id, session_id=ctx.session_id,
                           trigger_kind=trigger_kind,
                           ttl_s=int(timeout_s) + 30)
@@ -203,7 +210,9 @@ class HermesPlanner:
 
         Nothing passed the citation gate, so there is no grounded answer. Under
         strict provenance that is a refusal; otherwise it is surfaced as
-        explicitly unverified so the UI renders it without citation chips.
+        explicitly unverified (confidence_band="unverified") — a value the UI
+        must special-case rather than a "low"/"medium"/"high" score, since
+        there is no confidence to report at all.
         """
         log.warning("hermes_unstructured_response request_id=%s", ctx.request_id)
         if self._strict:

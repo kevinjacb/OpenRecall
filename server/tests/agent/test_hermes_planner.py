@@ -7,6 +7,7 @@ from openrecall_server.agent.hermes_planner import FakeTransport, HermesPlanner
 from openrecall_server.contracts.types import (
     PlannerContext, PlannerOutcome, Proactive, RejectionReason, UserRequest,
 )
+from openrecall_server.http.routes.mapper import map_planner_result_to_dto
 from openrecall_server.mcp.ledger import AgentResponse, RequestLedger
 
 
@@ -252,6 +253,59 @@ async def test_confidence_just_below_confirm_refuses():
     assert out.refusal_reason is RejectionReason.NOT_AUTONOMOUS
     assert out.answer is None
     assert out.confidence is None
+
+
+# ---------------------------------------------------------------------------
+# C1 regression seam: http/routes/agent.py has no try/except around
+# map_planner_result_to_dto, so ANY PlannerResult HermesPlanner can produce
+# must survive that mapper, or a real transport turns into an aiohttp 500 the
+# first time it hits that exit path. Two of the four exit paths below set
+# confidence_band="unverified", which used to be unmappable (dto.py's
+# Literal only accepted "low"/"medium"/"high") — this is the missing seam
+# test that let that ship.
+# ---------------------------------------------------------------------------
+
+async def test_every_exit_path_survives_the_dto_mapper():
+    async def never_calls_agent_respond(prompt, request_id):
+        return "chatty text, never calls agent.respond"
+
+    async def responds_no_memory(prompt, request_id):
+        _respond(ledger, request_id, kind="no_memory", text="", atom_ids=(),
+                 confidence=0.9)
+        return ""
+
+    async def responds_autonomously(prompt, request_id):
+        _respond(ledger, request_id, confidence=0.95)
+        return ""
+
+    async def responds_under_the_confirm_floor(prompt, request_id):
+        _respond(ledger, request_id, confidence=0.1)
+        return ""
+
+    async def responds_with_an_unadmitted_kind(prompt, request_id):
+        # agent.respond's own boundary (mcp/tools.py RESPONSE_KINDS) would
+        # never let this kind through — this simulates it reaching the
+        # planner anyway (e.g. a future ledger writer that skips the tool),
+        # which is exactly the case hermes_planner.py's log.error branch
+        # defends against.
+        _respond(ledger, request_id, kind="some_future_kind")
+        return ""
+
+    cases = [
+        ("no_response_non_strict", never_calls_agent_respond, {}),
+        ("no_response_strict", never_calls_agent_respond,
+         {"strict_provenance": True}),
+        ("no_memory", responds_no_memory, {}),
+        ("answer_autonomous", responds_autonomously, {}),
+        ("answer_refused_below_floor", responds_under_the_confirm_floor, {}),
+        ("unadmitted_kind", responds_with_an_unadmitted_kind, {}),
+    ]
+
+    for name, on_run, kw in cases:
+        p, ledger = _planner(on_run, **kw)
+        out = await p.plan(_ctx())
+        dto = map_planner_result_to_dto(out)   # must not raise ValidationError
+        assert dto.request_id == "req-1", name
 
 
 async def test_confidence_none_refuses_rather_than_returning_autonomously():

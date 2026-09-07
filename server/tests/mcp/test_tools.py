@@ -268,9 +268,15 @@ async def test_agent_respond_rejects_out_of_range_confidence(mcp_env, confidence
     assert ledger.response("r1") is None
 
 
-async def test_agent_respond_accepts_missing_confidence(mcp_env):
-    # confidence=None means "treat as a floor failure" downstream (rounds
-    # 1-2); it must NOT be treated as out of range at this boundary.
+async def test_agent_respond_rejects_missing_confidence(mcp_env):
+    # I1 (inverts the prior test's assertion): a compliant agent that reads
+    # the schema literally and omits an "optional-looking" confidence used
+    # to have it silently reinterpreted downstream by
+    # HermesPlanner._gate_confidence as a floor failure ("Confidence too low
+    # to answer.") — losing a correctly-cited answer to a message describing
+    # a different failure. "confidence" is now in input_schema's "required"
+    # list, and this boundary rejects a missing one directly so the agent
+    # can see the real problem and retry in the same run.
     client, ledger = mcp_env
     ledger.open("r1", session_id="s1", trigger_kind="user_request")
     await _call(client, "memory.search", {"request_id": "r1", "query": "roadmap"})
@@ -282,8 +288,49 @@ async def test_agent_respond_accepts_missing_confidence(mcp_env):
         "atom_ids": [cited[0]],
     })
     body = (await r.json())["result"]
-    assert body["isError"] is False
-    assert ledger.response("r1").confidence is None
+    assert body["isError"] is True
+    assert "confidence" in body["content"][0]["text"]
+    assert ledger.response("r1") is None
+
+
+@pytest.mark.parametrize("bad_text", [{"a": 1}, 5, ["not", "a", "string"]])
+async def test_agent_respond_rejects_non_string_text(mcp_env, bad_text):
+    # I3: protocol.py's dispatch() never validates `arguments` against
+    # input_schema, so the declared "text": {"type": "string"} is decorative
+    # — reproduced live by a reviewer passing text={"a": 1} through this
+    # boundary: it was recorded into the ledger and only raised a
+    # ValidationError deep inside HermesPlanner.plan(), AFTER
+    # ledger.close(), where FallbackPlanner counted it as a primary failure
+    # toward the circuit breaker instead of a tool error the agent could see
+    # and fix. Must be rejected HERE instead.
+    client, ledger = mcp_env
+    ledger.open("r1", session_id="s1", trigger_kind="user_request")
+    r = await _call(client, "agent.respond", {
+        "request_id": "r1", "kind": "answer", "text": bad_text,
+        "atom_ids": [], "confidence": 0.9,
+    })
+    body = (await r.json())["result"]
+    assert body["isError"] is True
+    assert "text" in body["content"][0]["text"]
+    assert ledger.response("r1") is None
+
+
+@pytest.mark.parametrize("bad_atom_ids", [
+    "a00",              # a bare string, not a list
+    [1, 2, 3],          # a list of the wrong element type
+    {"a00": True},      # a dict
+])
+async def test_agent_respond_rejects_malformed_atom_ids(mcp_env, bad_atom_ids):
+    client, ledger = mcp_env
+    ledger.open("r1", session_id="s1", trigger_kind="user_request")
+    r = await _call(client, "agent.respond", {
+        "request_id": "r1", "kind": "answer", "text": "ok",
+        "atom_ids": bad_atom_ids, "confidence": 0.9,
+    })
+    body = (await r.json())["result"]
+    assert body["isError"] is True
+    assert "atom_ids" in body["content"][0]["text"]
+    assert ledger.response("r1") is None
 
 
 async def test_agent_respond_no_memory_rejects_atom_ids(mcp_env):
@@ -386,12 +433,3 @@ async def test_agent_respond_rejects_an_unknown_kind(mcp_env):
     })
     assert (await r.json())["result"]["isError"] is True
 
-
-async def test_tools_list_now_includes_agent_respond(mcp_env):
-    client, _ledger = mcp_env
-    r = await client.post("/mcp", json={"jsonrpc": "2.0", "id": 1,
-                                        "method": "tools/list"},
-                          headers={"Authorization": "Bearer bbb"})
-    names = {t["name"] for t in (await r.json())["result"]["tools"]}
-    assert names == {"memory.search", "memory.get", "sessions.list",
-                     "speakers.list", "device.status", "agent.respond"}

@@ -554,7 +554,9 @@ def main() -> None:
     # handed to the logging system reaches every configured handler, including
     # files and any aggregator an operator has attached.
     print(f"hermes bearer token (for MCP clients): {hermes_token} "
-          "(tools/list only until Phase 2 — every tools/call returns isError)")
+          "(all six tools callable once a request is open; but this process "
+          "opens none — SystemExit fires below for every [agent] backend "
+          "other than \"planner\", so nothing here calls agent.respond)")
 
     # Which reasoning layer serves POST /agent — the HTTP path only. The
     # proactive path (ProactiveTriggerEngine, constructed above) does NOT
@@ -564,10 +566,6 @@ def main() -> None:
     if _backend == "planner":
         planner = base_planner
     else:
-        from openrecall_server.agent.fallback_planner import (
-            CircuitBreaker, FallbackPlanner,
-        )
-        from openrecall_server.agent.hermes_planner import HermesPlanner
         # Phase 2 ships no real transport. Selecting a hermes backend without
         # one is a configuration error, not a silent downgrade.
         raise SystemExit(

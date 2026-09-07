@@ -8,15 +8,17 @@ Deliberately absent: raw audio, speaker embeddings, settings writes,
 provisioning, and any delete. A capability Hermes needs is added here with a
 guard, never by handing it the relay token.
 
-**INERT UNTIL PHASE 2.** Nothing in `src/` or `scripts/` calls
-`RequestLedger.open()`, and the JSON-RPC surface exposes no method that opens
-one. A real MCP client can therefore `initialize`, `ping` and `tools/list`, but
-every `tools/call` returns `isError: true — request not open`, permanently,
-until Phase 2 wires a request-opening path (`agent.respond`, or an equivalent
-that opens a ledger entry for the turn). The tool list advertising five tools
-is not evidence that any of them can be executed today. This is by design —
-the ledger is what makes provenance enforceable, so a call with no scope is
-refused rather than served unscoped — but read the list with that in mind.
+**STILL UNREACHABLE IN PRACTICE.** Phase 2 shipped the request-opening path:
+`agent/hermes_planner.py`'s `HermesPlanner.plan()` calls `RequestLedger.open()`
+for every turn, and the six tools registered below (including `agent.respond`)
+are real and reachable through that ledger scope. But no real Hermes transport
+ships — `scripts/run_gateway.py` raises `SystemExit` for every `[agent]
+backend` other than `"planner"` — so no process that boots today ever
+constructs a `HermesPlanner` or opens a ledger entry. The operational
+conclusion of the original note still holds: read a `tools/list` reply against
+a running server with that in mind, because no reachable path opens a ledger
+entry, and every `tools/call` on it will refuse with `isError: true — request
+not open` until something does.
 """
 from __future__ import annotations
 
@@ -214,18 +216,47 @@ def build_registry(*, retriever, atom_store, session_index, speaker_registry,
             raise ValueError(
                 f"unknown kind: {kind!r}; expected one of {sorted(RESPONSE_KINDS)}")
         confidence = args.get("confidence")
-        # input_schema declares "minimum": 0, "maximum": 1, but protocol.py's
-        # dispatch() never validates `arguments` against input_schema — those
-        # bounds are decorative. Without this check an out-of-range
-        # confidence (e.g. 999.0) sails through and defeats
+        # "confidence" is now in input_schema's "required" list (below): a
+        # compliant agent that omits it must be rejected HERE, where it can
+        # retry in the same run — not silently reinterpreted downstream by
+        # HermesPlanner._gate_confidence as a floor failure under the message
+        # "Confidence too low to answer.", which describes a different
+        # failure (a low score it DID report) and gives the agent nothing to
+        # act on. Refusing at the boundary the agent can act on is this
+        # branch's established principle (see the confidence-range check
+        # just below, and the provenance/no_memory checks further down).
+        if confidence is None:
+            raise ValueError(
+                "confidence is required: report your actual confidence in "
+                "[0, 1] rather than omitting it")
+        # input_schema also declares "minimum": 0, "maximum": 1, but
+        # protocol.py's dispatch() never validates `arguments` against
+        # input_schema — those bounds are decorative. Without this check an
+        # out-of-range confidence (e.g. 999.0) sails through and defeats
         # HermesPlanner._gate_confidence's autonomous-answer floor. Mirrors
         # validator.py's ANSWER confidence-bounds rule
-        # (CONFIDENCE_OUT_OF_RANGE). confidence=None is left untouched — it
-        # means "treat as a floor failure" (rounds 1-2), not "out of range".
-        if confidence is not None and not (0.0 <= confidence <= 1.0):
+        # (CONFIDENCE_OUT_OF_RANGE).
+        if not (0.0 <= confidence <= 1.0):
             raise ValueError(
                 f"confidence out of range: {confidence!r}; expected [0, 1]")
-        atom_ids = tuple(args.get("atom_ids") or ())
+        # protocol.py's dispatch() never validates `arguments` against
+        # input_schema (see above) — nothing upstream guarantees "text" is a
+        # string or "atom_ids" a list of strings. A malformed value (e.g.
+        # text={"a": 1}) would otherwise be recorded into the ledger here and
+        # only raise deep inside HermesPlanner.plan() — AFTER ledger.close(),
+        # where FallbackPlanner counts it as a primary failure toward the
+        # circuit breaker instead of a tool error the agent could see and fix.
+        text_raw = args.get("text")
+        if text_raw is not None and not isinstance(text_raw, str):
+            raise ValueError(
+                f"text must be a string, got {type(text_raw).__name__}")
+        atom_ids_raw = args.get("atom_ids")
+        if atom_ids_raw is not None and (
+            not isinstance(atom_ids_raw, (list, tuple))
+            or not all(isinstance(a, str) for a in atom_ids_raw)
+        ):
+            raise ValueError("atom_ids must be a list of strings")
+        atom_ids = tuple(atom_ids_raw or ())
         # The provenance gate: an agent may cite only what THIS request
         # retrieved. Without it, "cite your sources" is a prompt instruction
         # and nothing more.
@@ -233,7 +264,7 @@ def build_registry(*, retriever, atom_store, session_index, speaker_registry,
         if uncited:
             raise ValueError(
                 f"uncited atoms (not retrieved by this request): {uncited}")
-        text = args.get("text") or ""
+        text = text_raw or ""
         # Mirrors validator.py's NO_MEMORY handling: a no_memory result is
         # always surfaced with a fixed refusal message, never the agent's own
         # prose (the in-process path never lets action.text reach the user
@@ -285,7 +316,7 @@ def build_registry(*, retriever, atom_store, session_index, speaker_registry,
                 "memory_atom_id": {"type": "string"},
                 "reminder_id": {"type": "string"},
             },
-            "required": ["request_id", "kind"],
+            "required": ["request_id", "kind", "confidence"],
         },
         handler=agent_respond,
     ))

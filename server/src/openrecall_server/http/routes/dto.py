@@ -85,7 +85,11 @@ class AgentResponseDTO(BaseModel):
     answer: str | None = None
     atoms: list[AtomChipDTO] = Field(default_factory=list)
     confidence: float | None = None
-    confidence_band: Literal["low", "medium", "high"] | None = None
+    # "unverified" is HermesPlanner's own value (agent/hermes_planner.py) for
+    # an outcome that reached RETURN_WITH_UNCERTAINTY with no confidence
+    # score at all (no agent.respond call, or an unexpected response kind) —
+    # distinct from "low", which implies a scored-but-weak answer.
+    confidence_band: Literal["low", "medium", "high", "unverified"] | None = None
     refusal_reason: str | None = None
     payload: dict | None = None
     command_id: str | None = None

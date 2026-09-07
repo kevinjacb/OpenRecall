@@ -160,15 +160,19 @@
 #   original behaviour with no code change.
 # backend = "planner"
 # OPENRECALL_AGENT_SHADOW — run both and serve the planner's result, logging a diff.
+# Phase 3: not yet read.
 # shadow = false
 
 [hermes]
 # OPENRECALL_HERMES_TIMEOUT_S — per-call budget for a user request.
+# Phase 3: not yet read.
 # timeout_s = 45
 # OPENRECALL_HERMES_PROACTIVE_TIMEOUT_S — budget for an autonomous run.
+# Phase 3: not yet read.
 # proactive_timeout_s = 90
 # OPENRECALL_HERMES_STRICT_PROVENANCE — refuse instead of returning an
 #   unverified answer when the agent never called agent.respond.
+# Phase 3: not yet read.
 # strict_provenance = false
 
 # ---- Escape hatch ----
