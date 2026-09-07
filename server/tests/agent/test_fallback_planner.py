@@ -142,6 +142,53 @@ async def test_half_open_probe_failure_reopens_breaker_immediately():
     )
 
 
+async def test_cancelled_probe_propagates_without_falling_back():
+    clock = FakeClock(datetime(2026, 9, 7, tzinfo=timezone.utc))
+    primary = Stub(raises=RuntimeError("boom"))
+    fallback = Stub("fallback")
+    breaker = CircuitBreaker(clock=clock, reset_after_s=120.0)
+    p = FallbackPlanner(primary=primary, fallback=fallback, breaker=breaker)
+    for _ in range(3):
+        await p.plan(_ctx())
+    clock.advance(121)
+
+    fallback_calls_before = fallback.calls
+    primary.raises = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await p.plan(_ctx())          # the half-open probe itself is cancelled
+    assert fallback.calls == fallback_calls_before, "a cancelled probe must not run the fallback"
+    assert breaker._half_open is False, (
+        "a probe that never resolved must not leave the flag stuck set"
+    )
+
+
+async def test_cancelled_probe_does_not_prime_the_breaker_to_reopen_on_one_failure():
+    clock = FakeClock(datetime(2026, 9, 7, tzinfo=timezone.utc))
+    primary = Stub(raises=RuntimeError("boom"))
+    fallback = Stub("fallback")
+    breaker = CircuitBreaker(clock=clock, reset_after_s=120.0)
+    p = FallbackPlanner(primary=primary, fallback=fallback, breaker=breaker)
+    for _ in range(3):
+        await p.plan(_ctx())
+    clock.advance(121)
+
+    primary.raises = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await p.plan(_ctx())
+    assert breaker.is_open is False, "cancellation itself must not reopen the breaker"
+
+    # Back to ordinary closed-state failures. If the half-open flag were
+    # left stuck True, this single failure would reopen the breaker
+    # immediately instead of requiring three.
+    primary.raises = RuntimeError("boom again")
+    await p.plan(_ctx())
+    assert breaker.is_open is False, "one failure after a cancelled probe must not reopen it"
+    await p.plan(_ctx())
+    assert breaker.is_open is False
+    await p.plan(_ctx())
+    assert breaker.is_open is True, "it must still take three consecutive failures to reopen"
+
+
 def test_fallback_planner_satisfies_plannerlike():
     from openrecall_server.agent.planner import PlannerLike
     p = FallbackPlanner(primary=Stub(), fallback=Stub(),

@@ -67,6 +67,22 @@ class CircuitBreaker:
         if self._failures >= self._threshold:
             self._opened_at = self._clock.now()
 
+    def abandon_probe(self) -> None:
+        """A half-open probe never got a definitive outcome — e.g. the
+        primary call was cancelled, so neither record_success() nor
+        record_failure() ran. Idempotent: safe to call whether or not a
+        probe was actually outstanding, and whether or not one of those
+        two already cleared the flag.
+
+        Deliberately does NOT touch `_failures` / `_opened_at`: a
+        cancelled probe is not evidence the primary is up or down, so it
+        must leave the breaker exactly as it was before the probe was
+        granted (closed, with the failure count already zeroed by
+        `allow()`) — never stuck primed to reopen on a single subsequent
+        ordinary failure.
+        """
+        self._half_open = False
+
 
 class FallbackPlanner:
     """Implements PlannerLike. Tries `primary`; on failure serves `fallback`."""
@@ -84,16 +100,27 @@ class FallbackPlanner:
     async def plan(self, ctx: PlannerContext) -> PlannerResult:
         if self._breaker.allow():
             try:
-                result = await self._primary.plan(ctx)
-            except (asyncio.TimeoutError, Exception) as exc:   # noqa: B014
-                self._breaker.record_failure()
-                log.warning(
-                    "primary_planner_failed request_id=%s breaker_open=%s",
-                    ctx.request_id, self._breaker.is_open, exc_info=exc,
-                )
-            else:
-                self._breaker.record_success()
-                return result
+                try:
+                    result = await self._primary.plan(ctx)
+                except (asyncio.TimeoutError, Exception) as exc:   # noqa: B014
+                    self._breaker.record_failure()
+                    log.warning(
+                        "primary_planner_failed request_id=%s breaker_open=%s",
+                        ctx.request_id, self._breaker.is_open, exc_info=exc,
+                    )
+                else:
+                    self._breaker.record_success()
+                    return result
+            finally:
+                # A half-open probe that was granted but never reached
+                # record_success()/record_failure() above — e.g. cancelled
+                # by a client disconnect mid-call — must not leave the
+                # breaker stuck thinking a probe is still outstanding.
+                # CancelledError is a BaseException (not Exception), so it
+                # is deliberately NOT caught by the except clause above; it
+                # propagates through this finally and out of plan()
+                # untouched — no fallback call, per the broad-except rule.
+                self._breaker.abandon_probe()
         else:
             log.info("primary_planner_skipped_breaker_open request_id=%s",
                      ctx.request_id)
