@@ -362,3 +362,38 @@ def test_command_config_bad_values_raise():
         load_agent_config({"OPENRECALL_COMMAND_CONFIDENCE_THRESHOLD": "nope"})
     with pytest.raises(ValueError, match="OPENRECALL_COMMAND_MAX_INFLIGHT"):
         load_agent_config({"OPENRECALL_COMMAND_MAX_INFLIGHT": "x"})
+
+
+def test_agent_backend_defaults_to_planner():
+    cfg = load_agent_config({})
+    assert cfg.backend.backend == "planner"
+    assert cfg.backend.shadow is False
+
+
+def test_agent_backend_reads_env():
+    cfg = load_agent_config({"OPENRECALL_AGENT_BACKEND": "hermes_with_fallback"})
+    assert cfg.backend.backend == "hermes_with_fallback"
+
+
+def test_agent_backend_rejects_an_unknown_value():
+    import pytest
+    with pytest.raises(ValueError):
+        load_agent_config({"OPENRECALL_AGENT_BACKEND": "magic"})
+
+
+def test_hermes_timeouts_and_strict_provenance_read_env():
+    cfg = load_agent_config({
+        "OPENRECALL_HERMES_TIMEOUT_S": "12.5",
+        "OPENRECALL_HERMES_PROACTIVE_TIMEOUT_S": "60",
+        "OPENRECALL_HERMES_STRICT_PROVENANCE": "true",
+    })
+    assert cfg.hermes.timeout_s == 12.5
+    assert cfg.hermes.proactive_timeout_s == 60.0
+    assert cfg.hermes.strict_provenance is True
+
+
+def test_hermes_defaults():
+    cfg = load_agent_config({})
+    assert cfg.hermes.timeout_s == 45.0
+    assert cfg.hermes.proactive_timeout_s == 90.0
+    assert cfg.hermes.strict_provenance is False

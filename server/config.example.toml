@@ -153,6 +153,24 @@
 # OPENRECALL_LOG_LEVEL — "INFO" (default), "DEBUG", "WARNING".
 # level = "INFO"
 
+# ---- Reasoning backend (Phase 2) ----
+[agent]
+# OPENRECALL_AGENT_BACKEND — "planner" (default, pre-Hermes), "hermes", or
+#   "hermes_with_fallback". This is the rollback switch: "planner" restores the
+#   original behaviour with no code change.
+# backend = "planner"
+# OPENRECALL_AGENT_SHADOW — run both and serve the planner's result, logging a diff.
+# shadow = false
+
+[hermes]
+# OPENRECALL_HERMES_TIMEOUT_S — per-call budget for a user request.
+# timeout_s = 45
+# OPENRECALL_HERMES_PROACTIVE_TIMEOUT_S — budget for an autonomous run.
+# proactive_timeout_s = 90
+# OPENRECALL_HERMES_STRICT_PROVENANCE — refuse instead of returning an
+#   unverified answer when the agent never called agent.respond.
+# strict_provenance = false
+
 # ---- Escape hatch ----
 # Top-level keys (not in any [section]) are used verbatim as env-var names, for
 # any value that does not fit the OPENRECALL_{SECTION}_{KEY} shape. Example:

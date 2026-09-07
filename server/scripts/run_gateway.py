@@ -373,14 +373,15 @@ def main() -> None:
         logging.info(
             "hop_ms auto=%d (asr_backend=%s)", args.hop_ms, agent_config.asr.backend,
         )
-    planner = Planner(
-        retriever=Retriever(
-            embedder=embedder,
-            index=memory_index,
-            scorer=SimRecencyScorer(),
-            clock=SystemClock(),
-            ids=UuidIdGenerator(),
-        ),
+    retriever = Retriever(
+        embedder=embedder,
+        index=memory_index,
+        scorer=SimRecencyScorer(),
+        clock=SystemClock(),
+        ids=UuidIdGenerator(),
+    )
+    base_planner = Planner(
+        retriever=retriever,
         context_builder=ContextBuilder(),
         llm=agent_llm,
         validator=StrictJSONValidator(),
@@ -438,7 +439,7 @@ def main() -> None:
             raise RuntimeError("no active WebSocket connection")
 
     proactive_engine = ProactiveTriggerEngine(
-        planner=planner,
+        planner=base_planner,
         ws_sender=_PlaceholderWsSender(),
         clock=SystemClock(),
         metrics=metrics,
@@ -533,7 +534,7 @@ def main() -> None:
         str(Path(args.db).with_name("hermes.token")))
     mcp_ledger = RequestLedger(SystemClock())
     mcp_registry = build_mcp_registry(
-        retriever=planner._retriever,
+        retriever=retriever,
         atom_store=atom_store,
         session_index=session_index,
         speaker_registry=speaker_registry,
@@ -545,6 +546,24 @@ def main() -> None:
     # files and any aggregator an operator has attached.
     print(f"hermes bearer token (for MCP clients): {hermes_token} "
           "(tools/list only until Phase 2 — every tools/call returns isError)")
+
+    # Which reasoning layer serves POST /agent and the proactive path.
+    # "planner" (the default) is the pre-Hermes behaviour and the rollback.
+    _backend = agent_config.backend.backend
+    if _backend == "planner":
+        planner = base_planner
+    else:
+        from openrecall_server.agent.fallback_planner import (
+            CircuitBreaker, FallbackPlanner,
+        )
+        from openrecall_server.agent.hermes_planner import HermesPlanner
+        # Phase 2 ships no real transport. Selecting a hermes backend without
+        # one is a configuration error, not a silent downgrade.
+        raise SystemExit(
+            f"{_backend!r} is not available yet: Phase 2 ships no Hermes "
+            f"transport. Set [agent] backend = \"planner\" (or unset "
+            f"OPENRECALL_AGENT_BACKEND) until Phase 3 installs one."
+        )
 
     app = build_app(
         token=token,
@@ -561,7 +580,7 @@ def main() -> None:
         # HTTP port for the WS upgrade — "Expected HTTP 101 response").
         gateway_port=args.port,
         planner=planner,
-        retriever=planner._retriever,
+        retriever=retriever,
         atom_store=atom_store,
         metrics=metrics,
         id_generator=UuidIdGenerator(),

@@ -66,6 +66,20 @@ _ASR_BACKENDS = ("whisper", "parakeet")
 # the streaming dedup, and its filters are tuned for that path).
 _ASR_MODES = ("auto", "utterance", "hop")
 
+# --- reasoning backend (Phase 2) ---------------------------------------------
+# Which reasoning layer serves POST /agent and the proactive path. "planner"
+# (the default) is the pre-Hermes behaviour, so it is the rollback switch: one
+# value restores the original path with no code change. "hermes" and
+# "hermes_with_fallback" select the out-of-process agent; Phase 2 ships no
+# real transport for either, so the gateway refuses to start rather than
+# silently downgrading to the old planner (see scripts/run_gateway.py).
+ENV_AGENT_BACKEND = "OPENRECALL_AGENT_BACKEND"
+ENV_AGENT_SHADOW = "OPENRECALL_AGENT_SHADOW"
+ENV_HERMES_TIMEOUT_S = "OPENRECALL_HERMES_TIMEOUT_S"
+ENV_HERMES_PROACTIVE_TIMEOUT_S = "OPENRECALL_HERMES_PROACTIVE_TIMEOUT_S"
+ENV_HERMES_STRICT_PROVENANCE = "OPENRECALL_HERMES_STRICT_PROVENANCE"
+_AGENT_BACKENDS = ("planner", "hermes", "hermes_with_fallback")
+
 # --- command detector --------------------------------------------------------
 ENV_COMMAND_ENABLED = "OPENRECALL_COMMAND_DETECTOR_ENABLED"
 ENV_COMMAND_REQUIRE_WEARER = "OPENRECALL_COMMAND_REQUIRE_WEARER"
@@ -307,6 +321,35 @@ class CommandDetectorConfig(BaseModel):
     )
 
 
+class BackendConfig(BaseModel):
+    """Which reasoning layer serves POST /agent and the proactive path.
+
+    Defaults to "planner" — the pre-Hermes behaviour — so this is the rollback
+    switch: one value restores the old path with no code change.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    backend: str = "planner"
+    shadow: bool = False
+
+    @model_validator(mode="after")
+    def _validate(self) -> "BackendConfig":
+        if self.backend not in _AGENT_BACKENDS:
+            raise ValueError(
+                f"{ENV_AGENT_BACKEND}={self.backend!r} must be one of "
+                f"{list(_AGENT_BACKENDS)}")
+        return self
+
+
+class HermesConfig(BaseModel):
+    """Timeouts and provenance policy for the out-of-process agent."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    timeout_s: float = Field(default=45.0, gt=0)
+    proactive_timeout_s: float = Field(default=90.0, gt=0)
+    strict_provenance: bool = False
+
+
 class AgentConfig(BaseModel):
     """The full server config — guardrails + whisper noise filtering + ASR
     backend selection + command-detector policy. Future policy (extraction
@@ -317,6 +360,8 @@ class AgentConfig(BaseModel):
     whisper: WhisperConfig = Field(default_factory=WhisperConfig)
     asr: AsrConfig = Field(default_factory=AsrConfig)
     command: CommandDetectorConfig = Field(default_factory=CommandDetectorConfig)
+    backend: BackendConfig = Field(default_factory=BackendConfig)
+    hermes: HermesConfig = Field(default_factory=HermesConfig)
 
 
 # --- env loader --------------------------------------------------------------
@@ -505,9 +550,28 @@ def load_agent_config(env: Mapping[str, str]) -> AgentConfig:
         command_kwargs["phrases"] = _parse_phrase_map(
             ENV_COMMAND_PHRASES, env[ENV_COMMAND_PHRASES]
         )
+    backend_kwargs: dict = {}
+    if ENV_AGENT_BACKEND in env:
+        backend_kwargs["backend"] = env[ENV_AGENT_BACKEND].strip().lower()
+    if ENV_AGENT_SHADOW in env:
+        backend_kwargs["shadow"] = _parse_bool(
+            ENV_AGENT_SHADOW, env[ENV_AGENT_SHADOW])
+
+    hermes_kwargs: dict = {}
+    if ENV_HERMES_TIMEOUT_S in env:
+        hermes_kwargs["timeout_s"] = _parse_float(
+            ENV_HERMES_TIMEOUT_S, env[ENV_HERMES_TIMEOUT_S])
+    if ENV_HERMES_PROACTIVE_TIMEOUT_S in env:
+        hermes_kwargs["proactive_timeout_s"] = _parse_float(
+            ENV_HERMES_PROACTIVE_TIMEOUT_S, env[ENV_HERMES_PROACTIVE_TIMEOUT_S])
+    if ENV_HERMES_STRICT_PROVENANCE in env:
+        hermes_kwargs["strict_provenance"] = _parse_bool(
+            ENV_HERMES_STRICT_PROVENANCE, env[ENV_HERMES_STRICT_PROVENANCE])
     return AgentConfig(
         guardrails=GuardrailsConfig(**guardrails_kwargs),
         whisper=WhisperConfig(**whisper_kwargs),
         asr=AsrConfig(**asr_kwargs),
         command=CommandDetectorConfig(**command_kwargs),
+        backend=BackendConfig(**backend_kwargs),
+        hermes=HermesConfig(**hermes_kwargs),
     )
