@@ -23,10 +23,19 @@ from __future__ import annotations
 from typing import Any
 
 from ..contracts.types import RetrieverContext
-from .ledger import LedgerClosedError, RequestLedger
+from .ledger import (
+    AgentResponse, LedgerClosedError, RequestLedger, ResponseAlreadyRecordedError,
+)
 from .protocol import ToolRegistry, ToolSpec
 
 MAX_LIMIT = 20
+
+# The kinds an agent may claim. Mirrors contracts.types.AgentActionKind; kept as
+# a literal set so a malformed kind is refused at the boundary rather than
+# blowing up when the planner maps it.
+RESPONSE_KINDS = frozenset({
+    "answer", "no_memory", "issue_command", "create_memory", "create_reminder",
+})
 
 _REQUEST_ID_PROP = {
     "request_id": {"type": "string",
@@ -193,6 +202,53 @@ def build_registry(*, retriever, atom_store, session_index, speaker_registry,
         input_schema={"type": "object", "properties": dict(_REQUEST_ID_PROP),
                       "required": ["request_id"]},
         handler=device_status,
+    ))
+
+    async def agent_respond(args: dict[str, Any]) -> dict[str, Any]:
+        request_id = _require_open(ledger, args)
+        kind = args.get("kind")
+        if kind not in RESPONSE_KINDS:
+            raise ValueError(
+                f"unknown kind: {kind!r}; expected one of {sorted(RESPONSE_KINDS)}")
+        atom_ids = tuple(args.get("atom_ids") or ())
+        # The provenance gate: an agent may cite only what THIS request
+        # retrieved. Without it, "cite your sources" is a prompt instruction
+        # and nothing more.
+        uncited = sorted(set(atom_ids) - ledger.cited(request_id))
+        if uncited:
+            raise ValueError(
+                f"uncited atoms (not retrieved by this request): {uncited}")
+        ledger.record_response(request_id, AgentResponse(
+            kind=kind,
+            text=args.get("text") or "",
+            atom_ids=atom_ids,
+            confidence=args.get("confidence"),
+            command_id=args.get("command_id"),
+            memory_atom_id=args.get("memory_atom_id"),
+            reminder_id=args.get("reminder_id"),
+        ))
+        return {"accepted": True, "request_id": request_id}
+
+    reg.register(ToolSpec(
+        name="agent.respond",
+        description=("Deliver your final answer. Call this exactly once, last. "
+                     "You may cite only atom ids returned to you by "
+                     "memory.search or memory.get in this same request."),
+        input_schema={
+            "type": "object",
+            "properties": {
+                **_REQUEST_ID_PROP,
+                "kind": {"type": "string", "enum": sorted(RESPONSE_KINDS)},
+                "text": {"type": "string"},
+                "atom_ids": {"type": "array", "items": {"type": "string"}},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "command_id": {"type": "string"},
+                "memory_atom_id": {"type": "string"},
+                "reminder_id": {"type": "string"},
+            },
+            "required": ["request_id", "kind"],
+        },
+        handler=agent_respond,
     ))
 
     return reg

@@ -29,6 +29,31 @@ class LedgerClosedError(Exception):
     """Raised when a tool call names a request that is closed or expired."""
 
 
+class ResponseAlreadyRecordedError(Exception):
+    """Raised when a request tries to answer twice.
+
+    One request, one answer: a second call would let an agent overwrite a
+    provenance-checked answer with an unchecked one.
+    """
+
+
+@dataclass(frozen=True)
+class AgentResponse:
+    """The structured answer an agent produced for one request.
+
+    This — not the transport's stdout — is what a planner reads to build its
+    result, because only this passed the citation gate.
+    """
+
+    kind: str
+    text: str
+    atom_ids: tuple[str, ...]
+    confidence: float | None
+    command_id: str | None
+    memory_atom_id: str | None
+    reminder_id: str | None
+
+
 @dataclass
 class LedgerEntry:
     request_id: str
@@ -37,6 +62,7 @@ class LedgerEntry:
     opened_at: datetime
     deadline: datetime
     atoms: set[str] = field(default_factory=set)
+    response: AgentResponse | None = None
 
 
 class RequestLedger:
@@ -90,6 +116,22 @@ class RequestLedger:
             if entry is None:
                 raise LedgerClosedError(f"request not open: {request_id}")
             entry.atoms.update(atom_ids)
+
+    def record_response(self, request_id: str,
+                        response: AgentResponse) -> None:
+        with self._lock:
+            entry = self._get_live_locked(request_id)
+            if entry is None:
+                raise LedgerClosedError(f"request not open: {request_id}")
+            if entry.response is not None:
+                raise ResponseAlreadyRecordedError(
+                    f"request already answered: {request_id}")
+            entry.response = response
+
+    def response(self, request_id: str) -> AgentResponse | None:
+        with self._lock:
+            entry = self._get_live_locked(request_id)
+            return entry.response if entry else None
 
     def cited(self, request_id: str) -> frozenset[str]:
         entry = self.get(request_id)

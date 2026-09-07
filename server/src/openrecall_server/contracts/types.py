@@ -169,6 +169,10 @@ class RejectionReason(str, Enum):
     # P3: a Proactive trigger is FORBIDDEN from issuing device commands.
     # Enforced inside Planner.plan before _dispatch_command.
     PROACTIVE_TRIGGER_CANNOT_ISSUE_COMMAND = "proactive_trigger_cannot_issue_command"
+    # Phase 2: the agent exited without calling agent.respond, so there is no
+    # provenance-checked answer to return. Under strict provenance this is a
+    # refusal rather than an unverified answer.
+    PROVENANCE_MISSING = "provenance_missing"
 
 
 class ValidatorContext(BaseModel):

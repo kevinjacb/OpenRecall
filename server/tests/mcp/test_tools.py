@@ -20,7 +20,7 @@ async def test_tools_list_exposes_the_read_only_surface(mcp_env):
                           headers={"Authorization": "Bearer bbb"})
     names = {t["name"] for t in (await r.json())["result"]["tools"]}
     assert names == {"memory.search", "memory.get", "sessions.list",
-                     "speakers.list", "device.status"}
+                     "speakers.list", "device.status", "agent.respond"}
 
 
 async def test_memory_search_requires_an_open_request_id(mcp_env):
@@ -178,3 +178,81 @@ async def test_mcp_route_rejects_the_relay_token(mcp_env):
     client, ledger = mcp_env
     r = await _call(client, "device.status", {"request_id": "r1"}, token="aaa")
     assert r.status == 403
+
+
+async def test_agent_respond_accepts_only_retrieved_atoms(mcp_env):
+    client, ledger = mcp_env
+    ledger.open("r1", session_id="s1", trigger_kind="user_request")
+    await _call(client, "memory.search", {"request_id": "r1", "query": "roadmap"})
+    cited = sorted(ledger.cited("r1"))
+    assert cited, "fixture must retrieve at least one atom"
+
+    r = await _call(client, "agent.respond", {
+        "request_id": "r1", "kind": "answer", "text": "here you go",
+        "atom_ids": [cited[0]], "confidence": 0.9,
+    })
+    body = (await r.json())["result"]
+    assert body["isError"] is False
+    assert ledger.response("r1").text == "here you go"
+
+
+async def test_agent_respond_rejects_uncited_atoms(mcp_env):
+    client, ledger = mcp_env
+    ledger.open("r1", session_id="s1", trigger_kind="user_request")
+    r = await _call(client, "agent.respond", {
+        "request_id": "r1", "kind": "answer", "text": "invented",
+        "atom_ids": ["never-retrieved"], "confidence": 0.9,
+    })
+    body = (await r.json())["result"]
+    assert body["isError"] is True
+    assert "never-retrieved" in body["content"][0]["text"]
+    assert ledger.response("r1") is None
+
+
+async def test_agent_respond_is_once_per_request(mcp_env):
+    client, ledger = mcp_env
+    ledger.open("r1", session_id="s1", trigger_kind="user_request")
+    args = {"request_id": "r1", "kind": "no_memory", "text": "nothing found",
+            "atom_ids": [], "confidence": 0.5}
+    first = await _call(client, "agent.respond", args)
+    assert (await first.json())["result"]["isError"] is False
+    second = await _call(client, "agent.respond", args)
+    assert (await second.json())["result"]["isError"] is True
+
+
+async def test_agent_respond_requires_an_open_request_id(mcp_env):
+    client, _ledger = mcp_env
+    # atom_ids is non-empty and deliberately NOT `[]`: for an unopened
+    # request, `ledger.cited()` returns an empty set regardless, so a
+    # no-op `_require_open` would fall through to the uncited-atoms check
+    # and raise "uncited atoms ..." instead of "request not open" —
+    # `record_response`'s own LedgerClosedError only produces the same
+    # "request not open" substring when there is nothing left to check
+    # first. A non-empty atom_ids is what makes this test guard the guard.
+    r = await _call(client, "agent.respond", {
+        "request_id": "never-opened", "kind": "answer", "text": "x",
+        "atom_ids": ["some-atom"], "confidence": 0.5,
+    })
+    body = (await r.json())["result"]
+    assert body["isError"] is True
+    assert "request not open" in body["content"][0]["text"]
+
+
+async def test_agent_respond_rejects_an_unknown_kind(mcp_env):
+    client, ledger = mcp_env
+    ledger.open("r1", session_id="s1", trigger_kind="user_request")
+    r = await _call(client, "agent.respond", {
+        "request_id": "r1", "kind": "delete_everything", "text": "",
+        "atom_ids": [], "confidence": 0.5,
+    })
+    assert (await r.json())["result"]["isError"] is True
+
+
+async def test_tools_list_now_includes_agent_respond(mcp_env):
+    client, _ledger = mcp_env
+    r = await client.post("/mcp", json={"jsonrpc": "2.0", "id": 1,
+                                        "method": "tools/list"},
+                          headers={"Authorization": "Bearer bbb"})
+    names = {t["name"] for t in (await r.json())["result"]["tools"]}
+    assert names == {"memory.search", "memory.get", "sessions.list",
+                     "speakers.list", "device.status", "agent.respond"}

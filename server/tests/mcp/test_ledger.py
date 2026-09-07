@@ -103,3 +103,46 @@ def test_reopen_after_expiry_starts_with_no_citations():
     led.open("r1", session_id=None, trigger_kind="user_request")
     assert led.get("r1") is not None
     assert led.cited("r1") == frozenset()
+
+
+def test_record_response_then_read_it_back():
+    from openrecall_server.mcp.ledger import AgentResponse
+    led = _ledger()
+    led.open("r1", session_id="s1", trigger_kind="user_request")
+    resp = AgentResponse(kind="answer", text="hi", atom_ids=("a1",),
+                         confidence=0.9, command_id=None,
+                         memory_atom_id=None, reminder_id=None)
+    led.record_response("r1", resp)
+    assert led.response("r1") == resp
+
+
+def test_response_is_none_before_any_is_recorded():
+    led = _ledger()
+    led.open("r1", session_id=None, trigger_kind="user_request")
+    assert led.response("r1") is None
+
+
+def test_record_response_on_closed_request_raises():
+    from openrecall_server.mcp.ledger import AgentResponse
+    led = _ledger()
+    led.open("r1", session_id=None, trigger_kind="user_request")
+    led.close("r1")
+    with pytest.raises(LedgerClosedError):
+        led.record_response("r1", AgentResponse(
+            kind="answer", text="", atom_ids=(), confidence=None,
+            command_id=None, memory_atom_id=None, reminder_id=None))
+
+
+def test_second_response_is_refused():
+    from openrecall_server.mcp.ledger import (
+        AgentResponse, ResponseAlreadyRecordedError,
+    )
+    led = _ledger()
+    led.open("r1", session_id=None, trigger_kind="user_request")
+    r = AgentResponse(kind="answer", text="first", atom_ids=(),
+                      confidence=None, command_id=None,
+                      memory_atom_id=None, reminder_id=None)
+    led.record_response("r1", r)
+    with pytest.raises(ResponseAlreadyRecordedError):
+        led.record_response("r1", r)
+    assert led.response("r1").text == "first"
