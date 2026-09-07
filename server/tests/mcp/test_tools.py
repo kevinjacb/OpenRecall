@@ -209,6 +209,61 @@ async def test_agent_respond_rejects_uncited_atoms(mcp_env):
     assert ledger.response("r1") is None
 
 
+async def test_agent_respond_answer_requires_at_least_one_atom(mcp_env):
+    # Mirrors validator.py's ANSWER-must-cite rule (NO_ATOM_CITED): without
+    # this, "uncited atoms" is vacuous on an empty set and a fabricated
+    # answer is indistinguishable from a genuinely-cited one.
+    client, ledger = mcp_env
+    ledger.open("r1", session_id="s1", trigger_kind="user_request")
+    r = await _call(client, "agent.respond", {
+        "request_id": "r1", "kind": "answer",
+        "text": "You said the meeting is at 3pm.",
+        "atom_ids": [], "confidence": 0.99,
+    })
+    body = (await r.json())["result"]
+    assert body["isError"] is True
+    assert ledger.response("r1") is None
+
+
+async def test_agent_respond_no_memory_rejects_atom_ids(mcp_env):
+    # Mirrors validator.py rule 2: NO_MEMORY must carry no atom_ids.
+    client, ledger = mcp_env
+    ledger.open("r1", session_id="s1", trigger_kind="user_request")
+    await _call(client, "memory.search", {"request_id": "r1", "query": "roadmap"})
+    cited = sorted(ledger.cited("r1"))
+    assert cited, "fixture must retrieve at least one atom"
+
+    r = await _call(client, "agent.respond", {
+        "request_id": "r1", "kind": "no_memory", "text": "",
+        "atom_ids": [cited[0]], "confidence": 0.5,
+    })
+    body = (await r.json())["result"]
+    assert body["isError"] is True
+    assert ledger.response("r1") is None
+
+
+@pytest.mark.parametrize("kind,extra", [
+    ("create_memory", {"memory_atom_id": "atom-1"}),
+    ("create_reminder", {"reminder_id": "rem-1"}),
+    ("issue_command", {"command_id": "cmd-1"}),
+])
+async def test_agent_respond_non_answer_kinds_are_exempt_from_citation(
+    mcp_env, kind, extra
+):
+    # validator.py explicitly exempts create_memory / create_reminder /
+    # issue_command from the citation rule (they are not factual answers).
+    # The exemption must actually hold at the tool boundary, not just be
+    # intended — zero atom_ids must succeed for these three kinds.
+    client, ledger = mcp_env
+    ledger.open("r1", session_id="s1", trigger_kind="user_request")
+    args = {"request_id": "r1", "kind": kind, "text": "some text",
+            "atom_ids": [], "confidence": 0.9, **extra}
+    r = await _call(client, "agent.respond", args)
+    body = (await r.json())["result"]
+    assert body["isError"] is False
+    assert ledger.response("r1").kind == kind
+
+
 async def test_agent_respond_is_once_per_request(mcp_env):
     client, ledger = mcp_env
     ledger.open("r1", session_id="s1", trigger_kind="user_request")

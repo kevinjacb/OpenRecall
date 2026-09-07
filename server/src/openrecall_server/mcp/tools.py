@@ -228,6 +228,20 @@ def build_registry(*, retriever, atom_store, session_index, speaker_registry,
         if kind == "no_memory" and text:
             raise ValueError(
                 "no_memory must not carry free-form text; leave text empty")
+        # Mirrors validator.py rule 2: NO_MEMORY must carry no atom_ids —
+        # there is nothing to cite when nothing was found.
+        if kind == "no_memory" and atom_ids:
+            raise ValueError(
+                "no_memory must not carry atom_ids; leave atom_ids empty")
+        # Mirrors validator.py's ANSWER-must-cite rule (NO_ATOM_CITED):
+        # an answer with zero atom_ids would otherwise reach the planner as
+        # indistinguishable from a genuinely-cited one — the citation gate
+        # this tool exists to enforce would be vacuous on an empty set.
+        # create_memory / create_reminder / issue_command are explicitly
+        # exempt (they are not factual answers), matching validator.py.
+        if kind == "answer" and not atom_ids:
+            raise ValueError(
+                "answer must cite at least one retrieved atom_id")
         ledger.record_response(request_id, AgentResponse(
             kind=kind,
             text=text,
