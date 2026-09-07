@@ -197,40 +197,12 @@ async def test_no_memory_kind_refuses_with_no_supporting_memory():
     assert out.answer is None
 
 
-async def test_issue_command_kind_reaches_issue_command_outcome():
-    async def on_run(prompt, request_id):
-        _respond(ledger, request_id, kind="issue_command",
-                 command_id="cmd-1")
-        return ""
-
-    p, ledger = _planner(on_run)
-    out = await p.plan(_ctx())
-    assert out.outcome is PlannerOutcome.ISSUE_COMMAND
-    assert out.command_id == "cmd-1"
-
-
-async def test_create_memory_kind_reaches_create_memory_outcome():
-    async def on_run(prompt, request_id):
-        _respond(ledger, request_id, kind="create_memory",
-                 memory_atom_id="atom-1")
-        return ""
-
-    p, ledger = _planner(on_run)
-    out = await p.plan(_ctx())
-    assert out.outcome is PlannerOutcome.CREATE_MEMORY
-    assert out.memory_atom_id == "atom-1"
-
-
-async def test_create_reminder_kind_reaches_create_reminder_outcome():
-    async def on_run(prompt, request_id):
-        _respond(ledger, request_id, kind="create_reminder",
-                 reminder_id="rem-1")
-        return ""
-
-    p, ledger = _planner(on_run)
-    out = await p.plan(_ctx())
-    assert out.outcome is PlannerOutcome.CREATE_REMINDER
-    assert out.reminder_id == "rem-1"
+# issue_command / create_memory / create_reminder outcome-mapping tests were
+# removed here: those three kinds are no longer accepted by agent.respond at
+# all (see tests/mcp/test_tools.py::test_agent_respond_rejects_write_kinds,
+# which pins the rejection at the boundary that actually enforces it — Phase
+# 2 exposes no minting tool to validate a self-reported
+# memory_atom_id/reminder_id/command_id against).
 
 
 # ---------------------------------------------------------------------------

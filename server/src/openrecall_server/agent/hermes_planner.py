@@ -115,8 +115,7 @@ class HermesPlanner:
         # short-circuit exactly (checked BEFORE the confidence gate there,
         # and before rate-limiting): it is always a REFUSE with
         # NO_SUPPORTING_MEMORY and the same canned message, never an
-        # autonomous RETURN. It cannot live in _OUTCOME_BY_KIND because
-        # REFUSE needs refusal_reason set, which the dict has no slot for.
+        # autonomous RETURN.
         if response.kind == "no_memory":
             return PlannerResult(
                 request_id=ctx.request_id,
@@ -148,16 +147,26 @@ class HermesPlanner:
                 atom_ids=response.atom_ids,
             )
 
+        # RESPONSE_KINDS (mcp/tools.py) admits only "answer" and "no_memory"
+        # at agent.respond's boundary. issue_command / create_memory /
+        # create_reminder are deliberately NOT accepted there: those are
+        # server-side MINTS in-process (the planner creates the record from
+        # the action's text/due_at and produces the id), and Phase 2 exposes
+        # no minting tool out of process to validate a self-reported
+        # memory_atom_id/reminder_id/command_id against — admitting them
+        # here would let an agent self-report a write it never performed.
+        # They return in Phase 4 alongside the minting tools that can
+        # validate them. Nothing agent.respond can produce reaches this
+        # branch; treat an unexpected kind as unverified rather than crash.
+        log.error("hermes_unknown_response_kind request_id=%s kind=%r",
+                  ctx.request_id, response.kind)
         return PlannerResult(
             request_id=ctx.request_id,
             retrieval_trace_id=self._ids.new(),
-            outcome=_OUTCOME_BY_KIND.get(response.kind, PlannerOutcome.RETURN),
-            answer=response.text or None,
-            confidence=response.confidence,
-            atom_ids=response.atom_ids,
-            command_id=response.command_id,
-            memory_atom_id=response.memory_atom_id,
-            reminder_id=response.reminder_id,
+            outcome=PlannerOutcome.RETURN_WITH_UNCERTAINTY,
+            answer=None,
+            confidence=None,
+            confidence_band="unverified",
         )
 
     def _gate_confidence(
@@ -213,13 +222,3 @@ class HermesPlanner:
             confidence=None,
             confidence_band="unverified",
         )
-
-
-# "answer" and "no_memory" are handled explicitly in plan() (confidence gate,
-# and the fixed REFUSE/NO_SUPPORTING_MEMORY mapping, respectively) and are
-# intentionally absent here.
-_OUTCOME_BY_KIND = {
-    "issue_command": PlannerOutcome.ISSUE_COMMAND,
-    "create_memory": PlannerOutcome.CREATE_MEMORY,
-    "create_reminder": PlannerOutcome.CREATE_REMINDER,
-}

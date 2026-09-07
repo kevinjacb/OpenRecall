@@ -225,6 +225,67 @@ async def test_agent_respond_answer_requires_at_least_one_atom(mcp_env):
     assert ledger.response("r1") is None
 
 
+@pytest.mark.parametrize("confidence", [1.0, 0.0])
+async def test_agent_respond_accepts_confidence_at_the_boundaries(
+    mcp_env, confidence
+):
+    # validator.py rule: ANSWER confidence outside [0, 1] ->
+    # CONFIDENCE_OUT_OF_RANGE. The boundaries themselves are IN range.
+    client, ledger = mcp_env
+    ledger.open("r1", session_id="s1", trigger_kind="user_request")
+    await _call(client, "memory.search", {"request_id": "r1", "query": "roadmap"})
+    cited = sorted(ledger.cited("r1"))
+    assert cited, "fixture must retrieve at least one atom"
+
+    r = await _call(client, "agent.respond", {
+        "request_id": "r1", "kind": "answer", "text": "ok",
+        "atom_ids": [cited[0]], "confidence": confidence,
+    })
+    body = (await r.json())["result"]
+    assert body["isError"] is False
+    assert ledger.response("r1").confidence == confidence
+
+
+@pytest.mark.parametrize("confidence", [1.0001, -0.0001, 999.0])
+async def test_agent_respond_rejects_out_of_range_confidence(mcp_env, confidence):
+    # Demonstrated live: protocol.py's dispatch() never validates `arguments`
+    # against input_schema, so the schema's "minimum": 0, "maximum": 1 are
+    # decorative — an out-of-range confidence must be rejected here, or it
+    # defeats HermesPlanner._gate_confidence's autonomous-answer floor
+    # (999.0 >= 0.85 would read as an autonomous RETURN).
+    client, ledger = mcp_env
+    ledger.open("r1", session_id="s1", trigger_kind="user_request")
+    await _call(client, "memory.search", {"request_id": "r1", "query": "roadmap"})
+    cited = sorted(ledger.cited("r1"))
+    assert cited, "fixture must retrieve at least one atom"
+
+    r = await _call(client, "agent.respond", {
+        "request_id": "r1", "kind": "answer", "text": "ok",
+        "atom_ids": [cited[0]], "confidence": confidence,
+    })
+    body = (await r.json())["result"]
+    assert body["isError"] is True
+    assert ledger.response("r1") is None
+
+
+async def test_agent_respond_accepts_missing_confidence(mcp_env):
+    # confidence=None means "treat as a floor failure" downstream (rounds
+    # 1-2); it must NOT be treated as out of range at this boundary.
+    client, ledger = mcp_env
+    ledger.open("r1", session_id="s1", trigger_kind="user_request")
+    await _call(client, "memory.search", {"request_id": "r1", "query": "roadmap"})
+    cited = sorted(ledger.cited("r1"))
+    assert cited, "fixture must retrieve at least one atom"
+
+    r = await _call(client, "agent.respond", {
+        "request_id": "r1", "kind": "answer", "text": "ok",
+        "atom_ids": [cited[0]],
+    })
+    body = (await r.json())["result"]
+    assert body["isError"] is False
+    assert ledger.response("r1").confidence is None
+
+
 async def test_agent_respond_no_memory_rejects_atom_ids(mcp_env):
     # Mirrors validator.py rule 2: NO_MEMORY must carry no atom_ids.
     client, ledger = mcp_env
@@ -247,21 +308,24 @@ async def test_agent_respond_no_memory_rejects_atom_ids(mcp_env):
     ("create_reminder", {"reminder_id": "rem-1"}),
     ("issue_command", {"command_id": "cmd-1"}),
 ])
-async def test_agent_respond_non_answer_kinds_are_exempt_from_citation(
-    mcp_env, kind, extra
-):
-    # validator.py explicitly exempts create_memory / create_reminder /
-    # issue_command from the citation rule (they are not factual answers).
-    # The exemption must actually hold at the tool boundary, not just be
-    # intended — zero atom_ids must succeed for these three kinds.
+async def test_agent_respond_rejects_write_kinds(mcp_env, kind, extra):
+    # create_memory / create_reminder / issue_command are server-side MINTS
+    # in-process (the planner creates the record from the action's
+    # text/due_at and produces the id). Phase 2 exposes no minting tool out
+    # of process, so admitting these kinds here would let an agent
+    # self-report a write it never performed — e.g. an invented
+    # memory_atom_id referencing nothing. They return in Phase 4 alongside
+    # the minting tools that can validate them. RESPONSE_KINDS now admits
+    # only "answer" and "no_memory", so this must be rejected as an unknown
+    # kind, same as any other malformed kind.
     client, ledger = mcp_env
     ledger.open("r1", session_id="s1", trigger_kind="user_request")
     args = {"request_id": "r1", "kind": kind, "text": "some text",
             "atom_ids": [], "confidence": 0.9, **extra}
     r = await _call(client, "agent.respond", args)
     body = (await r.json())["result"]
-    assert body["isError"] is False
-    assert ledger.response("r1").kind == kind
+    assert body["isError"] is True
+    assert ledger.response("r1") is None
 
 
 async def test_agent_respond_is_once_per_request(mcp_env):

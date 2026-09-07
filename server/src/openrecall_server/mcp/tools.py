@@ -30,12 +30,15 @@ from .protocol import ToolRegistry, ToolSpec
 
 MAX_LIMIT = 20
 
-# The kinds an agent may claim. Mirrors contracts.types.AgentActionKind; kept as
-# a literal set so a malformed kind is refused at the boundary rather than
-# blowing up when the planner maps it.
-RESPONSE_KINDS = frozenset({
-    "answer", "no_memory", "issue_command", "create_memory", "create_reminder",
-})
+# The kinds an agent may claim. Restricted to the two kinds this read-only
+# surface can actually validate. issue_command / create_memory /
+# create_reminder are server-side MINTS in-process (the planner creates the
+# record from the action's text/due_at and produces the id) — there is no
+# minting tool out of process, so admitting those kinds here would let an
+# agent self-report a write it never performed (e.g. an invented
+# memory_atom_id referencing nothing). They return in Phase 4 alongside the
+# minting tools that can validate them.
+RESPONSE_KINDS = frozenset({"answer", "no_memory"})
 
 _REQUEST_ID_PROP = {
     "request_id": {"type": "string",
@@ -210,6 +213,18 @@ def build_registry(*, retriever, atom_store, session_index, speaker_registry,
         if kind not in RESPONSE_KINDS:
             raise ValueError(
                 f"unknown kind: {kind!r}; expected one of {sorted(RESPONSE_KINDS)}")
+        confidence = args.get("confidence")
+        # input_schema declares "minimum": 0, "maximum": 1, but protocol.py's
+        # dispatch() never validates `arguments` against input_schema — those
+        # bounds are decorative. Without this check an out-of-range
+        # confidence (e.g. 999.0) sails through and defeats
+        # HermesPlanner._gate_confidence's autonomous-answer floor. Mirrors
+        # validator.py's ANSWER confidence-bounds rule
+        # (CONFIDENCE_OUT_OF_RANGE). confidence=None is left untouched — it
+        # means "treat as a floor failure" (rounds 1-2), not "out of range".
+        if confidence is not None and not (0.0 <= confidence <= 1.0):
+            raise ValueError(
+                f"confidence out of range: {confidence!r}; expected [0, 1]")
         atom_ids = tuple(args.get("atom_ids") or ())
         # The provenance gate: an agent may cite only what THIS request
         # retrieved. Without it, "cite your sources" is a prompt instruction
@@ -237,8 +252,8 @@ def build_registry(*, retriever, atom_store, session_index, speaker_registry,
         # an answer with zero atom_ids would otherwise reach the planner as
         # indistinguishable from a genuinely-cited one — the citation gate
         # this tool exists to enforce would be vacuous on an empty set.
-        # create_memory / create_reminder / issue_command are explicitly
-        # exempt (they are not factual answers), matching validator.py.
+        # (create_memory / create_reminder / issue_command, which validator.py
+        # exempts from this rule, are not in RESPONSE_KINDS at all right now.)
         if kind == "answer" and not atom_ids:
             raise ValueError(
                 "answer must cite at least one retrieved atom_id")
@@ -246,7 +261,7 @@ def build_registry(*, retriever, atom_store, session_index, speaker_registry,
             kind=kind,
             text=text,
             atom_ids=atom_ids,
-            confidence=args.get("confidence"),
+            confidence=confidence,
             command_id=args.get("command_id"),
             memory_atom_id=args.get("memory_atom_id"),
             reminder_id=args.get("reminder_id"),
