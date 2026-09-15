@@ -14,10 +14,12 @@ import math
 import sqlite3
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from .atom import MemoryAtom
+from .migrations import migrate_memory_index_occurred_at
 
 Vector = list[float]
 
@@ -150,6 +152,11 @@ class SqliteMemoryIndex:
             )
             """
         )
+        # Conversation time (spec D6). Idempotent; safe to call on every
+        # startup. Runs right after CREATE TABLE (which itself is a no-op
+        # on an existing DB) so a brand-new table and an existing one both
+        # end up on the same schema before anything else touches the file.
+        migrate_memory_index_occurred_at(self._conn)
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS ix_index_session ON memory_index (session_id)"
         )
@@ -159,8 +166,9 @@ class SqliteMemoryIndex:
         with self._lock:
             cur = self._conn.execute(
                 "INSERT OR IGNORE INTO memory_index "
-                "(atom_id, session_id, source_event_id, kind, text, created_at, start_ms, vector) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(atom_id, session_id, source_event_id, kind, text, created_at, start_ms, "
+                " vector, occurred_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     atom.atom_id,
                     atom.session_id,
@@ -170,6 +178,7 @@ class SqliteMemoryIndex:
                     atom.created_at.isoformat(),
                     atom.start_ms,
                     json.dumps(vector),
+                    atom.occurred_at.isoformat() if atom.occurred_at is not None else None,
                 ),
             )
             self._conn.commit()
@@ -199,12 +208,12 @@ class SqliteMemoryIndex:
             if session_id is None:
                 rows = self._conn.execute(
                     "SELECT atom_id, session_id, source_event_id, kind, text, created_at, "
-                    "start_ms, vector FROM memory_index",
+                    "start_ms, vector, occurred_at FROM memory_index",
                 ).fetchall()
             else:
                 rows = self._conn.execute(
                     "SELECT atom_id, session_id, source_event_id, kind, text, created_at, "
-                    "start_ms, vector FROM memory_index WHERE session_id = ?",
+                    "start_ms, vector, occurred_at FROM memory_index WHERE session_id = ?",
                     (session_id,),
                 ).fetchall()
         loaded = [
@@ -217,9 +226,30 @@ class SqliteMemoryIndex:
                     text=r[4],
                     created_at=r[5],
                     start_ms=r[6],
+                    occurred_at=r[8],
                 ),
                 json.loads(r[7]),
             )
             for r in rows
         ]
         return _rank(loaded, query, k)
+
+    def backfill_occurred_at(self, occurred_by_atom: dict[str, datetime]) -> int:
+        """Set ``occurred_at`` on rows that have none, keyed by ``atom_id``.
+
+        Never overwrites a row that already has a value. Returns the number
+        of rows actually updated.
+        """
+        if not occurred_by_atom:
+            return 0
+        with self._lock:
+            cur = self._conn.executemany(
+                "UPDATE memory_index SET occurred_at = ? "
+                "WHERE atom_id = ? AND occurred_at IS NULL",
+                [
+                    (when.isoformat(), atom_id)
+                    for atom_id, when in occurred_by_atom.items()
+                ],
+            )
+            self._conn.commit()
+            return cur.rowcount

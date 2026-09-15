@@ -33,7 +33,7 @@ from .atom import MemoryAtom
 from .embeddings import Embedder
 from .index import MemoryIndex, SearchResult
 from .scoring import Scorer
-from .store import AtomStore
+from .store import AtomStore, _as_aware
 
 
 class IndexingPipeline:
@@ -98,7 +98,7 @@ class Retriever:
         now = self._clock.now()
         scored: list[tuple[ScoredAtom, datetime]] = []
         for sr in candidates:
-            age_s = max(0.0, (now - sr.atom.timeline_at).total_seconds())
+            age_s = max(0.0, (now - _as_aware(sr.atom.timeline_at)).total_seconds())
             score = self._scorer.score(query_vec, sr.vector, age_s)
             if score <= 0.0:
                 continue
@@ -115,7 +115,7 @@ class Retriever:
                         source_event_id=sr.atom.source_event_id,
                         provenance=sr.atom.to_provenance() if hasattr(sr.atom, "to_provenance") else None,
                     ),
-                    sr.atom.timeline_at,
+                    _as_aware(sr.atom.timeline_at),
                 )
             )
         # 5. deterministic ordering: score desc, conversation time desc,

@@ -1,8 +1,10 @@
 """Tests for the non-destructive version-columns migration on memory_atoms."""
 from __future__ import annotations
 
+import json
 import sqlite3
 
+from openrecall_server.memory.index import SqliteMemoryIndex
 from openrecall_server.memory.migrations import (
     migrate_capture_events_table,
     migrate_memory_atoms_table,
@@ -122,3 +124,63 @@ def test_migrate_capture_events_is_idempotent():
     migrate_capture_events_table(conn)
     cols = {row[1] for row in conn.execute("PRAGMA table_info(capture_events)")}
     assert len(cols) == 11  # 8 + 3
+
+
+# --- SqliteMemoryIndex occurred_at migration (task-1, D6 production fix) ---
+
+
+def test_sqlite_memory_index_migrates_old_eight_column_schema(tmp_path):
+    """A real pre-task-1 memory_index.db has exactly the eight columns from
+    index.py:141-150, no occurred_at column. Opening SqliteMemoryIndex on it
+    must add occurred_at without losing or altering any existing row —
+    including the vector, byte-for-byte.
+    """
+    path = tmp_path / "memory_index.db"
+    vector_json = json.dumps([0.125, -0.5, 1.0, 0.0])
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE memory_index (
+            atom_id         TEXT PRIMARY KEY,
+            session_id      TEXT NOT NULL,
+            source_event_id TEXT NOT NULL,
+            kind            TEXT NOT NULL,
+            text            TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            start_ms        INTEGER NOT NULL,
+            vector          TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO memory_index "
+        "(atom_id, session_id, source_event_id, kind, text, created_at, start_ms, vector) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("a1", "s1", "e1", "fact", "hello world", "2026-07-07T00:00:00+00:00", 0, vector_json),
+    )
+    conn.commit()
+    conn.close()
+
+    SqliteMemoryIndex(path)  # triggers the migration on open
+
+    conn = sqlite3.connect(str(path))
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_index)")}
+    assert "occurred_at" in cols
+
+    row = conn.execute(
+        "SELECT text, created_at, vector, occurred_at FROM memory_index WHERE atom_id = 'a1'"
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    text, created_at, vector, occurred_at = row
+    assert text == "hello world"
+    assert created_at == "2026-07-07T00:00:00+00:00"
+    assert vector == vector_json  # byte-identical
+    assert occurred_at is None
+
+    # Idempotent: opening a second time must not error.
+    SqliteMemoryIndex(path)
+    conn = sqlite3.connect(str(path))
+    cols_again = {row[1] for row in conn.execute("PRAGMA table_info(memory_index)")}
+    conn.close()
+    assert cols_again == cols

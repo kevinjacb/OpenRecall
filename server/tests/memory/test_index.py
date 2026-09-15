@@ -14,7 +14,13 @@ from openrecall_server.memory.atom import MemoryAtom
 from openrecall_server.memory.index import InMemoryMemoryIndex, SqliteMemoryIndex
 
 
-def atom(atom_id: str, session_id: str = "s1", text: str = "t", start_ms: int = 0) -> MemoryAtom:
+def atom(
+    atom_id: str,
+    session_id: str = "s1",
+    text: str = "t",
+    start_ms: int = 0,
+    occurred_at: datetime | None = None,
+) -> MemoryAtom:
     return MemoryAtom(
         atom_id=atom_id,
         session_id=session_id,
@@ -23,6 +29,7 @@ def atom(atom_id: str, session_id: str = "s1", text: str = "t", start_ms: int = 
         text=text,
         created_at=datetime(2026, 6, 30, tzinfo=timezone.utc),
         start_ms=start_ms,
+        occurred_at=occurred_at,
     )
 
 
@@ -162,3 +169,31 @@ def test_sqlite_index_handles_concurrent_reads_and_writes(tmp_path):
     t_w.join(); t_r.join()
 
     assert errors == [], f"concurrent errors: {errors}"
+
+
+# --- occurred_at round-trip (task-1, D6 production fix) --------------------
+
+
+def test_sqlite_index_add_then_search_round_trips_occurred_at(tmp_path):
+    """The production bug: SqliteMemoryIndex previously had no occurred_at
+    column at all, so every atom returned by search() had occurred_at=None
+    regardless of what was set on the atom passed to add(). This is the
+    direct proof that occurred_at now survives the add -> search round trip.
+    """
+    when = datetime(2026, 8, 1, 9, 0, 0, tzinfo=timezone.utc)
+    idx = SqliteMemoryIndex(tmp_path / "index.db")
+    idx.add(atom("a_dated", text="dated", occurred_at=when), [1.0, 0.0])
+
+    [result] = idx.search("s1", [1.0, 0.0], k=5)
+    assert result.atom.occurred_at == when
+
+
+def test_sqlite_index_search_returns_none_occurred_at_for_back_compat_atoms(tmp_path):
+    """An atom added with no occurred_at (the pre-task-1 shape, and the
+    shape written by any caller that hasn't set it) must still come back
+    with occurred_at=None rather than a fabricated value."""
+    idx = SqliteMemoryIndex(tmp_path / "index.db")
+    idx.add(atom("a_undated", text="undated"), [0.0, 1.0])
+
+    [result] = idx.search("s1", [0.0, 1.0], k=5)
+    assert result.atom.occurred_at is None

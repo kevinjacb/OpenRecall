@@ -73,6 +73,23 @@ def migrate_memory_atoms_occurred_at(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def migrate_memory_index_occurred_at(conn: sqlite3.Connection) -> None:
+    """Add ``occurred_at`` (conversation time, spec D6) to ``memory_index``.
+
+    Mirrors :func:`migrate_memory_atoms_occurred_at`: nullable, additive-only,
+    idempotent via ``PRAGMA table_info``. No index on the column — unlike
+    ``memory_atoms``, ``SqliteMemoryIndex.search`` does not filter or order
+    on ``occurred_at`` in SQL (ranking happens in Python), so no companion
+    index is needed here.
+
+    Safe to call on every startup; never touches an existing row.
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_index)")}
+    if "occurred_at" not in existing:
+        conn.execute("ALTER TABLE memory_index ADD COLUMN occurred_at TEXT")
+    conn.commit()
+
+
 def migrate_capture_events_table(conn: sqlite3.Connection) -> None:
     """Add the three speaker columns to ``capture_events`` if absent.
 

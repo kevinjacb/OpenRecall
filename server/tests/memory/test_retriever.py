@@ -16,7 +16,7 @@ from openrecall_server.contracts.id_generator import DeterministicIdGenerator
 from openrecall_server.contracts.types import RetrieverContext
 from openrecall_server.memory.atom import MemoryAtom
 from openrecall_server.memory.embeddings import Embedder
-from openrecall_server.memory.index import InMemoryMemoryIndex
+from openrecall_server.memory.index import InMemoryMemoryIndex, SqliteMemoryIndex
 from openrecall_server.memory.retrieval import MemoryRetriever, Retriever
 from openrecall_server.memory.scoring import FixedScorer, SimRecencyScorer
 
@@ -362,3 +362,81 @@ def test_memory_retriever_kept_for_backward_compat_with_warning():
         results = mr.query("s1", "x", k=1)
     assert len(results) == 1
     assert results[0].vector == [1.0, 0.0, 0.0, 0.0]
+
+
+# --- production path: SqliteMemoryIndex (task-1, D6 production fix) --------
+
+
+def test_recency_uses_conversation_time_not_ingest_time_over_sqlite_index(tmp_path):
+    """(D) The production path now ranks by conversation time.
+
+    This is the reviewer's probe, but built over SqliteMemoryIndex — the
+    index the gateway actually uses — instead of InMemoryMemoryIndex. The
+    Phase 0 fix (afdb0e5) changed retrieval.py to read timeline_at, but
+    SqliteMemoryIndex never stored occurred_at at all, so every atom it
+    returned fell back to created_at and this test reproduces the bug that
+    every InMemoryMemoryIndex-based test was blind to.
+
+    atom_ids are picked so ascending atom_id order (the INV-7 last-resort
+    tiebreaker) disagrees with the correct conversation-time order.
+    """
+    now = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
+
+    idx = SqliteMemoryIndex(tmp_path / "index.db")
+    old_talk = MemoryAtom(
+        atom_id="a_old_talk", session_id="s1", source_event_id="e1", kind="fact",
+        text="alpha topic", start_ms=0,
+        created_at=now,                          # ingested just now
+        occurred_at=now - timedelta(days=30),    # said 30 days ago
+    )
+    new_talk = MemoryAtom(
+        atom_id="z_new_talk", session_id="s1", source_event_id="e2", kind="fact",
+        text="alpha topic", start_ms=0,
+        created_at=now - timedelta(days=1),      # ingested a day ago
+        occurred_at=now - timedelta(hours=1),    # said an hour ago
+    )
+    idx.add(old_talk, FakeDeterministicEmbedder().embed(["alpha topic"])[0])
+    idx.add(new_talk, FakeDeterministicEmbedder().embed(["alpha topic"])[0])
+
+    r = _retriever(
+        idx,
+        clock=FakeClock(now),
+        scorer=SimRecencyScorer(half_life_s=3600),  # 1 hour: an unambiguous gap
+    )
+    rc = r.retrieve(RetrieverContext(session_id="s1", query_text="alpha topic", limit=2))
+
+    assert [a.atom_id for a in rc.atoms] == ["z_new_talk", "a_old_talk"]
+
+
+def test_retrieve_does_not_raise_on_naive_occurred_at_from_sqlite(tmp_path):
+    """(E) A naive occurred_at does not raise.
+
+    SQLite round-trips timestamps as text and pydantic parses an ISO string
+    with no UTC offset as a *naive* datetime. `now - naive` raises
+    TypeError, which on /agent would surface as a 500 for an otherwise
+    perfectly good row. We write a naive ISO string directly into the
+    column (as could happen from an externally-written or legacy row) and
+    assert retrieve() returns results rather than raising.
+    """
+    now = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
+
+    idx = SqliteMemoryIndex(tmp_path / "index.db")
+    talk = MemoryAtom(
+        atom_id="a1", session_id="s1", source_event_id="e1", kind="fact",
+        text="alpha topic", start_ms=0, created_at=now,
+    )
+    idx.add(talk, FakeDeterministicEmbedder().embed(["alpha topic"])[0])
+    # Simulate a naive occurred_at landing in the column directly (bypassing
+    # add(), which always writes an aware isoformat()) — an offset-less ISO
+    # string, exactly what SQLite round-trips and pydantic parses naive.
+    idx._conn.execute(
+        "UPDATE memory_index SET occurred_at = ? WHERE atom_id = ?",
+        ("2026-09-06T11:00:00", "a1"),
+    )
+    idx._conn.commit()
+
+    r = _retriever(idx, clock=FakeClock(now), scorer=SimRecencyScorer(half_life_s=3600))
+    rc = r.retrieve(RetrieverContext(session_id="s1", query_text="alpha topic", limit=2))
+
+    assert rc.returned_count == 1
+    assert rc.atoms[0].atom_id == "a1"

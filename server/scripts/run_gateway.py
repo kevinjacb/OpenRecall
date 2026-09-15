@@ -71,7 +71,7 @@ from openrecall_server.http.app import build_app
 from openrecall_server.media.audio import AudioStore
 from openrecall_server.media.retention import RetentionSweeper
 from openrecall_server.memory.atom import MemoryAtom  # noqa: F401  (used in stage wiring)
-from openrecall_server.memory.backfill import backfill_occurred_at
+from openrecall_server.memory.backfill import backfill_index_occurred_at, backfill_occurred_at
 from openrecall_server.memory.embeddings import OpenAICompatibleEmbedder
 from openrecall_server.memory.extract import LLMExtractor
 from openrecall_server.memory.llm import OpenAICompatibleChatModel
@@ -251,6 +251,13 @@ def main() -> None:
     # can't be resolved keeps the created_at fallback.
     backfill_occurred_at(store, atom_store)
     memory_index = SqliteMemoryIndex(args.db.replace("events.db", "memory_index.db"))
+    # Task 1 (retrieval-clock production fix): copy occurred_at from the atom
+    # store onto the vector index so the production retrieval path (which
+    # scores recency on timeline_at) has real values instead of always
+    # falling back to created_at. Must run after the atom-store backfill
+    # above — it depends on atoms already having occurred_at filled.
+    # Idempotent and best-effort; a failure here must never block boot.
+    backfill_index_occurred_at(atom_store, memory_index)
     # Speaker recognition: a Sqlite registry + an identifier wired into the
     # pipeline only when OPENRECALL_SPEAKER_ENABLED=true. Off by default — when
     # disabled, build_speaker_identifier returns None and the pipeline wires
