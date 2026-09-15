@@ -1,9 +1,6 @@
 package com.openrecall.relay.ui.recordings
 
 import android.content.Context
-import android.media.AudioAttributes
-import android.media.MediaPlayer
-import android.net.Uri
 import android.os.SystemClock
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -13,6 +10,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.media3.common.AudioAttributes as Media3AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.openrecall.relay.core.RecallLog
 import com.openrecall.relay.data.AudioSource
 import kotlinx.coroutines.delay
@@ -31,18 +36,25 @@ data class PlaybackState(
 /**
  * Playback of one recording's audio.
  *
- * Uses the framework [MediaPlayer] rather than a media library: this is a
- * single short mono Opus stream with no playlist, no background playback and
- * no notification, and the server serves it with Range support so seeking is
- * already an HTTP concern rather than a buffering one.
+ * Uses [ExoPlayer] (Media3) rather than the framework [android.media.MediaPlayer]:
+ * the recording audio is Ogg Opus served over HTTP with Range support, and
+ * MediaPlayer cannot seek that. It never builds the granule->byte seek map for a
+ * remote Ogg stream and reports `getDuration() == 0`, which makes the source
+ * unseekable, so `seekTo` is a silent no-op and the playhead snaps back to
+ * wherever playback actually was — the "drags the bar but plays from where it
+ * started" bug. ExoPlayer's [OggExtractor][androidx.media3.extractor.ogg.OggExtractor]
+ * reads the page granule positions, derives the duration from the end-of-stream
+ * page and seeks to the matching page over HTTP Range, so scrubbing works.
  *
  * The URL needs the bearer header, which is why the caller passes an
  * [AudioSource] rather than a URL — an unauthenticated request is a 401 and
- * would surface as an opaque "can't play this".
+ * would surface as an opaque "can't play this". The header is set as a default
+ * request property on the HTTP data source, so it rides on every Range
+ * sub-request the extractor issues to seek, not only the first one.
  */
 class SegmentPlayer(private val context: Context) {
 
-    private var player: MediaPlayer? = null
+    private var player: ExoPlayer? = null
 
     /** Non-null while a seek is in flight; see [seekTo]. */
     private var seekTargetMs: Long? = null
@@ -51,6 +63,45 @@ class SegmentPlayer(private val context: Context) {
 
     var state by mutableStateOf(PlaybackState())
         private set
+
+    private val listener = object : Player.Listener {
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            when (playbackState) {
+                Player.STATE_READY -> {
+                    // First READY clears the initial "preparing" spinner; we never
+                    // re-arm it, so a brief BUFFERING on a mid-playback seek does
+                    // not flash the spinner.
+                    val d = player?.duration ?: C.TIME_UNSET
+                    state = state.copy(
+                        preparing = false,
+                        durationMs = if (d != C.TIME_UNSET) d else 0L,
+                    )
+                }
+                Player.STATE_ENDED -> {
+                    // Park the playhead at the start rather than at the end: the
+                    // next tap on play should replay, not sit at a dead stop.
+                    state = state.copy(playing = false, positionMs = 0)
+                    player?.seekTo(0)
+                }
+                Player.STATE_IDLE, Player.STATE_BUFFERING -> {
+                    // Preparing is armed once in [load] and cleared on READY;
+                    // BUFFERING during a seek must not re-arm it.
+                }
+            }
+        }
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            state = state.copy(playing = isPlaying)
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            RecallLog.w(tag = TAG, msg = "playback error code: ${error.errorCode}")
+            state = PlaybackState(
+                available = false,
+                error = "Couldn't play this recording.",
+            )
+        }
+    }
 
     /**
      * Point the player at a recording. Tears down any previous stream first,
@@ -61,45 +112,33 @@ class SegmentPlayer(private val context: Context) {
         release()
         seekTargetMs = null
         state = PlaybackState(available = true, preparing = true)
-        val mp = MediaPlayer()
+
+        // Inject the bearer header on the data source so it is sent on every
+        // request, including the Range sub-requests the Ogg extractor issues to
+        // seek. setDefaultRequestProperties is the ExoPlayer way to add static
+        // headers to an HTTP source.
+        val dataSourceFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent("OpenRecallRelay")
+            .setDefaultRequestProperties(source.headers)
+            .setAllowCrossProtocolRedirects(true)
+        val mediaSourceFactory =
+            DefaultMediaSourceFactory(context).setDataSourceFactory(dataSourceFactory)
+
+        val mp = ExoPlayer.Builder(context)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .build()
+        mp.setAudioAttributes(
+            Media3AudioAttributes.Builder()
+                .setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
+                .build(),
+            /* handleAudioFocus = */ false,
+        )
+        mp.addListener(listener)
         player = mp
         try {
-            mp.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build(),
-            )
-            mp.setDataSource(context, Uri.parse(source.url), source.headers)
-            mp.setOnPreparedListener { prepared ->
-                state = state.copy(
-                    preparing = false,
-                    durationMs = prepared.duration.toLong().coerceAtLeast(0),
-                )
-            }
-            mp.setOnSeekCompleteListener { seeked ->
-                seekTargetMs = null
-                // Where it actually landed, which is not necessarily what was
-                // asked for — the playhead should tell the truth once it can.
-                runCatching {
-                    state = state.copy(positionMs = seeked.currentPosition.toLong())
-                }
-            }
-            mp.setOnCompletionListener {
-                // Park the playhead at the start rather than at the end: the
-                // next tap on play should replay, not sit at a dead stop.
-                state = state.copy(playing = false, positionMs = 0)
-                runCatching { mp.seekTo(0) }
-            }
-            mp.setOnErrorListener { _, what, extra ->
-                RecallLog.w(tag = TAG, msg = "playback error what=$what extra=$extra")
-                state = PlaybackState(
-                    available = false,
-                    error = "Couldn't play this recording.",
-                )
-                true
-            }
-            mp.prepareAsync()
+            mp.setMediaItem(MediaItem.fromUri(source.url))
+            mp.prepare()
         } catch (e: Exception) {
             RecallLog.w(tag = TAG, msg = "player setup failed: ${e.javaClass.simpleName}")
             state = PlaybackState(available = false, error = "Couldn't play this recording.")
@@ -113,9 +152,11 @@ class SegmentPlayer(private val context: Context) {
         runCatching {
             if (mp.isPlaying) {
                 mp.pause()
+                // onIsPlayingChanged mirrors this, but set it now so the icon
+                // flips without waiting on the listener round-trip.
                 state = state.copy(playing = false)
             } else {
-                mp.start()
+                mp.play()
                 state = state.copy(playing = true)
             }
         }.onFailure {
@@ -127,49 +168,52 @@ class SegmentPlayer(private val context: Context) {
      * Seek to an absolute position.
      *
      * Absolute rather than fractional, and clamped against the player's own
-     * duration only when it has one: [MediaPlayer.getDuration] reports 0 (or
-     * -1) for a stream whose container carries no length, which is the normal
-     * case for the Opus the relay serves. Gating the seek on that value made
-     * the scrubber inert on exactly the recordings it was built for — so the
-     * caller supplies the position from the duration *it* trusts, and the
-     * clamp here is a safety net rather than a precondition.
+     * duration only when it has one: with ExoPlayer the Ogg extractor reports a
+     * real duration, but on the rare stream where it can't, [MediaPlayer.getDuration]
+     * would have returned 0 and gating the seek on it made the scrubber inert on
+     * exactly the recordings it was built for — so the caller supplies the
+     * position from the duration *it* trusts, and the clamp here is a safety net
+     * rather than a precondition.
      */
     fun seekTo(positionMs: Long) {
         val mp = player ?: return
         if (!state.available) return
         val known = state.durationMs
         val target = if (known > 0) positionMs.coerceIn(0L, known) else positionMs.coerceAtLeast(0L)
-        // Held until onSeekComplete. A seek is asynchronous, and until it
-        // lands `currentPosition` still reports where playback was *before*
-        // it — so the position poll would overwrite the playhead with the old
-        // value a fraction of a second later, which reads exactly like the
-        // drag having been thrown away.
+        // Held until the playhead actually reaches the target. ExoPlayer updates
+        // currentPosition to the seek position immediately, but a one-cycle hold
+        // keeps the playhead pinned to where the finger was let go during the
+        // brief extractor reposition, so the drag reads as continuous rather than
+        // fighting the 200 ms position poll.
         seekTargetMs = target
         seekIssuedAt = SystemClock.elapsedRealtime()
         state = state.copy(positionMs = target)
         runCatching {
-            // SEEK_CLOSEST rather than plain seekTo(Int), which means
-            // SEEK_PREVIOUS_SYNC: this is Ogg Opus with a page per second, so
-            // the previous sync point is up to a second behind where the
-            // finger was let go, and lands the playhead visibly short.
-            mp.seekTo(target, MediaPlayer.SEEK_CLOSEST)
+            mp.seekTo(target)
         }.onFailure {
             seekTargetMs = null
             RecallLog.w(tag = TAG, msg = "seek failed: ${it.javaClass.simpleName}")
         }
     }
 
-    /** Sample the playhead. Called on a timer while playing — [MediaPlayer]
-     *  has no position callback. */
+    /** Sample the playhead. Called on a timer while playing — ExoPlayer, like
+     *  MediaPlayer, has no continuous position callback. */
     fun syncPosition() {
         val mp = player ?: return
-        // A seek in flight owns the playhead until it completes. The timeout
-        // is an escape hatch: an extractor that quietly ignores a seek never
-        // calls back, and a playhead frozen on a position the audio never
-        // reached is a worse lie than one that admits where it is.
-        seekTargetMs?.let {
-            if (SystemClock.elapsedRealtime() - seekIssuedAt < SEEK_TIMEOUT_MS) return
-            seekTargetMs = null
+        // A seek in flight owns the playhead until the reported position reaches
+        // it (ExoPlayer jumps currentPosition to the target on seekTo, so this
+        // clears within a cycle). The timeout is an escape hatch against a
+        // position that never lands — a playhead frozen on a position the audio
+        // never reached is a worse lie than one that admits where it is.
+        seekTargetMs?.let { target ->
+            val current = runCatching { mp.currentPosition }.getOrDefault(target)
+            if (Math.abs(current - target) <= SEEK_LAND_MS ||
+                SystemClock.elapsedRealtime() - seekIssuedAt >= SEEK_TIMEOUT_MS
+            ) {
+                seekTargetMs = null
+            } else {
+                return
+            }
         }
         runCatching {
             if (mp.isPlaying) state = state.copy(positionMs = mp.currentPosition.toLong())
@@ -179,11 +223,7 @@ class SegmentPlayer(private val context: Context) {
     fun release() {
         player?.let { mp ->
             runCatching {
-                mp.setOnPreparedListener(null)
-                mp.setOnCompletionListener(null)
-                mp.setOnSeekCompleteListener(null)
-                mp.setOnErrorListener(null)
-                mp.reset()
+                mp.removeListener(listener)
                 mp.release()
             }
         }
@@ -195,13 +235,15 @@ class SegmentPlayer(private val context: Context) {
         const val TAG = "SegmentPlayer"
         /** How long a seek may hold the playhead before polling takes it back. */
         const val SEEK_TIMEOUT_MS = 2_000L
+        /** A seek is considered landed once the playhead is within this of it. */
+        const val SEEK_LAND_MS = 400L
     }
 }
 
 /**
  * A [SegmentPlayer] bound to the composition: loads [source] when it appears
  * or changes, polls the playhead while playing, and releases the underlying
- * MediaPlayer when the screen leaves. Releasing on dispose is what stops
+ * ExoPlayer when the screen leaves. Releasing on dispose is what stops
  * audio when the user navigates back mid-playback.
  */
 @Composable

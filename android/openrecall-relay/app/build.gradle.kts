@@ -70,6 +70,17 @@ dependencies {
     // typed destinations (`composable<Destination.T>`); compose-bom 2024.10.01
     // doesn't manage the AndroidX navigation artifacts, so we pin 2.8.4 here.
     implementation("androidx.navigation:navigation-compose:2.8.4")
+
+    // Media3 ExoPlayer: the recording audio is Ogg Opus served over HTTP with
+    // Range support. The framework MediaPlayer can't seek that — it never
+    // builds the granule->byte seek map over HTTP and reports duration 0, so
+    // seekTo is a silent no-op and the playhead snaps back ("drags the bar but
+    // plays from where it started"). ExoPlayer's OggExtractor builds that map
+    // and seeks correctly. Only media3-exoplayer is needed: it bundles the
+    // default extractors (Matroska/MP4/Ogg/FLAC/...). Pinned to 1.4.1 because
+    // 1.5.0+ requires compileSdk 35 and this project is on 34 (AGP 8.5.2);
+    // Ogg-Opus seeking has been in Media3 since 1.0, so 1.4.1 is sufficient.
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     testImplementation(kotlin("test"))
