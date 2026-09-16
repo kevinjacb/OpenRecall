@@ -80,6 +80,12 @@ ENV_HERMES_PROACTIVE_TIMEOUT_S = "OPENRECALL_HERMES_PROACTIVE_TIMEOUT_S"
 ENV_HERMES_STRICT_PROVENANCE = "OPENRECALL_HERMES_STRICT_PROVENANCE"
 _AGENT_BACKENDS = ("planner", "hermes", "hermes_with_fallback")
 
+# --- inference location (P1) --------------------------------------------------
+# Where ASR and speaker embedding actually run. Unset -> in-process, which is
+# the pre-P1 behaviour and therefore the rollback.
+ENV_INFERENCE_URL = "OPENRECALL_INFERENCE_URL"
+ENV_INFERENCE_TIMEOUT_S = "OPENRECALL_INFERENCE_TIMEOUT_S"
+
 # --- command detector --------------------------------------------------------
 ENV_COMMAND_ENABLED = "OPENRECALL_COMMAND_DETECTOR_ENABLED"
 ENV_COMMAND_REQUIRE_WEARER = "OPENRECALL_COMMAND_REQUIRE_WEARER"
@@ -350,6 +356,26 @@ class HermesConfig(BaseModel):
     strict_provenance: bool = False
 
 
+class InferenceConfig(BaseModel):
+    """Where ASR and speaker embedding run.
+
+    ``None`` (the default) keeps them in-process, exactly as before — so
+    leaving this unset is both the default and the rollback. A URL points them
+    at the inference service (``scripts/run_inference.py``), which is what the
+    gateway needs when it runs somewhere it cannot reach the accelerator: any
+    container on macOS, since Docker there has no Metal access.
+
+    ``timeout_s`` is the per-request budget for those HTTP calls. A request
+    that overruns it surfaces as ``InferenceUnavailable``, which the inference
+    worker treats like a backend that produced nothing: the frame's transcript
+    is lost, capture and the recording are not.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    url: str | None = None
+    timeout_s: float = Field(default=30.0, gt=0)
+
+
 class AgentConfig(BaseModel):
     """The full server config — guardrails + whisper noise filtering + ASR
     backend selection + command-detector policy. Future policy (extraction
@@ -362,6 +388,7 @@ class AgentConfig(BaseModel):
     command: CommandDetectorConfig = Field(default_factory=CommandDetectorConfig)
     backend: BackendConfig = Field(default_factory=BackendConfig)
     hermes: HermesConfig = Field(default_factory=HermesConfig)
+    inference: InferenceConfig = Field(default_factory=InferenceConfig)
 
 
 # --- env loader --------------------------------------------------------------
@@ -567,6 +594,18 @@ def load_agent_config(env: Mapping[str, str]) -> AgentConfig:
     if ENV_HERMES_STRICT_PROVENANCE in env:
         hermes_kwargs["strict_provenance"] = _parse_bool(
             ENV_HERMES_STRICT_PROVENANCE, env[ENV_HERMES_STRICT_PROVENANCE])
+    inference_kwargs: dict = {}
+    if ENV_INFERENCE_URL in env:
+        # A blank value means "unset" -> in-process, so an operator can revert
+        # by blanking the var as well as by removing it (same idiom as
+        # OPENRECALL_ASR_BACKEND). Without this, "" would be a truthy-looking
+        # url that every request fails against.
+        raw_url = env[ENV_INFERENCE_URL].strip()
+        if raw_url:
+            inference_kwargs["url"] = raw_url
+    if ENV_INFERENCE_TIMEOUT_S in env:
+        inference_kwargs["timeout_s"] = _parse_float(
+            ENV_INFERENCE_TIMEOUT_S, env[ENV_INFERENCE_TIMEOUT_S])
     return AgentConfig(
         guardrails=GuardrailsConfig(**guardrails_kwargs),
         whisper=WhisperConfig(**whisper_kwargs),
@@ -574,4 +613,5 @@ def load_agent_config(env: Mapping[str, str]) -> AgentConfig:
         command=CommandDetectorConfig(**command_kwargs),
         backend=BackendConfig(**backend_kwargs),
         hermes=HermesConfig(**hermes_kwargs),
+        inference=InferenceConfig(**inference_kwargs),
     )

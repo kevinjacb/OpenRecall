@@ -263,16 +263,26 @@ def main() -> None:
     # disabled, build_speaker_identifier returns None and the pipeline wires
     # no identifier, so zero embed calls run and every Transcript carries
     # speaker=None.
+    from openrecall_server.agent.config import load_agent_config
     from openrecall_server.gateway.adapter import build_speaker_identifier
     from openrecall_server.ingest.speaker_config import load_speaker_config
     from openrecall_server.memory.speaker_registry import SqliteSpeakerRegistry
 
+    # Read OPENRECALL_CONFIDENCE_AUTONOMOUS / OPENRECALL_CONFIDENCE_CONFIRM /
+    # OPENRECALL_RATE_LIMIT_PER_MIN (and the rest of the policy) from the
+    # process environment. Defaults match the spec; a bad value aborts startup
+    # with a clear error. Loaded here rather than further down because the
+    # speaker embedder below needs `.inference` to know where to run.
+    agent_config = load_agent_config(__import__("os").environ)
     speaker_cfg = load_speaker_config(__import__("os").environ)
     speaker_registry = SqliteSpeakerRegistry(
         args.db.replace("events.db", "speakers.db"), speaker_cfg,
     )
     speaker_identifier = build_speaker_identifier(
         speaker_cfg, speaker_registry, embedder=None,
+        # P1: unset (the default) keeps the embedder in-process; a url points
+        # it at the inference service.
+        inference_config=agent_config.inference,
     )
     # Warm up the real embedder at startup so the first connection pays no
     # model-init cost. No-op for the fake embedder / when disabled. Best-effort:
@@ -359,10 +369,7 @@ def main() -> None:
     from openrecall_server.memory.scoring import SimRecencyScorer
 
     agent_llm = OpenAICompatibleAgentLLM(llm_chat)
-    # Read OPENRECALL_CONFIDENCE_AUTONOMOUS / OPENRECALL_CONFIDENCE_CONFIRM /
-    # OPENRECALL_RATE_LIMIT_PER_MIN from the process environment. Defaults match
-    # the spec; a bad value aborts startup with a clear error.
-    agent_config = load_agent_config(__import__("os").environ)
+    # `agent_config` was loaded above, alongside the speaker config.
     # Resolve the backend-aware transcription window and hop. Whisper is
     # context-hungry (5s window, as the streaming design was built around);
     # Parakeet's transducer runs at 2s for low-latency RTF. Whisper also gets
@@ -528,8 +535,20 @@ def main() -> None:
             sentence_coalesce=_sentence_coalesce,
             sentence_pause_ms=_sentence_pause_ms,
             denoiser=_denoiser,
+            # P1: unset (the default) keeps ASR in-process; a url points it at
+            # the inference service, so this box need not own the model.
+            inference_config=agent_config.inference,
         )
     factory = _make_factory()
+    # Say which side of the P1 boundary this process is on. Without this the
+    # only way to tell an operator's remote gateway from a silently-in-process
+    # one is to watch for GPU load on the other box.
+    if agent_config.inference.url:
+        print(f"inference: REMOTE at {agent_config.inference.url} "
+              f"(timeout {agent_config.inference.timeout_s}s)")
+    else:
+        print("inference: in-process "
+              "(set OPENRECALL_INFERENCE_URL to use the inference service)")
 
     # --- MCP (spec §5.2) -------------------------------------------------
     # A *second* bearer token, distinct from the relay's: the hermes

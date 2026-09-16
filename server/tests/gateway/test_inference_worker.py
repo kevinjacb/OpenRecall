@@ -337,3 +337,204 @@ def test_parakeet_concurrent_transcribe_serialized_by_inference_lock():
     assert not concurrent.is_set(), (
         "two Parakeet transcribe calls ran concurrently — inference lock did not serialize"
     )
+
+# --- P1: a sustained backend outage must not fill the disk -------------------
+#
+# The worker logs one traceback per failed frame. That was harmless while the
+# backend was in-process (it rarely fails twice in a row); pointing ASR at a
+# network service makes a sustained outage the EXPECTED failure, at one frame
+# per hop, forever, on a box that records all day.
+#
+# No wall-clock assertions here: the repo's one known flaky test is a 50 ms
+# timing assertion in this very file. The collapse is therefore count-based,
+# and so are these tests.
+
+
+def _drain(worker, results, n, timeout=5.0):
+    """Block until `n` frames have been handled, without sleeping on a clock."""
+    deadline = time.monotonic() + timeout
+    while len(results) < n and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert len(results) >= n, f"worker handled {len(results)}/{n} frames"
+
+
+@pytest.mark.asyncio
+async def test_sustained_failure_logs_one_traceback_not_one_per_frame(caplog):
+    """N consecutive failures must produce ONE traceback and a handful of
+    one-line summaries — not N tracebacks."""
+    import logging
+
+    caplog.set_level(logging.INFO)
+    n_frames = 500
+    handled: list[int] = []
+
+    def always_fails(core, msg):
+        handled.append(1)
+        raise ValueError("inference service is down")
+
+    loop = asyncio.get_running_loop()
+    worker = InferenceWorker(
+        always_fails, core=None, loop=loop, sink=lambda _: None,
+        max_queue=n_frames + 1,
+    )
+    worker.start()
+    try:
+        for i in range(n_frames):
+            worker.enqueue(b"x")
+        _drain(worker, handled, n_frames)
+    finally:
+        await worker.stop()
+
+    records = [r for r in caplog.records if "asr worker" in r.message]
+    tracebacks = [r for r in records if r.exc_info is not None]
+    # Exactly one full traceback for the whole outage.
+    assert len(tracebacks) == 1, (
+        f"{len(tracebacks)} tracebacks for {n_frames} consecutive failures"
+    )
+    # Far fewer lines than frames, but not silence: the outage must stay
+    # visible while it persists.
+    assert 2 <= len(records) <= n_frames // 10, (
+        f"{len(records)} log lines for {n_frames} failures: {[r.message for r in records]}"
+    )
+    # A summary must carry the real consecutive count, so an operator reading
+    # one line knows the scale. This is what a hardcoded "still failing"
+    # message would not satisfy.
+    assert any(str(n_frames) in r.message for r in records), (
+        f"no summary named the {n_frames}-failure run: {[r.message for r in records]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_interleaved_failures_still_collapse_to_one_traceback(caplog):
+    """The PRODUCTION failure pattern, and the one a fail-every-frame test
+    misses entirely.
+
+    The worker sees frames, but only some frames reach the backend: an audio
+    packet is ~200 ms while the Whisper hop is 1 s, so during a *total* outage
+    about four frames in five succeed (they only buffer PCM) and one fails.
+    A collapse that resets on the first success therefore logs a traceback per
+    failed hop — no collapse at all. Observed for real on 2026-09-17: a
+    gateway pointed at a dead inference service logged "recovered after 5
+    consecutive failed frames" while the service was still down.
+    """
+    import logging
+
+    caplog.set_level(logging.INFO)
+    n_frames = 500                      # 100 failed hops, 400 buffering frames
+    handled: list[int] = []
+
+    def fails_every_fifth_frame(core, msg):
+        handled.append(1)
+        if len(handled) % 5 == 0:
+            raise ValueError("inference service is down")
+        return ["ok"]
+
+    loop = asyncio.get_running_loop()
+    worker = InferenceWorker(
+        fails_every_fifth_frame, core=None, loop=loop, sink=lambda _: None,
+        max_queue=n_frames + 1,
+    )
+    worker.start()
+    try:
+        for _ in range(n_frames):
+            worker.enqueue(b"x")
+        _drain(worker, handled, n_frames)
+    finally:
+        await worker.stop()
+
+    records = [r for r in caplog.records if "asr worker" in r.message]
+    tracebacks = [r for r in records if r.exc_info is not None]
+    assert len(tracebacks) == 1, (
+        f"{len(tracebacks)} tracebacks for one outage with interleaved "
+        f"successes: {[r.message for r in tracebacks]}"
+    )
+    # And no spurious "recovered" while the outage is still going.
+    assert not [r for r in records if "recovered" in r.message], (
+        f"announced recovery mid-outage: {[r.message for r in records]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_recovery_logs_exactly_one_line(caplog):
+    """When the backend really comes back, exactly one line says so.
+
+    "Really" means a clean run, not one lucky frame — see the interleaved
+    test above for why a single success cannot be trusted.
+    """
+    import logging
+
+    caplog.set_level(logging.INFO)
+    from openrecall_server.gateway.inference_worker import _RECOVERY_CLEAN_FRAMES
+
+    n_fail = 3
+    calls = {"n": 0}
+    handled: list[int] = []
+
+    def fails_then_recovers(core, msg):
+        calls["n"] += 1
+        handled.append(1)
+        if calls["n"] <= n_fail:
+            raise ValueError("inference service is down")
+        return ["ok"]
+
+    n_frames = n_fail + _RECOVERY_CLEAN_FRAMES + 5
+    loop = asyncio.get_running_loop()
+    worker = InferenceWorker(
+        fails_then_recovers, core=None, loop=loop, sink=lambda _: None,
+        max_queue=n_frames + 1,
+    )
+    worker.start()
+    try:
+        for _ in range(n_frames):
+            worker.enqueue(b"x")
+        _drain(worker, handled, n_frames)
+    finally:
+        await worker.stop()
+
+    recovered = [r for r in caplog.records if "recovered" in r.message]
+    assert len(recovered) == 1, (
+        f"expected exactly one recovery line, got {[r.message for r in recovered]}"
+    )
+    assert str(n_fail) in recovered[0].message  # names how many frames were lost
+
+
+@pytest.mark.asyncio
+async def test_a_second_outage_logs_its_own_traceback(caplog):
+    """A confirmed recovery resets the collapse, so a NEW outage is not hidden
+    by the old one — the failure mode of a naive 'log once ever' guard."""
+    import logging
+
+    caplog.set_level(logging.INFO)
+    from openrecall_server.gateway.inference_worker import _RECOVERY_CLEAN_FRAMES
+
+    calls = {"n": 0}
+    handled: list[int] = []
+    second_outage_at = 2 + _RECOVERY_CLEAN_FRAMES
+
+    def fail_recover_fail(core, msg):
+        calls["n"] += 1
+        handled.append(1)
+        if calls["n"] == 1 or calls["n"] == second_outage_at:
+            raise ValueError("inference service is down")
+        return ["ok"]
+
+    loop = asyncio.get_running_loop()
+    worker = InferenceWorker(
+        fail_recover_fail, core=None, loop=loop, sink=lambda _: None,
+        max_queue=second_outage_at + 2,
+    )
+    worker.start()
+    try:
+        for _ in range(second_outage_at):
+            worker.enqueue(b"x")
+        _drain(worker, handled, second_outage_at)
+    finally:
+        await worker.stop()
+
+    tracebacks = [
+        r for r in caplog.records
+        if "asr worker" in r.message and r.exc_info is not None
+    ]
+    assert len(tracebacks) == 2, (
+        f"expected a traceback per distinct outage, got {len(tracebacks)}"
+    )

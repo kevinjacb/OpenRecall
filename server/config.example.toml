@@ -175,6 +175,16 @@
 # Phase 3: not yet read.
 # strict_provenance = false
 
+# ---- Inference location (P1) ----
+[inference]
+# OPENRECALL_INFERENCE_URL — where ASR + speaker embedding run. Unset (default)
+#   runs them in-process, exactly as before. Set to the inference service
+#   (scripts/run_inference.py) when the gateway runs somewhere it cannot reach
+#   the GPU — any container on macOS, since Docker there has no Metal access.
+# url = "http://127.0.0.1:8767"
+# OPENRECALL_INFERENCE_TIMEOUT_S — per-request budget.
+# timeout_s = 30
+
 # ---- Escape hatch ----
 # Top-level keys (not in any [section]) are used verbatim as env-var names, for
 # any value that does not fit the OPENRECALL_{SECTION}_{KEY} shape. Example:

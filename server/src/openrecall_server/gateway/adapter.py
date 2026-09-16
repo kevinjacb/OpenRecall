@@ -69,7 +69,17 @@ def _select_embedder(cfg):
     return select_embedder(cfg)
 
 
-def build_speaker_identifier(cfg, registry, embedder=None):
+def _remote_url(inference_config) -> "str | None":
+    """The configured inference-service URL, or ``None`` for in-process.
+
+    One place decides what "remote" means, so the ASR and embedder sites
+    cannot drift apart — and callers that predate P1 (every existing test)
+    pass nothing and get the in-process path.
+    """
+    return None if inference_config is None else inference_config.url
+
+
+def build_speaker_identifier(cfg, registry, embedder=None, inference_config=None):
     """Return a :class:`SpeakerIdentifier` when enabled, else ``None``.
 
     The factory wires ``None`` into the pipeline when speaker ID is off, so
@@ -80,13 +90,24 @@ def build_speaker_identifier(cfg, registry, embedder=None):
     -> the real backend, ``""``/``"fake"`` -> the deterministic fake); the
     sentinel ``"fake"`` -> the fake (explicit test override); a concrete
     :class:`SpeakerEmbedder` -> used as-is.
+
+    ``inference_config`` (P1): with a url set, the embedder is the HTTP client
+    instead — same Protocol, model in the other process. Only consulted when
+    ``embedder is None``; an explicitly supplied embedder always wins.
     """
     if not cfg.enabled:
         return None
     from ..ingest.speaker_identifier import SpeakerIdentifier
 
     if embedder is None:
-        embedder = _select_embedder(cfg)
+        url = _remote_url(inference_config)
+        if url is None:
+            embedder = _select_embedder(cfg)
+        else:
+            from ..inference.client import HttpSpeakerEmbedder
+
+            embedder = HttpSpeakerEmbedder(
+                url, timeout_s=inference_config.timeout_s)
     elif embedder == "fake":
         from ..ingest.speaker_embedder import FakeSpeakerEmbedder
 
@@ -111,6 +132,7 @@ def build_pipeline_factory(
     sentence_coalesce: bool = True,
     sentence_pause_ms: int | None = None,
     denoiser=None,
+    inference_config=None,
 ) -> PipelineFactory:
     """Factory wiring the real Opus decoder + MLX-whisper transcriber per session.
 
@@ -148,6 +170,15 @@ def build_pipeline_factory(
     VAD gate). Each defaults to the backend's own default when
     ``whisper_config`` is None.
 
+    ``inference_config`` (an :class:`InferenceConfig`, P1) says *where* the
+    selected backend runs. ``None`` or a ``url`` of ``None`` — the default —
+    builds the in-process backend described above, unchanged. A url builds
+    :class:`HttpStreamingBackend` instead: the same ``StreamingBackend``
+    Protocol over HTTP, with the model living in the inference service. Which
+    engine runs is then that process's business (it reads the same
+    ``OPENRECALL_ASR_BACKEND``); scheduling — hop vs utterance, the rolling
+    buffer, the committed cursor — stays here, above the seam.
+
     Set ``use_streaming=False`` for the legacy hard-cut path (only used
     by tests that pre-date the streaming work).
     """
@@ -183,92 +214,117 @@ def build_pipeline_factory(
         parakeet_model = asr_config.parakeet_model
         asr_mode = asr_config.resolved_mode()
 
+    # Where that backend runs. Resolved here for the same reason as above: one
+    # read at build time, so a typo'd attribute raises at startup rather than
+    # on the first audio packet. None (no config, or no url) == in-process.
+    inference_url = _remote_url(inference_config)
+    inference_timeout_s = (
+        inference_config.timeout_s if inference_url is not None else None
+    )
+
     def factory(start_seq: int) -> AudioIngestPipeline:
         from ..ingest.opus_decoder import OpusStreamDecoder
         from ..ingest.streaming_transcriber import streaming_from_tokens
-        from ..ingest.whisper_mlx import MlxWhisperTranscriber
-        from ..ingest.whisper_streaming import DEFAULT_MODEL as _whisper_default_model
-        from ..ingest.whisper_streaming import WhisperStreamingBackend
 
         if use_streaming:
-            # The model call is the slow part (ASR inference). Each session
-            # gets its own backend (so the internal buffers are session-
-            # scoped), but the underlying model is shared by injection from
-            # a process-wide cache (ingest.shared_asr_model). The first
-            # session loads + warms the model; reconnects hit the cache and
-            # reuse the same object — no reload per session. A shared
-            # threading.Lock on the holder serializes inference (acquired by
-            # the inference worker in Task 3). The streaming transcriber
-            # owns the rolling PCM buffer and committed cursor, identically
-            # for both backends.
-            if asr_backend == "parakeet":
-                from ..ingest.parakeet_streaming import (
-                    DEFAULT_PARAKEET_MODEL,
-                    ParakeetStreamingBackend,
-                    load_model,
-                    warmup_model,
+            # ---- in-process (the default, and the P1 rollback) ----------
+            if inference_url is None:
+                from ..ingest.whisper_streaming import (
+                    DEFAULT_MODEL as _whisper_default_model,
                 )
+                from ..ingest.whisper_streaming import WhisperStreamingBackend
 
-                # THREAD AFFINITY INVARIANT — do not move this load earlier.
-                # MLX arrays belong to the thread that created them: a model
-                # loaded on one thread and invoked on another raises
-                # `RuntimeError: There is no Stream(gpu, 0) in current thread`.
-                # This factory runs inside `_on_hello`, which the single
-                # `asr-worker` thread reaches via handle_message — the same
-                # thread that later calls `transcribe`. That coincidence is
-                # what makes Parakeet work, so it is load-bearing.
-                #
-                # Concretely: do NOT hoist this into an eager startup warmup on
-                # the event loop thread, and do not spread inference across a
-                # pool. Both break Parakeet at runtime with a green test suite,
-                # because the fakes used in tests have no thread affinity.
-                # (Observed 2026-09-17 with parakeet-mlx 0.5 / mlx 0.31 while
-                # building the out-of-process inference service, which has to
-                # pin each model to one dedicated thread for this reason.)
-                #
-                # `model` (the --model CLI flag) is the mlx-whisper repo
-                # override and is deliberately NOT reused here: pointing the
-                # Parakeet loader at a Whisper repo would fail confusingly.
-                # The Parakeet repo has its own knob (OPENRECALL_PARAKEET_MODEL).
-                _parakeet_name = parakeet_model or DEFAULT_PARAKEET_MODEL
-                parakeet_kwargs = {}
-                try:
-                    _shared = get_shared_model(
-                        _parakeet_name, loader=load_model, warmup=warmup_model,
+                # The model call is the slow part (ASR inference). Each session
+                # gets its own backend (so the internal buffers are session-
+                # scoped), but the underlying model is shared by injection from
+                # a process-wide cache (ingest.shared_asr_model). The first
+                # session loads + warms the model; reconnects hit the cache and
+                # reuse the same object — no reload per session. A shared
+                # threading.Lock on the holder serializes inference (acquired by
+                # the inference worker in Task 3). The streaming transcriber
+                # owns the rolling PCM buffer and committed cursor, identically
+                # for both backends.
+                if asr_backend == "parakeet":
+                    from ..ingest.parakeet_streaming import (
+                        DEFAULT_PARAKEET_MODEL,
+                        ParakeetStreamingBackend,
+                        load_model,
+                        warmup_model,
                     )
-                    parakeet_kwargs["model"] = _shared.model
-                    # R4: pass the shared inference lock so concurrent
-                    # connections serialize model.generate calls.
-                    parakeet_kwargs["inference_lock"] = _shared.inference_lock
-                except ImportError:
-                    # parakeet_mlx not installed (test environment); fall
-                    # back to the backend's own lazy load on first transcribe.
-                    pass
-                if parakeet_model:
-                    parakeet_kwargs["model_name"] = parakeet_model
-                backend = ParakeetStreamingBackend(**parakeet_kwargs)
+
+                    # THREAD AFFINITY INVARIANT — do not move this load earlier.
+                    # MLX arrays belong to the thread that created them: a model
+                    # loaded on one thread and invoked on another raises
+                    # `RuntimeError: There is no Stream(gpu, 0) in current thread`.
+                    # This factory runs inside `_on_hello`, which the single
+                    # `asr-worker` thread reaches via handle_message — the same
+                    # thread that later calls `transcribe`. That coincidence is
+                    # what makes Parakeet work, so it is load-bearing.
+                    #
+                    # Concretely: do NOT hoist this into an eager startup warmup on
+                    # the event loop thread, and do not spread inference across a
+                    # pool. Both break Parakeet at runtime with a green test suite,
+                    # because the fakes used in tests have no thread affinity.
+                    # (Observed 2026-09-17 with parakeet-mlx 0.5 / mlx 0.31 while
+                    # building the out-of-process inference service, which has to
+                    # pin each model to one dedicated thread for this reason.)
+                    #
+                    # `model` (the --model CLI flag) is the mlx-whisper repo
+                    # override and is deliberately NOT reused here: pointing the
+                    # Parakeet loader at a Whisper repo would fail confusingly.
+                    # The Parakeet repo has its own knob (OPENRECALL_PARAKEET_MODEL).
+                    _parakeet_name = parakeet_model or DEFAULT_PARAKEET_MODEL
+                    parakeet_kwargs = {}
+                    try:
+                        _shared = get_shared_model(
+                            _parakeet_name, loader=load_model, warmup=warmup_model,
+                        )
+                        parakeet_kwargs["model"] = _shared.model
+                        # R4: pass the shared inference lock so concurrent
+                        # connections serialize model.generate calls.
+                        parakeet_kwargs["inference_lock"] = _shared.inference_lock
+                    except ImportError:
+                        # parakeet_mlx not installed (test environment); fall
+                        # back to the backend's own lazy load on first transcribe.
+                        pass
+                    if parakeet_model:
+                        parakeet_kwargs["model_name"] = parakeet_model
+                    backend = ParakeetStreamingBackend(**parakeet_kwargs)
+                else:
+                    # Whisper's "model" is the repo-name string; mlx_whisper
+                    # caches the loaded weights at module level internally, so
+                    # the loader is the identity function. Routing through the
+                    # shared holder gives a uniform seam + the shared inference
+                    # lock, so a backend switch never regresses this.
+                    _whisper_name = model or _whisper_default_model
+                    _shared = get_shared_model(_whisper_name, loader=lambda n: n)
+                    backend_kwargs = dict(
+                        no_speech_threshold=no_speech_threshold,
+                        logprob_threshold=logprob_threshold,
+                        compression_ratio_threshold=compression_ratio_threshold,
+                        condition_on_previous_text=condition_on_previous_text,
+                        hallucination_blocklist_enabled=hallucination_blocklist_enabled,
+                        hallucination_max_words=hallucination_max_words,
+                        hallucination_phrases=hallucination_phrases,
+                        model=_shared.model,
+                        # R4: pass the shared inference lock so concurrent
+                        # connections serialize model.generate calls.
+                        inference_lock=_shared.inference_lock,
+                    )
+                    backend = WhisperStreamingBackend(**backend_kwargs)
             else:
-                # Whisper's "model" is the repo-name string; mlx_whisper
-                # caches the loaded weights at module level internally, so
-                # the loader is the identity function. Routing through the
-                # shared holder gives a uniform seam + the shared inference
-                # lock, so a backend switch never regresses this.
-                _whisper_name = model or _whisper_default_model
-                _shared = get_shared_model(_whisper_name, loader=lambda n: n)
-                backend_kwargs = dict(
-                    no_speech_threshold=no_speech_threshold,
-                    logprob_threshold=logprob_threshold,
-                    compression_ratio_threshold=compression_ratio_threshold,
-                    condition_on_previous_text=condition_on_previous_text,
-                    hallucination_blocklist_enabled=hallucination_blocklist_enabled,
-                    hallucination_max_words=hallucination_max_words,
-                    hallucination_phrases=hallucination_phrases,
-                    model=_shared.model,
-                    # R4: pass the shared inference lock so concurrent
-                    # connections serialize model.generate calls.
-                    inference_lock=_shared.inference_lock,
-                )
-                backend = WhisperStreamingBackend(**backend_kwargs)
+                # ---- remote: the model lives in the inference service ---
+                # Same StreamingBackend Protocol, so everything below this
+                # line — the rolling window, the committed cursor, the
+                # cross-hop dedup, the utterance segmentation — is identical
+                # either way. Nothing in the in-process model path (the
+                # shared-model cache, the mlx imports it triggers) is
+                # touched, which is what lets the gateway run where MLX and
+                # CUDA are not installed.
+                from ..inference.client import HttpStreamingBackend
+
+                backend = HttpStreamingBackend(
+                    inference_url, timeout_s=inference_timeout_s)
             if asr_mode == "utterance":
                 # Utterance mode (the parakeet default): buffer speech and
                 # transcribe each utterance ONCE when the wearer pauses. No
@@ -297,6 +353,13 @@ def build_pipeline_factory(
                     skip_silent_windows=True,
                 )
         else:
+            # Legacy hard-cut path, in-process only: it wants a str-returning
+            # Transcriber, and the HTTP client implements the token-returning
+            # StreamingBackend Protocol instead. Only tests that pre-date the
+            # streaming work reach this; production always streams, so the
+            # inference boundary has nothing to cross here.
+            from ..ingest.whisper_mlx import MlxWhisperTranscriber
+
             transcriber = (
                 MlxWhisperTranscriber(model) if model else MlxWhisperTranscriber()
             )

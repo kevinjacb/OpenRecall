@@ -20,6 +20,12 @@ Error contract (preserved exactly from the synchronous ``to_thread`` path):
   closing the WebSocket with code 1002.
 * Any other exception → logged and skipped; the link stays up.
 
+The *logging* of that second case is rate-collapsed (see
+``_FAILURE_LOG_EVERY``): a full traceback per failed frame is fine when
+the backend is in-process and fails once, and a disk-filling bug when ASR is a
+network service that is down — one frame per hop, forever, on a box that
+records all day. The skip-the-frame behaviour itself is unchanged.
+
 Never uses ``asyncio.Queue`` across threads (the active-plan-2026-07-22
 lesson: ``asyncio.Queue.put_nowait`` / ``get_nowait`` are not thread-safe).
 The event-loop→worker handoff is ``queue.Queue`` (thread-safe); the
@@ -41,6 +47,30 @@ logger = logging.getLogger(__name__)
 
 # Type alias for the handle function (handle_message in production).
 HandleFn = Callable[[Any, "str | bytes"], list[str]]
+
+#: While the worker is degraded, emit one summary line every N failures (the
+#: first failure of an episode always gets a full traceback). Counted, not
+#: timed: the hop cadence is the clock that matters here, and a wall-clock
+#: rate limiter is neither testable without a flaky timing assertion nor
+#: meaningful when the frame rate itself is what varies.
+_FAILURE_LOG_EVERY = 100
+
+#: Successful frames required to declare the backend recovered.
+#:
+#: NOT 1, and this is the whole subtlety: the worker sees *frames*, but only
+#: some frames reach the backend. An audio packet is ~200 ms while the Whisper
+#: hop is 1 s, so during a total outage roughly four frames in five succeed
+#: (they only buffer PCM) and one fails. Resetting on the first success would
+#: therefore declare recovery mid-outage and hand the next failure a fresh
+#: traceback — a traceback per failed hop, which is exactly the disk-filling
+#: behaviour this collapse exists to stop. Observed for real on 2026-09-17:
+#: a gateway pointed at a dead inference service logged "recovered after 5
+#: consecutive failed frames" while the service was still down.
+#:
+#: The floor is therefore "comfortably more frames than the hop spans": 50
+#: frames is ~10 s at that cadence, long enough that the backend is genuinely
+#: answering again rather than momentarily skipped.
+_RECOVERY_CLEAN_FRAMES = 50
 
 
 class InferenceWorker:
@@ -71,6 +101,15 @@ class InferenceWorker:
         self._loop = loop
         self._sink = sink
         self._q: "_queue.Queue[str | bytes]" = _queue.Queue(maxsize=max_queue)
+        # Failure-collapse state. Read and written only on the worker thread,
+        # so no lock. ``_degraded`` is the episode flag: it opens on the first
+        # failure (the one traceback) and closes only after a clean run long
+        # enough to mean something (_RECOVERY_CLEAN_FRAMES), which is what
+        # lets a *later* outage log its own traceback without every skipped
+        # frame in the current one reopening the episode.
+        self._degraded = False
+        self._episode_failures = 0
+        self._clean_run = 0
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._run, name="asr-worker", daemon=True,
@@ -131,11 +170,55 @@ class InferenceWorker:
                 self._loop.call_soon_threadsafe(self._sink, exc)
                 continue
             except Exception:
-                logger.exception(
-                    "asr worker: handle_message failed; skipping frame",
-                )
+                self._log_failure()
                 continue
+            self._note_success()
             self._loop.call_soon_threadsafe(self._sink, replies)
+
+    def _log_failure(self) -> None:
+        """Log one failed frame without filling the disk during an outage.
+
+        First failure of an episode: the full traceback, at ERROR — the
+        diagnostic an operator actually needs. After that, one line every
+        ``_FAILURE_LOG_EVERY`` failures carrying the running count, so a
+        persistent outage stays visible at a bounded cost. The count is what
+        turns a summary line into information: "1200 failures" says roughly
+        how long the backend has been gone.
+        """
+        self._clean_run = 0
+        self._episode_failures += 1
+        if not self._degraded:
+            self._degraded = True
+            logger.exception(
+                "asr worker: handle_message failed; skipping frame "
+                "(further failures collapse to a count every %d)",
+                _FAILURE_LOG_EVERY,
+            )
+        elif self._episode_failures % _FAILURE_LOG_EVERY == 0:
+            logger.error(
+                "asr worker: still failing — %d frames skipped since the "
+                "traceback above", self._episode_failures,
+            )
+
+    def _note_success(self) -> None:
+        """One line when the backend is really back, then back to silence.
+
+        "Really" is the point: a single success proves nothing, because most
+        frames never reach the backend (see ``_RECOVERY_CLEAN_FRAMES``).
+        """
+        if not self._degraded:
+            return
+        self._clean_run += 1
+        if self._clean_run < _RECOVERY_CLEAN_FRAMES:
+            return
+        logger.warning(
+            "asr worker: recovered after %d failed frames "
+            "(their transcripts are lost; the audio is not)",
+            self._episode_failures,
+        )
+        self._degraded = False
+        self._episode_failures = 0
+        self._clean_run = 0
 
     async def stop(self) -> None:
         """Signal the worker to stop and join briefly (daemon — won't block).

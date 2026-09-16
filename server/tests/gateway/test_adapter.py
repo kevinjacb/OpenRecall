@@ -349,3 +349,190 @@ def test_factory_shares_one_whisper_model_entry_across_sessions():
     shared2 = get_shared_model(_whisper_default, loader=lambda n: n)
     assert shared1 is shared2
     assert shared1.inference_lock is shared2.inference_lock
+
+
+# --- P1: in-process vs. remote inference ------------------------------------
+#
+# The default (no url) must stay byte-for-byte the existing path; a url must
+# swap BOTH the ASR backend and the speaker embedder for the HTTP clients,
+# without the in-process model ever being touched. That last property is what
+# lets the gateway run where MLX/CUDA is not installed.
+
+
+def _http_backend_cls():
+    from openrecall_server.inference.client import HttpStreamingBackend
+
+    return HttpStreamingBackend
+
+
+def test_no_inference_url_keeps_the_in_process_backend():
+    """An InferenceConfig with url unset is the default path — unchanged."""
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+    from openrecall_server.ingest.whisper_streaming import WhisperStreamingBackend
+
+    cfg = load_agent_config({})
+    factory = build_pipeline_factory(
+        whisper_config=cfg.whisper, asr_config=cfg.asr,
+        inference_config=cfg.inference,
+    )
+    assert isinstance(_streamer_backend(factory), WhisperStreamingBackend)
+
+
+def test_inference_url_selects_the_http_backend():
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+
+    cfg = load_agent_config({"OPENRECALL_INFERENCE_URL": "http://box:8767"})
+    factory = build_pipeline_factory(
+        whisper_config=cfg.whisper, asr_config=cfg.asr,
+        inference_config=cfg.inference,
+    )
+
+    backend = _streamer_backend(factory)
+    assert isinstance(backend, _http_backend_cls())
+    assert backend._base_url == "http://box:8767"
+
+
+def test_http_backend_carries_the_configured_timeout():
+    """A client built without the configured timeout silently uses the
+    client module's 30 s default, which is not what the operator asked for."""
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+
+    cfg = load_agent_config({
+        "OPENRECALL_INFERENCE_URL": "http://box:8767",
+        "OPENRECALL_INFERENCE_TIMEOUT_S": "12.5",
+    })
+    factory = build_pipeline_factory(
+        whisper_config=cfg.whisper, asr_config=cfg.asr,
+        inference_config=cfg.inference,
+    )
+
+    assert _streamer_backend(factory)._timeout_s == 12.5
+
+
+def test_inference_url_never_constructs_the_in_process_backend(monkeypatch):
+    """The point of the boundary: with a url set, nothing in the in-process
+    model path runs — so the gateway can live in a container with no MLX and
+    no CUDA.
+
+    Asserting "no mlx import happened" would be VACUOUS here: the in-process
+    Whisper path imports mlx lazily inside ``transcribe``, so building the
+    factory imports no mlx either way. What is actually observable at build
+    time is the in-process construction itself — the shared-model cache (which
+    is what loads and warms a Parakeet model) and the two backend classes. Each
+    is booby-trapped, so any of them being reached fails loudly.
+    """
+    import openrecall_server.gateway.adapter as adapter
+    import openrecall_server.ingest.parakeet_streaming as ps
+    import openrecall_server.ingest.whisper_streaming as ws
+
+    def _boom(*a, **k):
+        raise AssertionError("in-process model path was reached")
+
+    monkeypatch.setattr(adapter, "get_shared_model", _boom)
+    monkeypatch.setattr(ws, "WhisperStreamingBackend", _boom)
+    monkeypatch.setattr(ps, "ParakeetStreamingBackend", _boom)
+
+    from openrecall_server.agent.config import load_agent_config
+
+    cfg = load_agent_config({"OPENRECALL_INFERENCE_URL": "http://box:8767"})
+    factory = adapter.build_pipeline_factory(
+        whisper_config=cfg.whisper, asr_config=cfg.asr,
+        inference_config=cfg.inference,
+    )
+
+    assert isinstance(_streamer_backend(factory), _http_backend_cls())
+
+
+def test_inference_url_wins_over_the_parakeet_backend_switch(monkeypatch):
+    """Which engine runs is the inference service's business once the work is
+    remote; OPENRECALL_ASR_BACKEND there selects it. The gateway must not try
+    to load Parakeet locally as well."""
+    import openrecall_server.gateway.adapter as adapter
+    import openrecall_server.ingest.parakeet_streaming as ps
+
+    def _boom(*a, **k):
+        raise AssertionError("in-process model path was reached")
+
+    monkeypatch.setattr(adapter, "get_shared_model", _boom)
+    monkeypatch.setattr(ps, "ParakeetStreamingBackend", _boom)
+
+    from openrecall_server.agent.config import load_agent_config
+
+    cfg = load_agent_config({
+        "OPENRECALL_ASR_BACKEND": "parakeet",
+        "OPENRECALL_INFERENCE_URL": "http://box:8767",
+    })
+    factory = adapter.build_pipeline_factory(
+        whisper_config=cfg.whisper, asr_config=cfg.asr,
+        inference_config=cfg.inference,
+    )
+
+    # Scheduling stays the gateway's concern: parakeet still means utterance
+    # mode, the backend behind it is just remote now.
+    pipe = factory(0)
+    from openrecall_server.ingest.utterance_transcriber import UtteranceTranscriber
+
+    assert isinstance(pipe._streamer, UtteranceTranscriber)
+    assert isinstance(pipe._streamer._backend, _http_backend_cls())
+
+
+# --- P1: the speaker embedder crosses the same boundary ----------------------
+
+
+def test_no_inference_url_keeps_the_in_process_embedder():
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_speaker_identifier
+    from openrecall_server.ingest.speaker_config import SpeakerConfig
+    from openrecall_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
+    from openrecall_server.memory.speaker_registry import InMemorySpeakerRegistry
+
+    scfg = SpeakerConfig(enabled=True)
+    cfg = load_agent_config({})
+    ident = build_speaker_identifier(
+        scfg, InMemorySpeakerRegistry(scfg), embedder=None,
+        inference_config=cfg.inference,
+    )
+    assert isinstance(ident._embedder, ResemblyzerSpeakerEmbedder)
+
+
+def test_inference_url_selects_the_http_embedder():
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_speaker_identifier
+    from openrecall_server.inference.client import HttpSpeakerEmbedder
+    from openrecall_server.ingest.speaker_config import SpeakerConfig
+    from openrecall_server.memory.speaker_registry import InMemorySpeakerRegistry
+
+    scfg = SpeakerConfig(enabled=True)
+    cfg = load_agent_config({
+        "OPENRECALL_INFERENCE_URL": "http://box:8767",
+        "OPENRECALL_INFERENCE_TIMEOUT_S": "12.5",
+    })
+    ident = build_speaker_identifier(
+        scfg, InMemorySpeakerRegistry(scfg), embedder=None,
+        inference_config=cfg.inference,
+    )
+
+    assert isinstance(ident._embedder, HttpSpeakerEmbedder)
+    assert ident._embedder._base_url == "http://box:8767"
+    assert ident._embedder._timeout_s == 12.5
+
+
+def test_explicit_embedder_still_wins_over_the_inference_url():
+    """``embedder="fake"`` is the explicit test override; a url must not
+    silently replace an embedder the caller handed in."""
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_speaker_identifier
+    from openrecall_server.ingest.speaker_config import SpeakerConfig
+    from openrecall_server.ingest.speaker_embedder import FakeSpeakerEmbedder
+    from openrecall_server.memory.speaker_registry import InMemorySpeakerRegistry
+
+    scfg = SpeakerConfig(enabled=True)
+    cfg = load_agent_config({"OPENRECALL_INFERENCE_URL": "http://box:8767"})
+    ident = build_speaker_identifier(
+        scfg, InMemorySpeakerRegistry(scfg), embedder="fake",
+        inference_config=cfg.inference,
+    )
+    assert isinstance(ident._embedder, FakeSpeakerEmbedder)

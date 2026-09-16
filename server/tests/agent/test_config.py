@@ -410,3 +410,35 @@ def test_hermes_timeouts_must_be_positive():
         load_agent_config({"OPENRECALL_HERMES_TIMEOUT_S": "0"})
     with pytest.raises(ValueError):
         load_agent_config({"OPENRECALL_HERMES_PROACTIVE_TIMEOUT_S": "-1"})
+
+
+# --- P1: where inference runs ------------------------------------------------
+
+
+def test_inference_url_defaults_to_none():
+    """Unset is the rollback: ASR + speaker embedding stay in-process."""
+    assert load_agent_config({}).inference.url is None
+
+
+def test_inference_url_reads_env():
+    cfg = load_agent_config({"OPENRECALL_INFERENCE_URL": "http://box:8767"})
+    assert cfg.inference.url == "http://box:8767"
+
+
+def test_inference_timeout_defaults_and_reads_env():
+    assert load_agent_config({}).inference.timeout_s == 30.0
+    cfg = load_agent_config({"OPENRECALL_INFERENCE_TIMEOUT_S": "12.5"})
+    assert cfg.inference.timeout_s == 12.5
+
+
+def test_inference_timeout_must_be_positive():
+    with pytest.raises(ValueError):
+        load_agent_config({"OPENRECALL_INFERENCE_TIMEOUT_S": "0"})
+
+
+def test_blank_inference_url_means_unset():
+    """An operator reverts by blanking the var as well as by removing it —
+    the same idiom the ASR backend switch uses. A blank string would
+    otherwise be a truthy-looking url that every request fails against."""
+    cfg = load_agent_config({"OPENRECALL_INFERENCE_URL": "   "})
+    assert cfg.inference.url is None
