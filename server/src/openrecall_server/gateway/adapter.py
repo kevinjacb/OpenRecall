@@ -226,6 +226,23 @@ def build_pipeline_factory(
                     warmup_model,
                 )
 
+                # THREAD AFFINITY INVARIANT — do not move this load earlier.
+                # MLX arrays belong to the thread that created them: a model
+                # loaded on one thread and invoked on another raises
+                # `RuntimeError: There is no Stream(gpu, 0) in current thread`.
+                # This factory runs inside `_on_hello`, which the single
+                # `asr-worker` thread reaches via handle_message — the same
+                # thread that later calls `transcribe`. That coincidence is
+                # what makes Parakeet work, so it is load-bearing.
+                #
+                # Concretely: do NOT hoist this into an eager startup warmup on
+                # the event loop thread, and do not spread inference across a
+                # pool. Both break Parakeet at runtime with a green test suite,
+                # because the fakes used in tests have no thread affinity.
+                # (Observed 2026-09-17 with parakeet-mlx 0.5 / mlx 0.31 while
+                # building the out-of-process inference service, which has to
+                # pin each model to one dedicated thread for this reason.)
+                #
                 # `model` (the --model CLI flag) is the mlx-whisper repo
                 # override and is deliberately NOT reused here: pointing the
                 # Parakeet loader at a Whisper repo would fail confusingly.
