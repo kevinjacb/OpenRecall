@@ -39,6 +39,17 @@ def fake_parakeet_loader(monkeypatch):
     monkeypatch.setattr(ps, "warmup_model", lambda model: None)
 
 
+@pytest.fixture
+def fake_faster_whisper_loader(monkeypatch):
+    """Patch load_model+warmup_model so faster-whisper factory tests never
+    construct a CTranslate2 model or download weights."""
+    import openrecall_server.ingest.faster_whisper_streaming as fw
+
+    monkeypatch.setattr(
+        fw, "load_model", lambda name, device=None, compute_type=None: object())
+    monkeypatch.setattr(fw, "warmup_model", lambda model: None)
+
+
 class FakeDecoder:
     def decode(self, frame: bytes) -> bytes:
         return b"\x00" * 640
@@ -232,6 +243,158 @@ def test_whisper_model_flag_is_not_reused_for_parakeet(fake_parakeet_loader):
     )
 
     assert _streamer_backend(factory)._model_name == "mlx-community/parakeet-tdt-0.6b-v3"
+
+
+# --- the portable backend (faster-whisper / CTranslate2) ---------------------
+
+
+def test_faster_whisper_backend_is_built_when_selected(fake_faster_whisper_loader):
+    """OPENRECALL_ASR_BACKEND=faster_whisper must reach the in-process path —
+    this is the only backend a non-Apple box can run."""
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+    from openrecall_server.ingest.faster_whisper_streaming import (
+        FasterWhisperStreamingBackend,
+    )
+
+    cfg = load_agent_config({"OPENRECALL_ASR_BACKEND": "faster_whisper"})
+    factory = build_pipeline_factory(whisper_config=cfg.whisper, asr_config=cfg.asr)
+
+    backend = _streamer_backend(factory)
+    assert isinstance(backend, FasterWhisperStreamingBackend)
+    # The model comes from the shared cache, already loaded.
+    assert backend._model is not None
+
+
+def test_faster_whisper_device_and_compute_type_reach_the_backend(
+    fake_faster_whisper_loader,
+):
+    """The device/compute_type pair is the portability switch; if the factory
+    drops it, every deployment silently runs the default."""
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+
+    cfg = load_agent_config({
+        "OPENRECALL_ASR_BACKEND": "faster_whisper",
+        "OPENRECALL_FASTER_WHISPER_MODEL": "small.en",
+        "OPENRECALL_FASTER_WHISPER_DEVICE": "cuda",
+        "OPENRECALL_FASTER_WHISPER_COMPUTE_TYPE": "float16",
+    })
+    factory = build_pipeline_factory(whisper_config=cfg.whisper, asr_config=cfg.asr)
+
+    backend = _streamer_backend(factory)
+    assert backend._model_name == "small.en"
+    assert backend._device == "cuda"
+    assert backend._compute_type == "float16"
+
+
+def test_faster_whisper_gets_the_whisper_noise_filters(fake_faster_whisper_loader):
+    """It is the same Whisper decoder, so the server-side filters must be
+    threaded in — dropping them would resurrect the phantom-phrase bug on
+    every non-Apple deployment."""
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+
+    cfg = load_agent_config({
+        "OPENRECALL_ASR_BACKEND": "faster_whisper",
+        "OPENRECALL_WHISPER_NO_SPEECH_THRESHOLD": "0.42",
+        "OPENRECALL_WHISPER_HALLUCINATION_MAX_WORDS": "7",
+    })
+    factory = build_pipeline_factory(whisper_config=cfg.whisper, asr_config=cfg.asr)
+
+    backend = _streamer_backend(factory)
+    assert backend._no_speech_threshold == 0.42
+    assert backend._hallucination_max_words == 7
+    assert backend._hallucination_blocklist_enabled is True
+
+
+def test_faster_whisper_runs_the_hop_path_not_utterance_mode(
+    fake_faster_whisper_loader,
+):
+    """Whisper timestamps are stable across overlapping windows, so it takes
+    the rolling-window streamer (Parakeet's utterance mode exists for the
+    opposite reason)."""
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+    from openrecall_server.ingest.streaming_transcriber import StreamingTranscriber
+
+    cfg = load_agent_config({"OPENRECALL_ASR_BACKEND": "faster_whisper"})
+    factory = build_pipeline_factory(whisper_config=cfg.whisper, asr_config=cfg.asr)
+
+    assert isinstance(_raw_streamer(factory), StreamingTranscriber)
+
+
+def test_whisper_model_flag_is_not_reused_for_faster_whisper(
+    fake_faster_whisper_loader,
+):
+    """--model overrides the *mlx* repo id; a CT2 model id is a different
+    namespace, so handing it over would fail confusingly."""
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+
+    cfg = load_agent_config({"OPENRECALL_ASR_BACKEND": "faster_whisper"})
+    factory = build_pipeline_factory(
+        model="mlx-community/whisper-small",
+        whisper_config=cfg.whisper, asr_config=cfg.asr,
+    )
+
+    assert _streamer_backend(factory)._model_name == "large-v3-turbo"
+
+
+def test_factory_shares_one_faster_whisper_model_across_sessions(monkeypatch):
+    """Reconnects must reuse the loaded model, and the shared inference lock
+    must reach the backend that serializes on it."""
+    import openrecall_server.ingest.faster_whisper_streaming as fw
+
+    loads: list[tuple] = []
+
+    monkeypatch.setattr(
+        fw, "load_model",
+        lambda name, device=None, compute_type=None: (
+            loads.append((name, device, compute_type)) or object()),
+    )
+    monkeypatch.setattr(fw, "warmup_model", lambda model: None)
+
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+
+    cfg = load_agent_config({"OPENRECALL_ASR_BACKEND": "faster_whisper"})
+    factory = build_pipeline_factory(whisper_config=cfg.whisper, asr_config=cfg.asr)
+
+    backend1 = _streamer_backend(factory)
+    backend2 = _streamer_backend(factory)
+
+    assert backend1._model is backend2._model
+    assert loads == [("large-v3-turbo", "auto", "default")]
+    assert backend1._inference_lock is backend2._inference_lock
+    assert backend1._inference_lock is not None
+
+
+def test_faster_whisper_cache_entry_cannot_collide_with_the_whisper_path(
+    fake_faster_whisper_loader,
+):
+    """The shared cache is keyed by a plain string, and the Whisper path stores
+    the model *name* under its own key. If the faster-whisper key were just the
+    model name, an operator naming both the same would hand the CT2 backend a
+    str where a loaded model belongs — and it would fail on the first packet,
+    in a worker thread."""
+    from openrecall_server.agent.config import load_agent_config
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+
+    shared_name = "mlx-community/whisper-large-v3-turbo"
+    # Populate the cache through the Whisper path first (its "model" is the
+    # repo-name string itself).
+    whisper_factory = build_pipeline_factory(model=shared_name)
+    assert _streamer_backend(whisper_factory)._model == shared_name
+
+    cfg = load_agent_config({
+        "OPENRECALL_ASR_BACKEND": "faster_whisper",
+        "OPENRECALL_FASTER_WHISPER_MODEL": shared_name,
+    })
+    factory = build_pipeline_factory(whisper_config=cfg.whisper, asr_config=cfg.asr)
+
+    loaded = _streamer_backend(factory)._model
+    assert not isinstance(loaded, str), "got the Whisper path's cache entry"
 
 
 def test_switching_back_to_whisper_restores_the_filters():

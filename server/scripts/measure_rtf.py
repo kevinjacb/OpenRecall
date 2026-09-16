@@ -64,14 +64,34 @@ def main() -> None:
     ap.add_argument("--window-ms", type=int, default=5000, help="transcription window")
     ap.add_argument(
         "--backend",
-        choices=["whisper", "parakeet"],
+        choices=["whisper", "parakeet", "faster_whisper"],
         default="whisper",
         help="ASR backend to measure",
     )
     ap.add_argument("--model", default=None, help="override the model repo/id")
+    # Only meaningful for faster_whisper — the two MLX backends have exactly
+    # one device (Metal) and no quantization switch.
+    ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"],
+                    help="faster_whisper only: where CTranslate2 runs")
+    ap.add_argument("--compute-type", default="default",
+                    help="faster_whisper only: CTranslate2 quantization "
+                         "(int8 on CPU, float16 on CUDA)")
     args = ap.parse_args()
 
-    if args.backend == "parakeet":
+    if args.backend == "faster_whisper":
+        # The portable backend: this is the number that says whether a given
+        # CPU box can keep up with the hop cadence at all.
+        from openrecall_server.ingest.faster_whisper_streaming import (
+            DEFAULT_FASTER_WHISPER_MODEL, FasterWhisperStreamingBackend,
+        )
+        model = args.model or DEFAULT_FASTER_WHISPER_MODEL
+        tr = FasterWhisperStreamingBackend(
+            model=model, device=args.device, compute_type=args.compute_type)
+
+        def _run(ch: bytes) -> str:
+            tokens = tr.transcribe(ch, SAMPLE_RATE)
+            return " ".join(t.text for t in tokens)
+    elif args.backend == "parakeet":
         from openrecall_server.ingest.parakeet_streaming import (
             DEFAULT_PARAKEET_MODEL, ParakeetStreamingBackend,
         )

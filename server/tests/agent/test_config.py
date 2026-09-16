@@ -303,6 +303,88 @@ def test_whisper_filters_are_unaffected_by_backend_choice():
     assert cfg.whisper.hallucination_blocklist_enabled is True
 
 
+# --- faster-whisper: the portable (CPU/CUDA) backend -------------------------
+
+
+def test_asr_backend_faster_whisper_is_allowed():
+    """The allow-list must admit the portable backend, or every non-Apple
+    deployment fails at config load."""
+    cfg = load_agent_config({"OPENRECALL_ASR_BACKEND": "faster_whisper"})
+    assert cfg.asr.backend == "faster_whisper"
+
+
+def test_faster_whisper_defaults():
+    cfg = load_agent_config({})
+    assert cfg.asr.faster_whisper_model == "large-v3-turbo"
+    assert cfg.asr.faster_whisper_device == "auto"
+    assert cfg.asr.faster_whisper_compute_type == "default"
+
+
+def test_faster_whisper_model_device_and_compute_type_from_env():
+    cfg = load_agent_config({
+        "OPENRECALL_ASR_BACKEND": "faster_whisper",
+        "OPENRECALL_FASTER_WHISPER_MODEL": "distil-large-v3.5",
+        "OPENRECALL_FASTER_WHISPER_DEVICE": " CUDA ",
+        "OPENRECALL_FASTER_WHISPER_COMPUTE_TYPE": "FLOAT16",
+    })
+    assert cfg.asr.faster_whisper_model == "distil-large-v3.5"
+    # device/compute type are case-insensitive; the model id is NOT lowercased
+    # (HF repo ids are case-sensitive).
+    assert cfg.asr.faster_whisper_device == "cuda"
+    assert cfg.asr.faster_whisper_compute_type == "float16"
+
+
+def test_faster_whisper_model_id_case_is_preserved():
+    cfg = load_agent_config({
+        "OPENRECALL_FASTER_WHISPER_MODEL": "Systran/faster-Whisper-Large-v3",
+    })
+    assert cfg.asr.faster_whisper_model == "Systran/faster-Whisper-Large-v3"
+
+
+def test_faster_whisper_blank_env_keeps_defaults():
+    cfg = load_agent_config({
+        "OPENRECALL_FASTER_WHISPER_MODEL": "  ",
+        "OPENRECALL_FASTER_WHISPER_DEVICE": "",
+        "OPENRECALL_FASTER_WHISPER_COMPUTE_TYPE": " ",
+    })
+    assert cfg.asr.faster_whisper_model == "large-v3-turbo"
+    assert cfg.asr.faster_whisper_device == "auto"
+    assert cfg.asr.faster_whisper_compute_type == "default"
+
+
+def test_faster_whisper_unknown_device_raises():
+    """A typo'd device would otherwise surface as a CTranslate2 error on the
+    first audio packet, in a worker thread, in production."""
+    with pytest.raises(ValueError, match="OPENRECALL_FASTER_WHISPER_DEVICE"):
+        load_agent_config({"OPENRECALL_FASTER_WHISPER_DEVICE": "mps"})
+
+
+def test_faster_whisper_empty_values_raise_on_direct_construction():
+    from openrecall_server.agent.config import AsrConfig
+
+    with pytest.raises(ValueError, match="OPENRECALL_FASTER_WHISPER_MODEL"):
+        AsrConfig(faster_whisper_model="  ")
+    with pytest.raises(ValueError, match="OPENRECALL_FASTER_WHISPER_COMPUTE_TYPE"):
+        AsrConfig(faster_whisper_compute_type=" ")
+
+
+def test_faster_whisper_uses_hop_scheduling_not_utterance():
+    """It is Whisper: its word timestamps are stable across overlapping calls,
+    so it takes the rolling-window hop path, not Parakeet's utterance mode."""
+    cfg = load_agent_config({"OPENRECALL_ASR_BACKEND": "faster_whisper"})
+    assert cfg.asr.resolved_mode() == "hop"
+
+
+def test_whisper_filters_apply_to_faster_whisper():
+    """Same decoder as mlx-whisper, so the Whisper noise filters stay in force
+    (unlike Parakeet, where they have no analogue)."""
+    cfg = load_agent_config({
+        "OPENRECALL_ASR_BACKEND": "faster_whisper",
+        "OPENRECALL_WHISPER_NO_SPEECH_THRESHOLD": "0.42",
+    })
+    assert cfg.whisper.no_speech_threshold == 0.42
+
+
 # --- CommandDetectorConfig (speech -> command channel) -----------------------
 
 from openrecall_server.agent.config import (

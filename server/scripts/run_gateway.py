@@ -409,13 +409,17 @@ def main() -> None:
     # 240ms cadence Parakeet was tuned for — the ASR worker queue overflows
     # and drops real audio packets (chunk_seq holes), which shreds the stream.
     # Explicit --window-ms / --hop-ms always win.
+    # The split is per *engine family*, not per backend name: faster_whisper is
+    # Whisper (on CTranslate2), so it wants Whisper's 5s window and 1s hop, not
+    # Parakeet's low-latency 2s/240ms — a full Whisper decode cannot sustain a
+    # 240ms cadence on any device.
     if args.window_ms is None:
-        args.window_ms = 5000 if agent_config.asr.backend == "whisper" else 2000
+        args.window_ms = 2000 if agent_config.asr.backend == "parakeet" else 5000
         logging.info(
             "window_ms auto=%d (asr_backend=%s)", args.window_ms, agent_config.asr.backend,
         )
     if args.hop_ms is None:
-        args.hop_ms = 1000 if agent_config.asr.backend == "whisper" else 240
+        args.hop_ms = 240 if agent_config.asr.backend == "parakeet" else 1000
         logging.info(
             "hop_ms auto=%d (asr_backend=%s)", args.hop_ms, agent_config.asr.backend,
         )
@@ -601,7 +605,12 @@ def main() -> None:
         #     between overlapping calls — the word-doubling that utterance
         #     mode exists to prevent.
         remote_asr = (remote or {}).get("asr_backend", "")
-        if remote_asr and not remote_asr.lower().startswith(agent_config.asr.backend):
+        # The service reports its backend *class* name ("WhisperStreamingBackend",
+        # "FasterWhisperStreamingBackend"); the config name is snake_case, so
+        # strip the underscores before comparing or `faster_whisper` reports a
+        # mismatch against its own class.
+        _local_asr = agent_config.asr.backend.replace("_", "")
+        if remote_asr and not remote_asr.lower().startswith(_local_asr):
             logging.error(
                 "ASR BACKEND MISMATCH: this gateway schedules for %r "
                 "(window=%sms hop=%sms) but the inference service runs %s. "

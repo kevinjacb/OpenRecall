@@ -51,10 +51,20 @@ _VAD_MODES = ("webrtc",)
 # autoregressive hallucinations ("Thank you.", "Hello.") that Whisper
 # produces on near-silent / low-SNR audio. The switch is one env var so an
 # operator can flip back trivially (unset it -> whisper).
+#
+# ``faster_whisper`` is the portable one: Whisper via faster-whisper /
+# CTranslate2, which runs the same code on CPU and on CUDA (selected by
+# ``faster_whisper_device``). Both MLX backends above are Apple-Silicon-only,
+# so this is the backend for every non-Apple deployment profile.
 ENV_ASR_BACKEND = "OPENRECALL_ASR_BACKEND"
 ENV_PARAKEET_MODEL = "OPENRECALL_PARAKEET_MODEL"
 ENV_ASR_MODE = "OPENRECALL_ASR_MODE"
-_ASR_BACKENDS = ("whisper", "parakeet")
+ENV_FASTER_WHISPER_MODEL = "OPENRECALL_FASTER_WHISPER_MODEL"
+ENV_FASTER_WHISPER_DEVICE = "OPENRECALL_FASTER_WHISPER_DEVICE"
+ENV_FASTER_WHISPER_COMPUTE_TYPE = "OPENRECALL_FASTER_WHISPER_COMPUTE_TYPE"
+_ASR_BACKENDS = ("whisper", "parakeet", "faster_whisper")
+# CTranslate2's device names. "auto" = CUDA when a GPU is visible, else CPU.
+_FASTER_WHISPER_DEVICES = ("auto", "cpu", "cuda")
 
 # Transcription scheduling mode. "utterance": buffer speech and transcribe
 # each utterance once when the wearer pauses — no overlapping re-transcription
@@ -260,13 +270,27 @@ class AsrConfig(BaseModel):
       and the optional webrtcvad gate in :class:`StreamingTranscriber` still
       protect it.
 
+    - ``"faster_whisper"``: Whisper via faster-whisper / CTranslate2
+      (:class:`FasterWhisperStreamingBackend`). The same decoder as
+      ``"whisper"`` — so every Whisper-specific filter in
+      :class:`WhisperConfig` applies unchanged — but it runs on plain CPU and
+      on CUDA instead of requiring Apple Silicon, which is what makes a
+      non-Apple deployment possible. ``faster_whisper_device`` picks
+      cpu/cuda/auto and ``faster_whisper_compute_type`` the CTranslate2
+      quantization ("int8" on CPU, "float16" on CUDA).
+
     ``parakeet_model`` is the HuggingFace repo id for the Parakeet backend
-    (ignored when ``backend="whisper"``).
+    (ignored when ``backend="whisper"``). ``faster_whisper_model`` is the
+    Whisper size alias / CT2 model id for the faster-whisper backend (ignored
+    by the other two).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     backend: str = "whisper"
     parakeet_model: str = "mlx-community/parakeet-tdt-0.6b-v3"
+    faster_whisper_model: str = "large-v3-turbo"
+    faster_whisper_device: str = "auto"
+    faster_whisper_compute_type: str = "default"
     # Transcription scheduling: "auto" resolves per backend (utterance for
     # parakeet, hop for whisper) — see _ASR_MODES and resolved_mode().
     mode: str = "auto"
@@ -286,6 +310,22 @@ class AsrConfig(BaseModel):
             raise ValueError(
                 f"{ENV_PARAKEET_MODEL}={self.parakeet_model!r} must be a "
                 f"non-empty HuggingFace repo id"
+            )
+        if not self.faster_whisper_model.strip():
+            raise ValueError(
+                f"{ENV_FASTER_WHISPER_MODEL}={self.faster_whisper_model!r} must "
+                f"be a non-empty Whisper size alias or CTranslate2 model id"
+            )
+        if self.faster_whisper_device not in _FASTER_WHISPER_DEVICES:
+            raise ValueError(
+                f"{ENV_FASTER_WHISPER_DEVICE}={self.faster_whisper_device!r} "
+                f"must be one of {list(_FASTER_WHISPER_DEVICES)}"
+            )
+        if not self.faster_whisper_compute_type.strip():
+            raise ValueError(
+                f"{ENV_FASTER_WHISPER_COMPUTE_TYPE}="
+                f"{self.faster_whisper_compute_type!r} must be a non-empty "
+                f"CTranslate2 compute type (e.g. 'int8', 'float16', 'default')"
             )
         return self
 
@@ -539,6 +579,20 @@ def load_agent_config(env: Mapping[str, str]) -> AgentConfig:
         raw_mode = env[ENV_ASR_MODE].strip().lower()
         if raw_mode:
             asr_kwargs["mode"] = raw_mode
+    if ENV_FASTER_WHISPER_MODEL in env:
+        # Model ids are case-sensitive (HF repo ids), so only whitespace is
+        # stripped — unlike the backend/device names below.
+        raw_fw_model = env[ENV_FASTER_WHISPER_MODEL].strip()
+        if raw_fw_model:
+            asr_kwargs["faster_whisper_model"] = raw_fw_model
+    if ENV_FASTER_WHISPER_DEVICE in env:
+        raw_device = env[ENV_FASTER_WHISPER_DEVICE].strip().lower()
+        if raw_device:
+            asr_kwargs["faster_whisper_device"] = raw_device
+    if ENV_FASTER_WHISPER_COMPUTE_TYPE in env:
+        raw_compute = env[ENV_FASTER_WHISPER_COMPUTE_TYPE].strip().lower()
+        if raw_compute:
+            asr_kwargs["faster_whisper_compute_type"] = raw_compute
     command_kwargs: dict = {}
     if ENV_COMMAND_ENABLED in env:
         command_kwargs["enabled"] = _parse_bool(

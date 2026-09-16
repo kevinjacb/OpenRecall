@@ -7,14 +7,19 @@ Docker on a Mac cannot reach Metal. The gateway reaches it through the clients
 in ``openrecall_server.inference.client``, which implement the same Protocols
 as the in-process backends; running everything in one process stays the default.
 
-    pip install -e '.[mlx,speaker]'          # + '.[parakeet]' for the TDT backend
+    pip install -e '.[mlx,speaker]'          # + '.[parakeet]' for the TDT backend,
+                                             # or '.[fasterwhisper]' off Apple Silicon
     python scripts/run_inference.py --port 8767
 
 Backend selection reads the *same* ``OPENRECALL_*`` environment the gateway
 reads, so one config source drives both processes:
 
-  OPENRECALL_ASR_BACKEND            whisper (default) | parakeet
+  OPENRECALL_ASR_BACKEND            whisper (default) | parakeet | faster_whisper
   OPENRECALL_PARAKEET_MODEL         HuggingFace repo id for the parakeet backend
+  OPENRECALL_FASTER_WHISPER_MODEL   Whisper size alias / CT2 model id (portable backend)
+  OPENRECALL_FASTER_WHISPER_DEVICE  cpu | cuda | auto  — the portability switch
+  OPENRECALL_FASTER_WHISPER_COMPUTE_TYPE
+                                    CTranslate2 quantization (int8 on CPU, float16 on CUDA)
   OPENRECALL_WHISPER_*              the server-side noise-filter thresholds
   OPENRECALL_SPEAKER_EMBED_MODEL    "fake" for the deterministic test embedder;
                                     anything else (incl. unset) -> Resemblyzer
@@ -72,6 +77,32 @@ def build_backend(env, model_override: str | None = None):
         # fail confusingly. Parakeet has its own knob (OPENRECALL_PARAKEET_MODEL).
         return ParakeetStreamingBackend(
             model_name=cfg.asr.parakeet_model or DEFAULT_PARAKEET_MODEL)
+
+    if cfg.asr.backend == "faster_whisper":
+        from openrecall_server.ingest.faster_whisper_streaming import (
+            DEFAULT_FASTER_WHISPER_MODEL,
+            FasterWhisperStreamingBackend,
+        )
+
+        w = cfg.whisper
+        # The portable path: same Whisper decoder as below, on CTranslate2, so
+        # this service can be the CPU or CUDA container. `--model` is the
+        # mlx-whisper repo override and is deliberately not reused — a CT2 model
+        # id is a different namespace (OPENRECALL_FASTER_WHISPER_MODEL).
+        # Whisper's noise filters apply verbatim here; the model is constructed
+        # lazily on the first transcribe, i.e. on the dedicated ASR thread.
+        return FasterWhisperStreamingBackend(
+            model=cfg.asr.faster_whisper_model or DEFAULT_FASTER_WHISPER_MODEL,
+            device=cfg.asr.faster_whisper_device,
+            compute_type=cfg.asr.faster_whisper_compute_type,
+            no_speech_threshold=w.no_speech_threshold,
+            logprob_threshold=w.logprob_threshold,
+            compression_ratio_threshold=w.compression_ratio_threshold,
+            condition_on_previous_text=w.condition_on_previous_text,
+            hallucination_blocklist_enabled=w.hallucination_blocklist_enabled,
+            hallucination_max_words=w.hallucination_max_words,
+            hallucination_phrases=w.hallucination_phrases,
+        )
 
     from openrecall_server.ingest.whisper_streaming import (
         DEFAULT_MODEL,

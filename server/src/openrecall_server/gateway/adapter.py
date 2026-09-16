@@ -154,7 +154,13 @@ def build_pipeline_factory(
     :class:`ParakeetStreamingBackend` instead — NVIDIA Parakeet-TDT via
     parakeet-mlx, whose transducer decoder emits a blank symbol on
     silence and so does not hallucinate phantom phrases on room noise.
-    The two backends satisfy the same ``StreamingBackend`` Protocol, so
+    ``backend="faster_whisper"`` builds a
+    :class:`FasterWhisperStreamingBackend` — the same Whisper decoder as the
+    default, on CTranslate2 instead of MLX, so it runs on plain CPU and on
+    CUDA rather than requiring Apple Silicon. Being Whisper, it takes every
+    Whisper-specific noise filter below, unlike Parakeet.
+
+    The backends satisfy the same ``StreamingBackend`` Protocol, so
     everything above this seam (the rolling window, the committed
     cursor, the cross-hop dedup, the optional VAD gate) is identical
     either way. The Whisper-only noise filters below are simply not
@@ -208,10 +214,16 @@ def build_pipeline_factory(
     if asr_config is None:
         asr_backend = "whisper"
         parakeet_model = None
+        faster_whisper_model = None
+        faster_whisper_device = None
+        faster_whisper_compute_type = None
         asr_mode = "hop"
     else:
         asr_backend = asr_config.backend
         parakeet_model = asr_config.parakeet_model
+        faster_whisper_model = asr_config.faster_whisper_model
+        faster_whisper_device = asr_config.faster_whisper_device
+        faster_whisper_compute_type = asr_config.faster_whisper_compute_type
         asr_mode = asr_config.resolved_mode()
 
     # Where that backend runs. Resolved here for the same reason as above: one
@@ -305,6 +317,67 @@ def build_pipeline_factory(
                     if parakeet_model:
                         parakeet_kwargs["model_name"] = parakeet_model
                     backend = ParakeetStreamingBackend(**parakeet_kwargs)
+                elif asr_backend == "faster_whisper":
+                    from ..ingest.faster_whisper_streaming import (
+                        DEFAULT_COMPUTE_TYPE,
+                        DEFAULT_DEVICE,
+                        DEFAULT_FASTER_WHISPER_MODEL,
+                        FasterWhisperStreamingBackend,
+                        load_model as _load_faster_whisper,
+                    )
+                    from ..ingest.faster_whisper_streaming import (
+                        warmup_model as _warmup_faster_whisper,
+                    )
+
+                    # Whisper's decoder on CTranslate2 — the same model family
+                    # as the mlx path above, but it runs on plain CPU and on
+                    # CUDA, which is the whole reason this backend exists. The
+                    # Whisper-specific noise filters therefore apply verbatim
+                    # and are passed through.
+                    #
+                    # Unlike the Parakeet branch above there is no thread-
+                    # affinity invariant to preserve: CTranslate2 documents the
+                    # model as callable from several Python threads (that is
+                    # what its `num_workers` parallelizes), so loading here and
+                    # inferring elsewhere is supported. The shared lock below
+                    # is kept anyway, to serialize sessions onto one model for
+                    # memory rather than for correctness.
+                    _fw_name = faster_whisper_model or DEFAULT_FASTER_WHISPER_MODEL
+                    _fw_device = faster_whisper_device or DEFAULT_DEVICE
+                    _fw_compute = faster_whisper_compute_type or DEFAULT_COMPUTE_TYPE
+                    fw_kwargs = dict(
+                        model=_fw_name,
+                        device=_fw_device,
+                        compute_type=_fw_compute,
+                        no_speech_threshold=no_speech_threshold,
+                        logprob_threshold=logprob_threshold,
+                        compression_ratio_threshold=compression_ratio_threshold,
+                        condition_on_previous_text=condition_on_previous_text,
+                        hallucination_blocklist_enabled=hallucination_blocklist_enabled,
+                        hallucination_max_words=hallucination_max_words,
+                        hallucination_phrases=hallucination_phrases,
+                    )
+                    try:
+                        # The cache key carries device + compute_type: the same
+                        # weights quantized differently are different loaded
+                        # models, and the holder is keyed by string alone.
+                        _shared = get_shared_model(
+                            f"faster-whisper:{_fw_name}:{_fw_device}:{_fw_compute}",
+                            loader=lambda _key: _load_faster_whisper(
+                                _fw_name,
+                                device=_fw_device,
+                                compute_type=_fw_compute,
+                            ),
+                            warmup=_warmup_faster_whisper,
+                        )
+                        fw_kwargs["loaded_model"] = _shared.model
+                        fw_kwargs["inference_lock"] = _shared.inference_lock
+                    except ImportError:
+                        # faster-whisper not installed (test environment); fall
+                        # back to the backend's own lazy load on first
+                        # transcribe, which raises there with a clear message.
+                        pass
+                    backend = FasterWhisperStreamingBackend(**fw_kwargs)
                 else:
                     # Whisper's "model" is the repo-name string; mlx_whisper
                     # caches the loaded weights at module level internally, so

@@ -47,6 +47,16 @@ parakeet = [
     "parakeet-mlx>=0.5",
     "numpy>=2",
 ]
+# Portable streaming ASR backend: Whisper via faster-whisper (CTranslate2).
+# The one backend that is NOT Apple-Silicon-only — the same code runs on CPU
+# and on CUDA, selected by the `device` argument, so it serves both the `cpu`
+# and `nvidia` deployment profiles. Lazy-imported inside
+# FasterWhisperStreamingBackend so the unit suite and a default install run
+# without it; select at runtime with OPENRECALL_ASR_BACKEND=faster_whisper.
+fasterwhisper = [
+    "faster-whisper>=1.1",
+    "numpy>=2",
+]
 # Provider-agnostic LLM client (extraction). Works against any OpenAI-compatible
 # endpoint — local (Ollama, mlx_lm.server) or cloud (MiniMax/OpenAI/…).
 llm = [
