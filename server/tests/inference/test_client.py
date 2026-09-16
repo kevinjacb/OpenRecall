@@ -1,4 +1,4 @@
-import json, threading
+import contextlib, json, threading, time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
@@ -97,6 +97,79 @@ def test_server_error_raises_inference_unavailable(server):
     h.routes["/transcribe"] = (500, {"error": "boom"})
     with pytest.raises(InferenceUnavailable):
         HttpStreamingBackend(base).transcribe(b"\x01", 16000)
+
+
+class _QuietServer(HTTPServer):
+    def handle_error(self, *a):  # the client hangs up mid-sleep; that is the point
+        pass
+
+
+@contextlib.contextmanager
+def _serving(handler_cls):
+    httpd = _QuietServer(("127.0.0.1", 0), handler_cls)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_port}"
+    finally:
+        httpd.shutdown()
+
+
+class _SlowHandler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+        time.sleep(0.5)  # an order of magnitude past the client's timeout
+        body = json.dumps({"tokens": []}).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class _GarbageHandler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+        body = b"not json{{{"  # a 200 whose body is not JSON at all
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def test_timeout_raises_inference_unavailable():
+    """A hung service must degrade like a dead one, not block the worker thread."""
+    with _serving(_SlowHandler) as base:
+        b = HttpStreamingBackend(base, timeout_s=0.05)
+        started = time.monotonic()
+        with pytest.raises(InferenceUnavailable):
+            b.transcribe(b"\x01", 16000)
+        # it gave up on its own deadline rather than riding out the 0.5s sleep
+        assert time.monotonic() - started < 0.4
+
+
+def test_malformed_json_response_raises_inference_unavailable():
+    """A 200 carrying garbage is a service failure, not a decode error to leak."""
+    with _serving(_GarbageHandler) as base:
+        with pytest.raises(InferenceUnavailable):
+            HttpStreamingBackend(base).transcribe(b"\x01", 16000)
+
+
+def test_warmup_probes_the_service(server):
+    base, h = server
+    h.routes["/info"] = (200, {"embed_dim": 256, "asr_backend": "p", "ready": True})
+    HttpSpeakerEmbedder(base).warmup()
+    assert [p for p, _ in h.seen] == ["/info"]
+
+
+def test_warmup_raises_when_service_is_unreachable():
+    with pytest.raises(InferenceUnavailable):
+        HttpSpeakerEmbedder("http://127.0.0.1:9").warmup()
 
 
 def test_clients_satisfy_the_protocols(server):

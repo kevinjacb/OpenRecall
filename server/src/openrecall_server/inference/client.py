@@ -10,15 +10,12 @@ transcript for that window is lost. Dropping audio would be worse.
 from __future__ import annotations
 
 import json
-import logging
 import urllib.error
 import urllib.request
 
 from ..ingest.speaker_embedder import SpeakerVector
 from ..ingest.streaming_transcriber import Token
 from . import wire
-
-log = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_S = 30.0
 
