@@ -1,0 +1,107 @@
+# OpenRecall inference — the inference plane (spec §2), CPU profile.
+#
+# ASR (faster-whisper / CTranslate2) + speaker embedding (Resemblyzer, also
+# CPU). Both run on plain x86-64 or arm64, which is the point: the MLX backends
+# are Apple-Silicon-only and cannot be containerised at all.
+#
+# This container receives raw audio PCM, so per spec §6 it gets NO data volume
+# and NO egress once its models are cached. The only mount is the model cache.
+#
+#   docker build -f deploy/Dockerfile.inference -t openrecall-inference:cpu .
+#
+# The nvidia profile is this same image on a CUDA base with
+# OPENRECALL_FASTER_WHISPER_DEVICE=cuda — same backend code, different device.
+#
+# syntax=docker/dockerfile:1
+ARG PYTHON_VERSION=3.13
+FROM python:${PYTHON_VERSION}-slim AS build
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential
+# build-essential, not bare gcc: Resemblyzer pulls in webrtcvad, which has no
+# wheel for this platform and compiles C — gcc without libc6-dev fails on
+# "assert.h: No such file or directory".
+
+# A venv, not --prefix: pip must be able to SEE what it already installed, or
+# the CPU-only torch below is ignored and the CUDA build is pulled in again.
+RUN python -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+
+WORKDIR /build
+COPY server/pyproject.toml ./
+COPY server/src ./src
+
+# Torch first, from the CPU index. Resemblyzer depends on torch, and PyPI's
+# default wheel bundles CUDA: it dragged in 3.3 GB of nvidia/* plus 817 MB of
+# triton on a CPU-only image (10.1 GB total, measured). The CPU wheel is a
+# fraction of that and is the only one this profile can use anyway.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# setuptools: webrtcvad (a Resemblyzer dependency) does `import pkg_resources`
+# at module scope, and Python 3.12+ venvs no longer ship setuptools — without
+# it the embedder fails to load at runtime while ASR works, which /info then
+# correctly reports as ready=false.
+#
+# `fasterwhisper` — the portable ASR backend (CTranslate2), CPU and CUDA.
+# `speaker`       — Resemblyzer. Runs on CPU even on the nvidia profile, so it
+#                   costs no VRAM; it lives here because the embedder belongs
+#                   with the audio, not with the gateway.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install setuptools '.[fasterwhisper,speaker]'
+
+
+FROM python:${PYTHON_VERSION}-slim AS runtime
+
+# libgomp1: CTranslate2 links against OpenMP for its CPU kernels.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        libgomp1 tini
+
+ARG UID=1000
+ARG GID=1000
+# Reuse an existing id rather than assuming it is free (a macOS host's GID 20
+# is Debian's `dialout`).
+RUN if ! getent group ${GID} >/dev/null 2>&1; then groupadd --gid ${GID} sense; fi \
+ && if ! getent passwd ${UID} >/dev/null 2>&1; then \
+        useradd --uid ${UID} --gid ${GID} --create-home --shell /usr/sbin/nologin sense; \
+    fi
+
+COPY --from=build /opt/venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+WORKDIR /app
+COPY server/scripts ./scripts
+
+# Model cache. Weights are NOT baked into the image: they are large, they
+# change independently of the code, and a licence-bearing blob in a layer is
+# its own problem. First run downloads into this volume; after that the
+# container needs no egress at all.
+RUN mkdir -p /models && chown ${UID}:${GID} /models
+VOLUME ["/models"]
+ENV HF_HOME=/models \
+    PYTHONUNBUFFERED=1 \
+    OPENRECALL_ASR_BACKEND=faster_whisper \
+    OPENRECALL_FASTER_WHISPER_DEVICE=cpu \
+    OPENRECALL_FASTER_WHISPER_COMPUTE_TYPE=int8 \
+    # Measured on CPU int8: large-v3-turbo runs at 0.49x realtime and falls
+    # behind live audio permanently, at which point the gateway's bounded ASR
+    # queue starts dropping real packets. small.en measures 3.51x. Do not
+    # raise this default without measuring on the target hardware.
+    OPENRECALL_FASTER_WHISPER_MODEL=small.en
+
+USER ${UID}:${GID}
+EXPOSE 8767
+
+# /info reports readiness honestly: it 503s when a model failed to load, so
+# this is a real health check rather than a liveness ping.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8767/info',timeout=4).status==200 else 1)"
+
+# --host 0.0.0.0, not the script's 127.0.0.1 default: the core reaches this
+# across a container boundary. The service has no auth, so it must stay on an
+# internal compose network and must never be published.
+ENTRYPOINT ["/usr/bin/tini", "--", "python", "-u", "/app/scripts/run_inference.py", \
+            "--host", "0.0.0.0", "--port", "8767"]

@@ -336,6 +336,25 @@ class AsrConfig(BaseModel):
         return "utterance" if self.backend == "parakeet" else "hop"
 
 
+def scheduling_family(name: str) -> str:
+    """Which transcription cadence a backend name implies.
+
+    The gateway picks window/hop and hop-vs-utterance mode from this, and those
+    are the settings a cross-process mismatch actually breaks. Parakeet is a
+    transducer tuned for a 240 ms hop; every Whisper variant (mlx-whisper,
+    faster-whisper) wants a 5 s window and a 1 s hop regardless of which runtime
+    executes it.
+
+    Accepts either a config name (``"faster_whisper"``) or the class name the
+    inference service reports from ``/info``
+    (``"FasterWhisperStreamingBackend"``), so the two processes can be compared
+    directly. Comparing names instead of families would flag ``whisper``
+    driving a ``FasterWhisperStreamingBackend`` — same decoder, same cadence,
+    entirely correct — and train the operator to ignore the warning.
+    """
+    return "parakeet" if "parakeet" in name.lower() else "whisper"
+
+
 class CommandDetectorConfig(BaseModel):
     """Configuration for the speech -> command channel: detecting device
     commands ("take a photo", "start a video") from the rolling transcript

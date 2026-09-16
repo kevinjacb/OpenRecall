@@ -56,6 +56,17 @@ services:
       OPENRECALL_LLM_MODEL: ${OPENRECALL_LLM_MODEL:-qwen2.5:7b}
       # OPENRECALL_VLM_MODEL is optional — unset disables vision cleanly.
 
+    depends_on:
+      inference:
+        # Wait for the models to load, not just for the process to start:
+        # /info 503s until both are ready. Without this the core boots first,
+        # probes a service that is still loading, and prints UNREACHABLE on a
+        # deployment that is actually fine.
+        condition: service_healthy
+        # required:false so this is a no-op on the apple profile, where the
+        # inference service is not started at all (it runs natively).
+        required: false
+
     extra_hosts:
       # Linux needs this explicitly; Docker Desktop provides it already.
       - "host.docker.internal:host-gateway"
@@ -72,3 +83,42 @@ services:
         # contain credentials. Bound them, and treat them as sensitive.
         max-size: "10m"
         max-file: "3"
+
+  # --- cpu profile only -----------------------------------------------------
+  # Started by `--profile cpu`. On the apple profile this stays down and the
+  # sidecar runs natively, because a container on macOS cannot reach Metal.
+  inference:
+    profiles: ["cpu"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.inference
+      args:
+        UID: ${OPENRECALL_UID:-1000}
+        GID: ${OPENRECALL_GID:-1000}
+    image: openrecall-inference:${OPENRECALL_TAG:-cpu}
+    restart: unless-stopped
+
+    # NOT published. This service has no authentication and it receives raw
+    # audio, so it must only ever be reachable from the core over the internal
+    # network (spec §6).
+    expose:
+      - "8767"
+
+    volumes:
+      # The ONLY mount: the model cache. No data volume — this container sees
+      # raw audio and must not also see the recordings, the transcripts or the
+      # signing key.
+      - openrecall-models:/models
+
+    environment:
+      # Measured on CPU int8: large-v3-turbo runs at 0.49x realtime and falls
+      # behind live audio permanently; small.en measures 3.51x. Do not raise
+      # this without measuring on the target hardware.
+      OPENRECALL_FASTER_WHISPER_MODEL: ${OPENRECALL_ASR_MODEL:-small.en}
+
+    stop_grace_period: 30s
+
+volumes:
+  # Weights are not baked into the image. First run downloads into this volume;
+  # afterwards the container needs no egress at all.
+  openrecall-models:

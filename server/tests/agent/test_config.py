@@ -524,3 +524,40 @@ def test_blank_inference_url_means_unset():
     otherwise be a truthy-looking url that every request fails against."""
     cfg = load_agent_config({"OPENRECALL_INFERENCE_URL": "   "})
     assert cfg.inference.url is None
+
+
+def test_scheduling_family_pairs_whisper_variants_together():
+    """What a cross-process mismatch actually breaks is the CADENCE, and every
+    Whisper variant shares one. Comparing names instead would flag a `whisper`
+    gateway driving a FasterWhisperStreamingBackend — same decoder, same 5s/1s
+    cadence, entirely correct — and train the operator to ignore the warning."""
+    from openrecall_server.agent.config import scheduling_family
+
+    for name in ("whisper", "faster_whisper", "WhisperStreamingBackend",
+                 "FasterWhisperStreamingBackend"):
+        assert scheduling_family(name) == "whisper", name
+
+
+def test_scheduling_family_separates_parakeet():
+    """Parakeet is the one that genuinely differs: 2000ms/240ms and utterance
+    mode against Whisper's 5000ms/1000ms and hop mode."""
+    from openrecall_server.agent.config import scheduling_family
+
+    for name in ("parakeet", "ParakeetStreamingBackend"):
+        assert scheduling_family(name) == "parakeet", name
+    assert scheduling_family("parakeet") != scheduling_family("whisper")
+    assert scheduling_family("parakeet") != scheduling_family("faster_whisper")
+
+
+def test_scheduling_family_matches_the_window_hop_rule_it_stands_for():
+    """The family split must agree with the actual cadence decision in
+    run_gateway.py, or this check drifts from what it claims to verify."""
+    from openrecall_server.agent.config import scheduling_family
+
+    src = open("scripts/run_gateway.py").read()
+    # Both auto-tuning lines branch on parakeet specifically.
+    assert 'if agent_config.asr.backend == "parakeet"' in src or \
+           '== "parakeet" else' in src, (
+        "run_gateway no longer splits window/hop on parakeet; scheduling_family "
+        "encodes that split and must be updated with it")
+    assert scheduling_family("parakeet") == "parakeet"

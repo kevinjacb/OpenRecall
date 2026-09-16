@@ -86,8 +86,9 @@ case "$PROFILE" in
         ;;
     cpu)
         INFERENCE_URL="http://inference:8767"
-        OLLAMA_HOST="http://ollama:11434/v1"
-        echo "  inference        : CPU container (small models — expect slow transcription)"
+        # No Ollama container is started here, so point at the host's.
+        OLLAMA_HOST="http://host.docker.internal:11434/v1"
+        echo "  inference        : CPU container (faster-whisper small.en, ~3.5x realtime)"
         ;;
     cloud)
         INFERENCE_URL=""
@@ -168,8 +169,17 @@ if [ "$PROFILE" = "apple" ]; then
     echo "inference sidecar: reachable on :8767"
 fi
 
-echo "starting the core…"
-$RUNTIME compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build
+# The cpu profile also brings up the inference container; apple does not,
+# because its sidecar is the native process checked above.
+COMPOSE_PROFILE_ARGS=()
+if [ "$PROFILE" = "cpu" ]; then
+    COMPOSE_PROFILE_ARGS=(--profile cpu)
+    echo "starting the core and the CPU inference container…"
+    echo "(first run downloads the ASR model into a named volume — allow a few minutes)"
+else
+    echo "starting the core…"
+fi
+$RUNTIME compose --env-file "$ENV_FILE" "${COMPOSE_PROFILE_ARGS[@]}" -f "$COMPOSE_FILE" up -d --build
 
 echo
 echo "up. Follow the log for the bearer token and signing key:"

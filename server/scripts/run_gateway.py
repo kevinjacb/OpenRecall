@@ -60,6 +60,7 @@ from pathlib import Path
 
 import aiohttp.web
 
+from openrecall_server.agent.config import scheduling_family
 from openrecall_server.agent.metrics import InMemoryMetricsRecorder
 from openrecall_server.auth import load_or_create_token
 from openrecall_server.commands.dispatcher import CommandDispatcher
@@ -605,18 +606,23 @@ def main() -> None:
         #     between overlapping calls — the word-doubling that utterance
         #     mode exists to prevent.
         remote_asr = (remote or {}).get("asr_backend", "")
-        # The service reports its backend *class* name ("WhisperStreamingBackend",
-        # "FasterWhisperStreamingBackend"); the config name is snake_case, so
-        # strip the underscores before comparing or `faster_whisper` reports a
-        # mismatch against its own class.
-        _local_asr = agent_config.asr.backend.replace("_", "")
-        if remote_asr and not remote_asr.lower().startswith(_local_asr):
+        # Compare SCHEDULING FAMILY, not name. What breaks is a cadence
+        # mismatch, and the cadence is chosen by family: parakeet gets
+        # 2000ms/240ms and utterance mode, every Whisper variant gets
+        # 5000ms/1000ms and hop mode. So "whisper" driving a
+        # FasterWhisperStreamingBackend is CORRECT — same decoder, same
+        # cadence — and flagging it would train the operator to ignore this
+        # line. Only a cross-family pairing is a real problem.
+        _family = scheduling_family(agent_config.asr.backend)
+        _remote_family = scheduling_family(remote_asr)
+        if remote_asr and _remote_family != _family:
             logging.error(
-                "ASR BACKEND MISMATCH: this gateway schedules for %r "
-                "(window=%sms hop=%sms) but the inference service runs %s. "
-                "Set OPENRECALL_ASR_BACKEND identically in both processes; "
-                "otherwise expect dropped audio packets or duplicated words.",
-                agent_config.asr.backend, args.window_ms, args.hop_ms, remote_asr,
+                "ASR BACKEND MISMATCH: this gateway schedules for the %r family "
+                "(window=%sms hop=%sms) but the inference service runs %s (%r "
+                "family). Set OPENRECALL_ASR_BACKEND compatibly in both "
+                "processes; otherwise expect dropped audio packets or "
+                "duplicated words.",
+                _family, args.window_ms, args.hop_ms, remote_asr, _remote_family,
             )
     else:
         print("inference: in-process "
