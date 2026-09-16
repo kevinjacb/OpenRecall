@@ -1,0 +1,74 @@
+# OpenRecall — apple profile (spec §5).
+#
+# The core runs in a container; ASR and speaker embedding run NATIVELY on the
+# host, because Docker on macOS has no Metal access and a containerised MLX
+# backend would silently fall back to CPU. That native sidecar is not started
+# here — see deploy/README.md. This file is honest about that rather than
+# pretending `docker compose up` is the whole story.
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# On a Linux box with an NVIDIA GPU the sidecar becomes a container too (P3),
+# at which point it joins this file and OPENRECALL_INFERENCE_URL changes from
+# host.docker.internal to a service name.
+
+services:
+  core:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        # Must match the owner of the data volume: secret creation on first
+        # boot is not guarded against PermissionError.
+        UID: ${OPENRECALL_UID:-1000}
+        GID: ${OPENRECALL_GID:-1000}
+    image: openrecall-core:${OPENRECALL_TAG:-dev}
+    restart: unless-stopped
+
+    # NOT remapped, deliberately. /health advertises the gateway port so the
+    # phone can derive its WebSocket URL, and it reports the container-internal
+    # value — publishing 9765:8765 would hand the relay a URL that does not
+    # resolve.
+    ports:
+      - "8765:8765"   # WebSocket: audio + control (the relay connects here)
+      - "8766:8766"   # HTTP control API
+
+    volumes:
+      # The single durable mount: 8 SQLite databases, audio/, blobs/, and both
+      # secrets. Everything the deployment is. Back this up (README).
+      - ${OPENRECALL_DATA:-./data}:/data
+
+    environment:
+      # --- Inference: native on this host (apple profile) ---
+      # The sidecar must be started with --host 0.0.0.0; its default of
+      # 127.0.0.1 is not reachable from inside a container.
+      OPENRECALL_INFERENCE_URL: ${OPENRECALL_INFERENCE_URL:-http://host.docker.internal:8767}
+
+      # --- LLM endpoints: host Ollama ---
+      # These default to localhost:11434 in code, which inside a container is
+      # the container itself. The entrypoint warns; setting them here is the fix.
+      OPENRECALL_LLM_BASE_URL: ${OPENRECALL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      OPENRECALL_EMBED_BASE_URL: ${OPENRECALL_EMBED_BASE_URL:-http://host.docker.internal:11434/v1}
+      OPENRECALL_VLM_BASE_URL: ${OPENRECALL_VLM_BASE_URL:-http://host.docker.internal:11434/v1}
+
+      # --- Model names: no defaults in code; boot fails without them ---
+      OPENRECALL_EMBED_MODEL: ${OPENRECALL_EMBED_MODEL:-nomic-embed-text}
+      OPENRECALL_LLM_MODEL: ${OPENRECALL_LLM_MODEL:-qwen2.5:7b}
+      # OPENRECALL_VLM_MODEL is optional — unset disables vision cleanly.
+
+    extra_hosts:
+      # Linux needs this explicitly; Docker Desktop provides it already.
+      - "host.docker.internal:host-gateway"
+
+    # tini is the image's PID 1 and the gateway installs a SIGTERM handler, so
+    # a stop drains the extraction worker and closes the stores. Give it room:
+    # the default 10s can cut a long extraction short.
+    stop_grace_period: 30s
+
+    logging:
+      driver: json-file
+      options:
+        # Both bearer tokens are printed to stdout at boot, so container logs
+        # contain credentials. Bound them, and treat them as sensitive.
+        max-size: "10m"
+        max-file: "3"

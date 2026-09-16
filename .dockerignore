@@ -1,0 +1,38 @@
+# Build context is the repo root (so deploy/ and server/ are both reachable).
+# Everything below is either private, host-specific, or irrelevant at runtime.
+
+# ---- The owner's real data. This MUST stay first and exhaustive. ----
+# Anything in the build context can be COPYed into a layer, and layers are
+# trivially extractable even if a later stage deletes the file. Recordings,
+# transcripts, speaker embeddings and the command-signing key reach the
+# container through a mounted volume at runtime, never through the image.
+server/data/
+**/*.opusraw
+**/*.peaks
+**/server_token
+**/hermes.token
+**/server_ed25519.key
+**/config.toml
+
+# ---- Not part of the server image ----
+# The firmware and Android toolchains do not run on the server box (spec §9),
+# and they are by far the largest directories in the repo.
+firmware/
+android/
+
+# ---- Local environments and caches ----
+# .venv holds macOS/arm64 wheels including MLX — wrong architecture, wrong OS.
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+.git/
+.superpowers/
+
+# ---- Not needed at runtime ----
+# Tests carry audio fixtures; docs/ is gitignored design work.
+server/tests/
+docs/
+*.md
