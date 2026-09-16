@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import signal
 from pathlib import Path
 
 import aiohttp.web
@@ -97,6 +98,11 @@ from openrecall_server.sessions.sweeper import SegmentSweeper
 from openrecall_server.sessions.titler import SegmentTitler
 from openrecall_server.settings.reconciler import DeviceReconciler
 from openrecall_server.settings.store import SqliteSettingsStore
+from openrecall_server.storage_paths import (
+    InvalidDatabasePath,
+    sibling_db,
+    validate_events_db_path,
+)
 
 
 def main() -> None:
@@ -162,12 +168,20 @@ def main() -> None:
             len(_cfg_applied), args.config,
         )
 
+    # Validates that the sibling databases can actually be derived from this
+    # path. A basename without "events.db" used to make every derivation a
+    # no-op, silently opening all eight stores on one file (storage_paths).
+    try:
+        validate_events_db_path(args.db)
+    except InvalidDatabasePath as exc:
+        raise SystemExit(str(exc)) from None   # a flag error, not a crash
+
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
     store = SqliteEventStore(args.db)
     signer = load_or_create_signer(args.key_file)
     from openrecall_server.commands.store import SqliteCommandStore
     command_store = SqliteCommandStore(
-        args.db.replace("events.db", "commands.db")
+        sibling_db(args.db, "commands.db")
     )
     dispatcher = CommandDispatcher(signer, store=command_store)
     # NOTE: the pipeline factory is built later (after `agent_config`
@@ -192,7 +206,7 @@ def main() -> None:
     segment_index = SegmentIndex()
     segment_index.rebuild_from_store(store)
     segment_meta = SqliteSegmentMetaStore(
-        args.db.replace("events.db", "segment_meta.db")
+        sibling_db(args.db, "segment_meta.db")
     )
     # Device liveness (spec §5.1): the connection-freshness signal behind
     # /device/status. Written by the gateway, read by HTTP.
@@ -203,7 +217,7 @@ def main() -> None:
     # Settings are durable desired state (spec D2): a command-only toggle is
     # dead whenever the device is offline, which is most of the time.
     settings_store = SqliteSettingsStore(
-        args.db.replace("events.db", "settings.db")
+        sibling_db(args.db, "settings.db")
     )
 
     # Memory pipeline (M4.4 wiring): the gateway offloads extraction +
@@ -212,7 +226,7 @@ def main() -> None:
     # touches; the worker drains it on a background task. The metrics
     # recorder is process-wide so /metrics reflects the same numbers.
     metrics = InMemoryMetricsRecorder()
-    atom_store = SqliteAtomStore(args.db.replace("events.db", "atoms.db"))
+    atom_store = SqliteAtomStore(sibling_db(args.db, "atoms.db"))
     # P3 vision: content-addressed image blobs + the rel_ts->session sidecar.
     from openrecall_server.media.blob import FilesystemBlobStore
     blob_store = FilesystemBlobStore(Path(args.db).parent / "blobs")
@@ -243,14 +257,14 @@ def main() -> None:
     # the recent-transcript provider reads the event store the gateway
     # already owns.
     from openrecall_server.reminders.store import SqliteReminderStore
-    reminder_store = SqliteReminderStore(args.db.replace("events.db", "reminders.db"))
+    reminder_store = SqliteReminderStore(sibling_db(args.db, "reminders.db"))
     from openrecall_server.agent.context import EventBackedRecentTranscript
     recent_transcript = EventBackedRecentTranscript(store)
     # Spec §1.1: give historical atoms their real conversation time, joined
     # from the source capture event. Idempotent and best-effort — a row that
     # can't be resolved keeps the created_at fallback.
     backfill_occurred_at(store, atom_store)
-    memory_index = SqliteMemoryIndex(args.db.replace("events.db", "memory_index.db"))
+    memory_index = SqliteMemoryIndex(sibling_db(args.db, "memory_index.db"))
     # Task 1 (retrieval-clock production fix): copy occurred_at from the atom
     # store onto the vector index so the production retrieval path (which
     # scores recency on timeline_at) has real values instead of always
@@ -276,7 +290,7 @@ def main() -> None:
     agent_config = load_agent_config(__import__("os").environ)
     speaker_cfg = load_speaker_config(__import__("os").environ)
     speaker_registry = SqliteSpeakerRegistry(
-        args.db.replace("events.db", "speakers.db"), speaker_cfg,
+        sibling_db(args.db, "speakers.db"), speaker_cfg,
     )
     speaker_identifier = build_speaker_identifier(
         speaker_cfg, speaker_registry, embedder=None,
@@ -796,6 +810,16 @@ def main() -> None:
             await segment_sweeper.stop()
             await worker.stop()
             await http_runner.cleanup()
+
+    # `docker stop` and systemd send SIGTERM, whose default action kills the
+    # process outright — so the `finally` above never runs, the extraction
+    # worker is not drained, the sweepers are not stopped, and the HTTP runner
+    # is not cleaned up. Map it onto the SIGINT path, which already does all of
+    # that correctly and is the one exercised by every Ctrl-C in development.
+    def _terminate(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _terminate)
 
     try:
         asyncio.run(main_loop())
