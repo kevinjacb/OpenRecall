@@ -35,11 +35,12 @@ are resident and ``/info`` is a true readiness signal.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import logging
 import os
 
 from aiohttp import web
+
+log = logging.getLogger(__name__)
 
 _WARM_MS = 1000  # 1 s of silence: enough to force a real load + one inference
 
@@ -95,20 +96,27 @@ def build_backend(env, model_override: str | None = None):
 def build_embedder(env):
     """Construct the speaker embedder the env selects (model still unloaded).
 
-    Reuses ``gateway.adapter._select_embedder`` rather than re-deriving the
-    rule: "fake" means the deterministic test embedder, anything else (including
-    unset) means the real Resemblyzer backend. That default was a production
-    incident once already; there must be exactly one copy of it.
-    """
-    from openrecall_server.gateway.adapter import _select_embedder
-    from openrecall_server.ingest.speaker_config import load_speaker_config
+    Reuses ``ingest.speaker_embedder.select_embedder`` rather than re-deriving
+    the rule: "fake" means the deterministic test embedder, anything else
+    (including unset) means the real Resemblyzer backend. That default was a
+    production incident once already; there must be exactly one copy of it.
 
-    return _select_embedder(load_speaker_config(env))
+    Imported from ``ingest``, not ``gateway.adapter``: this process exists to be
+    a standalone inference worker, and pulling in the gateway/agent/protocol
+    module graphs would mean an import-time error anywhere in them takes
+    inference down with it.
+    """
+    from openrecall_server.ingest.speaker_config import load_speaker_config
+    from openrecall_server.ingest.speaker_embedder import select_embedder
+
+    return select_embedder(load_speaker_config(env))
 
 
 def add_warmup(app, backend, embedder) -> None:
     """Load both models at startup, each on the thread that will run it."""
-    from openrecall_server.inference.service import ASR_EXECUTOR, EMBED_EXECUTOR
+    from openrecall_server.inference.service import (
+        ASR_RUNNER, EMBED_RUNNER, READY,
+    )
 
     silence = b"\x00" * (16000 * 2 * _WARM_MS // 1000)
 
@@ -123,18 +131,37 @@ def add_warmup(app, backend, embedder) -> None:
             warmup()
 
     async def _startup(app_):
-        loop = asyncio.get_running_loop()
-        for name, pool, fn in (("asr", app_[ASR_EXECUTOR], warm_asr),
-                               ("embed", app_[EMBED_EXECUTOR], warm_embed)):
+        state = app_[READY]
+        for name, runner, fn in (("asr", app_[ASR_RUNNER], warm_asr),
+                                 ("embed", app_[EMBED_RUNNER], warm_embed)):
             try:
-                await loop.run_in_executor(pool, fn)
-                logging.info("%s_warm ok", name)
+                await runner.run(fn)
+                state[name] = True
+                log.info("%s_warm ok", name)
             except Exception:
                 # Best-effort: a warm failure must not stop the service from
-                # serving — the next real request retries the load.
-                logging.exception("%s_warmup_failed", name)
-        print(f"models ready: asr={type(backend).__name__} "
-              f"embed_dim={getattr(embedder, 'dim', '?')}", flush=True)
+                # serving — the next real request retries the load. But it MUST
+                # be recorded, or /info reports a readiness the process does
+                # not have.
+                state[name] = False
+                log.exception("%s_warmup_failed", name)
+
+        dim = "unloaded"
+        if state["embed"]:
+            try:
+                # On the embed thread, never here: `dim` is a property that
+                # loads the model on the real backend, and the whole point of
+                # the dedicated executor is that the model is only ever touched
+                # from its own thread. Reading it on the event loop is the
+                # affinity bug this service exists to avoid.
+                state["embed_dim"] = dim = int(
+                    await app_[EMBED_RUNNER].run(lambda: embedder.dim))
+            except Exception:
+                state["embed"] = False
+                log.exception("embed_dim_failed")
+
+        print(f"models ready: asr={type(backend).__name__} embed_dim={dim} "
+              f"ready={state['asr'] and state['embed']}", flush=True)
 
     app.on_startup.append(_startup)
 

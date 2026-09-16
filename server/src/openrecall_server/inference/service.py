@@ -18,6 +18,16 @@ loaded on that same thread at startup — which is exactly what the gateway does
 with its single ``asr-worker`` thread, and why the in-process path never hit
 this. A single ASR thread also serializes inference, so the shared
 ``inference_lock`` the gateway threads through its backends is redundant here.
+
+**Nothing may touch a model off its own thread — including a read of
+``embedder.dim``**, which is a property that loads the model on the real
+backend. Every such access goes through the owning :class:`_ModelRunner`.
+
+One thread per model means a wedged call blocks that model entirely, so each
+runner carries a deadline and a bounded backlog: past ``max_inflight`` queued
+calls it refuses with 503 rather than growing an unbounded queue that pins a
+decoded PCM buffer per entry. ``/info`` reports the backlog, so a wedged worker
+is visible to a health check instead of hiding behind a cheerful ``ready``.
 """
 from __future__ import annotations
 
@@ -32,10 +42,81 @@ from . import wire
 
 log = logging.getLogger(__name__)
 
-#: The dedicated model threads, exposed so startup code can load/warm each
-#: model ON the thread that will later run it (see the module docstring).
-ASR_EXECUTOR = web.AppKey("asr_executor", ThreadPoolExecutor)
-EMBED_EXECUTOR = web.AppKey("embed_executor", ThreadPoolExecutor)
+#: Per-model runners, exposed so startup code can load/warm each model ON the
+#: thread that will later run it (see the module docstring).
+ASR_RUNNER = web.AppKey("asr_runner", object)
+EMBED_RUNNER = web.AppKey("embed_runner", object)
+#: Warmup outcome + the resolved embedding dimension, read by ``/info``.
+READY = web.AppKey("ready", dict)
+
+DEFAULT_REQUEST_TIMEOUT_S = 120.0
+DEFAULT_MAX_INFLIGHT = 8
+
+#: 20 s of 16 kHz mono int16 (``utterance_transcriber.DEFAULT_MAX_UTTERANCE_MS``)
+#: is 640 000 B of PCM, ~853 KB once base64'd into a JSON body. aiohttp's own
+#: default is 1 MiB, which that would quietly sit at 81% of. Pick the number
+#: deliberately instead of inheriting it.
+DEFAULT_MAX_BODY_BYTES = 4 * 1024 * 1024
+
+
+class ServiceBusy(Exception):
+    """The model is saturated or wedged — a 503, distinct from a model error."""
+
+
+class _ModelRunner:
+    """Owns one model's dedicated thread, its deadline and its backlog.
+
+    ``max_workers=1`` is thread affinity, not a throughput choice: see the
+    module docstring. Every call into the model goes through :meth:`run`, so
+    there is exactly one place that can violate the affinity invariant.
+    """
+
+    def __init__(self, name: str, *, timeout_s: float, max_inflight: int) -> None:
+        self._name = name
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=name)
+        self._timeout_s = timeout_s
+        self._max_inflight = max_inflight
+        self._inflight = 0
+
+    @property
+    def inflight(self) -> int:
+        return self._inflight
+
+    @property
+    def saturated(self) -> bool:
+        return self._inflight >= self._max_inflight
+
+    async def run(self, fn, *args):
+        """Run ``fn`` on this model's thread, or raise ServiceBusy.
+
+        The in-flight count is released by a done-callback on the executor
+        future, **not** by the timeout. A cancelled ``wait_for`` does not stop
+        the thread — the work keeps running — so releasing on timeout would let
+        a wedged worker accept unbounded new requests that all queue behind it.
+        Holding the count until the call truly finishes is what makes the
+        backlog bound real.
+        """
+        if self.saturated:
+            raise ServiceBusy(
+                f"{self._name} backlog full ({self._inflight} in flight)")
+        loop = asyncio.get_running_loop()
+        fut = loop.run_in_executor(self._pool, fn, *args)
+        self._inflight += 1
+        fut.add_done_callback(self._release)
+        try:
+            return await asyncio.wait_for(asyncio.shield(fut), self._timeout_s)
+        except TimeoutError as exc:
+            raise ServiceBusy(
+                f"{self._name} did not answer within {self._timeout_s}s") from exc
+
+    def _release(self, _fut) -> None:
+        self._inflight -= 1
+
+    def shutdown(self) -> None:
+        # wait=False returns immediately, but concurrent.futures registers an
+        # atexit hook that joins every worker regardless, so a wedged call still
+        # holds the interpreter at exit. Nothing here can prevent that.
+        self._pool.shutdown(wait=False)
 
 
 def _bad_request(message: str) -> web.HTTPBadRequest:
@@ -57,6 +138,12 @@ async def _read_audio(request: web.Request) -> tuple[bytes, int]:
     """
     try:
         body = await request.json()
+    except web.HTTPException:
+        # An oversized body raises HTTPRequestEntityTooLarge from inside
+        # request.json(). Let it through unchanged: rewriting it as "body is
+        # not JSON" reports the wrong status and sends the reader hunting a
+        # serialization bug instead of a size limit.
+        raise
     except Exception as exc:                      # not JSON at all
         raise _bad_request(f"body is not JSON: {exc}") from exc
     try:
@@ -67,20 +154,31 @@ async def _read_audio(request: web.Request) -> tuple[bytes, int]:
     return pcm, sample_rate
 
 
-def build_app(*, backend, embedder) -> web.Application:
-    app = web.Application()
-    # max_workers=1: thread affinity for the model, not a throughput choice.
-    asr_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="asr")
-    embed_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="embed")
-    app[ASR_EXECUTOR] = asr_pool
-    app[EMBED_EXECUTOR] = embed_pool
+def build_app(
+    *,
+    backend,
+    embedder,
+    request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
+    max_inflight: int = DEFAULT_MAX_INFLIGHT,
+    client_max_size: int = DEFAULT_MAX_BODY_BYTES,
+) -> web.Application:
+    app = web.Application(client_max_size=client_max_size)
+    asr = _ModelRunner("asr", timeout_s=request_timeout_s, max_inflight=max_inflight)
+    embed_runner = _ModelRunner(
+        "embed", timeout_s=request_timeout_s, max_inflight=max_inflight)
+    app[ASR_RUNNER] = asr
+    app[EMBED_RUNNER] = embed_runner
+    # embed_dim None means "not resolved yet"; /info resolves it on the embed
+    # thread and caches it. asr/embed are set by the startup warmup, if any.
+    app[READY] = {"asr": True, "embed": True, "embed_dim": None}
 
     async def transcribe(request: web.Request) -> web.Response:
         pcm, sample_rate = await _read_audio(request)
-        loop = asyncio.get_running_loop()
         try:
-            tokens = await loop.run_in_executor(
-                asr_pool, backend.transcribe, pcm, sample_rate)
+            tokens = await asr.run(backend.transcribe, pcm, sample_rate)
+        except ServiceBusy as exc:
+            log.warning("transcribe_busy: %s", exc)
+            return web.json_response({"error": str(exc)}, status=503)
         except Exception as exc:
             log.exception("transcribe_failed")
             return web.json_response({"error": str(exc)}, status=500)
@@ -88,28 +186,49 @@ def build_app(*, backend, embedder) -> web.Application:
 
     async def embed(request: web.Request) -> web.Response:
         pcm, sample_rate = await _read_audio(request)
-        loop = asyncio.get_running_loop()
         try:
-            vector = await loop.run_in_executor(
-                embed_pool, embedder.embed, pcm, sample_rate)
+            vector = await embed_runner.run(embedder.embed, pcm, sample_rate)
+        except ServiceBusy as exc:
+            log.warning("embed_busy: %s", exc)
+            return web.json_response({"error": str(exc)}, status=503)
         except Exception as exc:
             log.exception("embed_failed")
             return web.json_response({"error": str(exc)}, status=500)
         return web.json_response(
             {"vector": None if vector is None else [float(x) for x in vector]})
 
-    async def info(_request: web.Request) -> web.Response:
+    async def info(request: web.Request) -> web.Response:
+        state = request.app[READY]
+        if state["embed_dim"] is None and state["embed"]:
+            try:
+                # Resolved ON the embed thread: `dim` is a property that loads
+                # the model on the real backend.
+                state["embed_dim"] = int(
+                    await embed_runner.run(lambda: embedder.dim))
+            except Exception:
+                # Never a silent default. A swallowed failure here becomes
+                # embed_dim=0, which HttpSpeakerEmbedder caches for the process
+                # lifetime and speaker_identifier._mint then writes into every
+                # newly minted Speaker row. This codebase has already lost 269
+                # rows to a silent dim default; it does not get a second one.
+                log.exception("info_embed_dim_failed")
+                state["embed"] = False
+        components = {
+            "asr": bool(state["asr"]) and not asr.saturated,
+            "embed": bool(state["embed"]) and not embed_runner.saturated,
+        }
+        ok = all(components.values())
         return web.json_response({
-            "embed_dim": int(getattr(embedder, "dim", 0)),
+            "embed_dim": state["embed_dim"],
             "asr_backend": type(backend).__name__,
-            "ready": True,
-        })
+            "ready": ok,
+            "components": components,
+            "inflight": {"asr": asr.inflight, "embed": embed_runner.inflight},
+        }, status=200 if ok else 503)
 
     async def _shutdown(_app: web.Application) -> None:
-        # wait=False: a request in flight is a model call that cannot be
-        # cancelled anyway, and the process is going down.
-        asr_pool.shutdown(wait=False)
-        embed_pool.shutdown(wait=False)
+        asr.shutdown()
+        embed_runner.shutdown()
 
     app.on_cleanup.append(_shutdown)
     app.router.add_post("/transcribe", transcribe)

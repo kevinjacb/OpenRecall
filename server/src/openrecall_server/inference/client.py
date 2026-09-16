@@ -84,9 +84,26 @@ class HttpSpeakerEmbedder:
     @property
     def dim(self) -> int:
         if self._dim is None:
-            self._dim = int(_get(self._base_url, "/info", self._timeout_s)["embed_dim"])
+            reported = _get(self._base_url, "/info", self._timeout_s).get("embed_dim")
+            # Refuse anything that is not a usable dimension rather than
+            # coercing. This value is cached for the process lifetime and
+            # speaker_identifier._mint writes it into every newly minted
+            # Speaker row, so a bad one is durable corruption, not a bad
+            # response. (The service answers 503 when its embedder is
+            # unusable, which _get already turns into InferenceUnavailable;
+            # this covers the rest.)
+            if not isinstance(reported, int) or isinstance(reported, bool) \
+                    or reported <= 0:
+                raise InferenceUnavailable(
+                    f"/info reported an unusable embed_dim: {reported!r}")
+            self._dim = reported
         return self._dim
 
     def warmup(self) -> None:
-        """Readiness probe. /info is what the service answers once loaded."""
+        """Readiness probe.
+
+        A service whose models failed to load answers /info with 503, which
+        ``_get`` surfaces as InferenceUnavailable — so this is a real probe,
+        not just a reachability check.
+        """
         _get(self._base_url, "/info", self._timeout_s)

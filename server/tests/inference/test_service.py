@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 
 import pytest
@@ -216,3 +217,191 @@ async def test_clients_can_talk_to_the_service(client):
     assert tokens == [Token(text="ok", start_ms=0, end_ms=10, sentence_id=2)]
     assert be.calls == [(b"\x01\x02", 16000)]
     assert await asyncio.to_thread(lambda: HttpSpeakerEmbedder(base).dim) == 7
+
+
+async def test_every_embed_call_runs_on_the_same_thread(client):
+    """The mirror of the ASR affinity test. The service docstring claims a
+    dedicated thread for *both* models, but only ASR's half was enforced —
+    so the embed half could regress silently the day the embedder is swapped
+    for an accelerator-backed one (speaker_embedder.py contemplates exactly
+    that: "migration to ECAPA-TDNN / pyannote without architectural changes").
+    """
+    import time
+    c, _, em = client
+    threads = []
+
+    def record(pcm, sample_rate):
+        threads.append(threading.get_ident())
+        time.sleep(0.05)   # long enough that the three calls overlap
+        return None
+
+    em.embed = record
+    body = {"pcm": wire.encode_pcm(b"\x01"), "sample_rate": 16000}
+    rs = await asyncio.gather(*(c.post("/embed", json=body) for _ in range(3)))
+    assert [r.status for r in rs] == [200, 200, 200]
+    assert len(threads) == 3
+    assert len(set(threads)) == 1, f"embed ran on {len(set(threads))} threads: {threads}"
+    assert threads[0] != threading.get_ident()
+
+
+async def test_dim_is_read_on_the_embed_thread_not_the_loop():
+    """`dim` is a property that loads the model on the real backend, so reading
+    it on the event loop is the same affinity violation as running inference
+    there — and it is the one the review found in the startup banner."""
+    class ThreadRecordingEmbedder:
+        def __init__(self):
+            self.dim_threads = []
+        def embed(self, pcm, sample_rate):
+            return None
+        @property
+        def dim(self):
+            self.dim_threads.append(threading.get_ident())
+            return 256
+
+    em = ThreadRecordingEmbedder()
+    c = TestClient(TestServer(build_app(backend=FakeBackend(), embedder=em)))
+    await c.start_server()
+    try:
+        r = await c.get("/info")
+        assert (await r.json())["embed_dim"] == 256
+        assert em.dim_threads, "dim was never read"
+        assert em.dim_threads[0] != threading.get_ident(), (
+            "dim was read on the event loop thread")
+    finally:
+        await c.close()
+
+
+async def test_a_failing_dim_never_becomes_a_silent_zero():
+    """The worst failure this service can have.
+
+    `getattr(embedder, "dim", 0)` swallows AttributeError — which a torch or
+    numpy version skew inside the loader raises routinely — and substitutes 0.
+    HttpSpeakerEmbedder caches that 0 for the process lifetime, and
+    speaker_identifier._mint writes it into every newly minted Speaker row.
+    This codebase has already lost 269 rows to a silent dim default
+    (dim=16, 2026-08-25); a 0 would be the same incident with a new cause.
+    """
+    class BrokenDimEmbedder:
+        def embed(self, pcm, sample_rate):
+            return None
+        @property
+        def dim(self):
+            raise AttributeError("'VoiceEncoder' object has no attribute 'foo'")
+
+    c = TestClient(TestServer(
+        build_app(backend=FakeBackend(), embedder=BrokenDimEmbedder())))
+    await c.start_server()
+    try:
+        r = await c.get("/info")
+        body = await r.json()
+        assert body["embed_dim"] != 0, "a broken dim was reported as 0"
+        assert body["embed_dim"] is None
+        assert body["ready"] is False
+        assert body["components"]["embed"] is False
+        assert r.status == 503, "an unusable embedder must not report 200/ready"
+    finally:
+        await c.close()
+
+
+async def test_a_wedged_model_returns_503_rather_than_hanging_forever():
+    """One thread per model means a wedged call blocks that model completely.
+    Without a server-side deadline the caller just hangs: the only timeout is
+    in the client, so the service itself would never say anything."""
+    import threading as _t
+    release = _t.Event()
+
+    class WedgingBackend:
+        def transcribe(self, pcm, sample_rate):
+            release.wait(30)       # never set during the assertion window
+            return []
+
+    app = build_app(backend=WedgingBackend(), embedder=FakeEmbedder(),
+                    request_timeout_s=0.2)
+    c = TestClient(TestServer(app))
+    await c.start_server()
+    try:
+        r = await c.post("/transcribe", json={"pcm": wire.encode_pcm(b"\x01"),
+                                              "sample_rate": 16000})
+        assert r.status == 503, "a wedged model must be distinguishable from a crash"
+        assert "within" in (await r.json())["error"]
+    finally:
+        release.set()
+        await c.close()
+
+
+async def test_a_wedged_model_bounds_its_backlog_instead_of_queueing_forever():
+    """ThreadPoolExecutor's queue is unbounded and each entry pins its decoded
+    PCM, so a gateway retrying against a wedged worker grows it without limit.
+    Past max_inflight the service must refuse fast rather than accumulate.
+
+    The in-flight count must be released by the *work* finishing, not by the
+    timeout firing — cancelling a wait_for does not stop the thread, so
+    releasing on timeout would let an unbounded number of requests queue up
+    behind a wedge while the counter read zero.
+    """
+    import threading as _t
+    release = _t.Event()
+    started = []
+
+    class WedgingBackend:
+        def transcribe(self, pcm, sample_rate):
+            started.append(1)
+            release.wait(30)
+            return []
+
+    app = build_app(backend=WedgingBackend(), embedder=FakeEmbedder(),
+                    request_timeout_s=0.2, max_inflight=2)
+    c = TestClient(TestServer(app))
+    await c.start_server()
+    try:
+        body = {"pcm": wire.encode_pcm(b"\x01"), "sample_rate": 16000}
+        # Two fill the backlog (one running, one queued); both time out at 503.
+        first = await asyncio.gather(*(c.post("/transcribe", json=body)
+                                       for _ in range(2)))
+        assert [r.status for r in first] == [503, 503]
+        # The wedge still holds both slots, so the next one is refused
+        # immediately as backlog-full rather than queued behind it.
+        r = await c.post("/transcribe", json=body)
+        assert r.status == 503
+        assert "backlog full" in (await r.json())["error"], (
+            "the third request was queued rather than refused — the in-flight "
+            "count was released by the timeout instead of by the work")
+        info = await (await c.get("/info")).json()
+        assert info["ready"] is False and info["components"]["asr"] is False
+    finally:
+        release.set()
+        await c.close()
+
+
+async def test_an_oversized_body_is_413_not_a_confusing_400(client):
+    """aiohttp raises HTTPRequestEntityTooLarge from inside request.json().
+    Rewriting it as "body is not JSON" reports the wrong status and sends the
+    reader hunting a serialization bug instead of a size limit."""
+    app = build_app(backend=FakeBackend(), embedder=FakeEmbedder(),
+                    client_max_size=1024)
+    c = TestClient(TestServer(app))
+    await c.start_server()
+    try:
+        r = await c.post("/transcribe", json={"pcm": wire.encode_pcm(b"\x00" * 4096),
+                                              "sample_rate": 16000})
+        assert r.status == 413, f"expected 413 for an oversized body, got {r.status}"
+    finally:
+        await c.close()
+
+
+async def test_the_default_body_limit_clears_the_longest_designed_utterance():
+    """utterance_transcriber.DEFAULT_MAX_UTTERANCE_MS is 20 s, which is
+    640 000 B of 16 kHz mono int16 and ~853 KB base64'd into a JSON body.
+    aiohttp's own 1 MiB default would have sat at 81% of a limit nobody chose.
+    """
+    from openrecall_server.ingest.utterance_transcriber import (
+        DEFAULT_MAX_UTTERANCE_MS,
+    )
+    from openrecall_server.inference.service import DEFAULT_MAX_BODY_BYTES
+
+    worst_case_pcm = 16000 * 2 * DEFAULT_MAX_UTTERANCE_MS // 1000
+    body = len(json.dumps({"pcm": wire.encode_pcm(b"\x00" * worst_case_pcm),
+                           "sample_rate": 16000}))
+    assert body < DEFAULT_MAX_BODY_BYTES, (
+        f"the longest designed utterance is {body} B, over the "
+        f"{DEFAULT_MAX_BODY_BYTES} B limit")

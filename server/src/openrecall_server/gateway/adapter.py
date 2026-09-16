@@ -58,32 +58,15 @@ def handle_message(core: GatewayCore, message: str | bytes) -> list[str]:
 
 
 def _select_embedder(cfg):
-    """Pick the embedder from ``cfg.embed_model``.
+    """Backwards-compatible alias for ``ingest.speaker_embedder.select_embedder``.
 
-    ``""`` (unset) or any non-"fake" value -> the real local backend
-    (Resemblyzer); the deterministic fake requires an EXPLICIT
-    ``embed_model="fake"``. The old semantics (unset -> fake) were a
-    production footgun: speaker ID enabled without
-    OPENRECALL_SPEAKER_EMBED_MODEL silently fingerprinted with 16-dim hash
-    embeddings — real-device evidence 2026-08-29: 269 garbage speaker rows
-    minted (dim=16, model "unknown") after the env var was lost on 08-25,
-    while every real Resemblyzer row predates it. Enabled speaker ID now
-    always means real fingerprinting unless a test explicitly asks for the
-    fake. Heavy import stays lazy inside the real backend's
-    ``_ensure_ready``, so constructing it here never loads the model.
+    The rule moved down to the module that owns both implementations so the
+    inference service can reuse it without importing the gateway. Kept here
+    because existing call sites and tests reference this name.
     """
-    from ..ingest.speaker_embedder import (
-        FakeSpeakerEmbedder,
-        ResemblyzerSpeakerEmbedder,
-    )
+    from ..ingest.speaker_embedder import select_embedder
 
-    model = (cfg.embed_model or "").strip().lower()
-    if model == "fake":
-        return FakeSpeakerEmbedder(dim=16, min_speech_ms=cfg.min_speech_ms)
-    return ResemblyzerSpeakerEmbedder(
-        min_speech_ms=cfg.min_speech_ms,
-        model_name=cfg.embed_model or "resemblyzer",
-    )
+    return select_embedder(cfg)
 
 
 def build_speaker_identifier(cfg, registry, embedder=None):

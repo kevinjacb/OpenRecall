@@ -178,3 +178,23 @@ def test_clients_satisfy_the_protocols(server):
     from openrecall_server.ingest.streaming_transcriber import StreamingBackend
     assert isinstance(HttpStreamingBackend(base), StreamingBackend)
     assert isinstance(HttpSpeakerEmbedder(base), SpeakerEmbedder)
+
+
+def test_dim_refuses_an_unusable_value_rather_than_coercing(server):
+    """dim is cached for the process lifetime and speaker_identifier._mint
+    writes it into every newly minted Speaker row, so a bad value is durable
+    corruption. 269 rows were already lost to a silent dim default once."""
+    base, h = server
+    for bad in (None, 0, "256", -1, True):
+        h.routes["/info"] = (200, {"embed_dim": bad, "asr_backend": "p", "ready": True})
+        with pytest.raises(InferenceUnavailable):
+            HttpSpeakerEmbedder(base).dim
+
+
+def test_warmup_fails_when_the_service_reports_itself_unready(server):
+    """A 503 from /info means the models did not load. warmup() must surface
+    that, or the gateway proceeds against a service that cannot answer."""
+    base, h = server
+    h.routes["/info"] = (503, {"embed_dim": None, "ready": False})
+    with pytest.raises(InferenceUnavailable):
+        HttpSpeakerEmbedder(base).warmup()
