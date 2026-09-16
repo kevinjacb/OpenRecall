@@ -14,12 +14,39 @@ the accelerator is and the core talks to it over HTTP.
 
 ## Profiles
 
-| Profile | Core | Inference |
+| Profile | Core | Inference | Status |
+|---|---|---|---|
+| `apple` | container | **native host process** | working |
+| `cpu` | container | container (faster-whisper) | working |
+| `nvidia` | container | CUDA container | **not built** — needs the GPU box |
+| `cloud` | container | not started | endpoints only |
+
+`./deploy/deploy.sh` detects which one applies. `--detect` prints the decision
+without changing anything.
+
+## Quick start — cpu profile
+
+The only profile that is genuinely one command, because nothing runs natively:
+
+```bash
+./deploy/deploy.sh --profile cpu      # or just ./deploy/deploy.sh on a CPU box
+```
+
+That builds and starts the core plus a CPU inference container. The first run
+downloads the ASR model into a named volume; allow a few minutes.
+
+**The model default is `small.en`, and that is deliberate.** Measured on an
+M-series CPU at int8:
+
+| model | compute per second of audio | vs realtime |
 |---|---|---|
-| `apple` | container | **native host process** (this document) |
-| `nvidia` | container | CUDA container *(P3, not yet built)* |
-| `cpu` | container | container, small models *(P4)* |
-| `cloud` | container | not started *(P4)* |
+| `large-v3-turbo` | 2.05 s/s | **0.49x — falls behind live audio** |
+| `small.en` | 0.285 s/s | 3.51x |
+| `tiny.en` | 0.05 s/s | ~20x |
+
+At 0.49x the gateway never catches up, and its bounded ASR queue starts
+dropping real audio packets. Raise `OPENRECALL_ASR_MODEL` only after measuring
+on the hardware you are deploying to.
 
 ## Quick start — apple profile
 
