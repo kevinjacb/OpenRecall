@@ -52,8 +52,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # Override at build time to match the host: --build-arg UID=$(id -u).
 ARG UID=1000
 ARG GID=1000
-RUN groupadd --gid ${GID} sense \
- && useradd --uid ${UID} --gid ${GID} --create-home --shell /usr/sbin/nologin sense
+# Reuse an existing id rather than assuming it is free. A macOS host's default
+# GID is 20, which already exists in Debian as `dialout`, so a plain groupadd
+# fails with exit 4 and the build dies — on the apple profile, which is the
+# default here. The same applies to any UID/GID that happens to be taken.
+RUN if ! getent group ${GID} >/dev/null 2>&1; then groupadd --gid ${GID} sense; fi \
+ && if ! getent passwd ${UID} >/dev/null 2>&1; then \
+        useradd --uid ${UID} --gid ${GID} --create-home --shell /usr/sbin/nologin sense; \
+    fi
 
 COPY --from=build /install /usr/local
 WORKDIR /app
@@ -66,7 +72,9 @@ COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN mkdir -p /data && chown ${UID}:${GID} /data
 VOLUME ["/data"]
 
-USER sense
+# Numeric, not the name: when the UID already existed we did not create a
+# "sense" user, and a name that does not resolve fails at container start.
+USER ${UID}:${GID}
 
 # Published unmapped, deliberately. /health advertises the gateway port so the
 # phone can derive its WebSocket URL, and it reports the CONTAINER-internal
