@@ -536,3 +536,29 @@ def test_explicit_embedder_still_wins_over_the_inference_url():
         inference_config=cfg.inference,
     )
     assert isinstance(ident._embedder, FakeSpeakerEmbedder)
+
+
+def test_a_url_with_the_legacy_path_is_refused_not_silently_local():
+    """The one combination where the config says "remote" and the behaviour
+    would not be: the legacy hard-cut path takes a str-returning Transcriber,
+    but the HTTP client implements the token-returning StreamingBackend, so it
+    cannot be used there. Refuse at build time rather than quietly running
+    inference in-process."""
+    import pytest
+
+    from openrecall_server.agent.config import InferenceConfig
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+
+    with pytest.raises(ValueError, match="use_streaming=False"):
+        build_pipeline_factory(
+            use_streaming=False,
+            inference_config=InferenceConfig(url="http://box:8767"),
+        )
+
+
+def test_the_legacy_path_is_still_allowed_without_a_url():
+    """The guard must not break the legacy path itself — only the impossible
+    combination."""
+    from openrecall_server.gateway.adapter import build_pipeline_factory
+
+    assert build_pipeline_factory(use_streaming=False) is not None

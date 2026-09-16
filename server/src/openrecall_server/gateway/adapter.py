@@ -222,6 +222,21 @@ def build_pipeline_factory(
         inference_config.timeout_s if inference_url is not None else None
     )
 
+    # Raised here, at factory-build time, not per session: the legacy hard-cut
+    # path needs a str-returning `Transcriber`, while the HTTP client implements
+    # the token-returning `StreamingBackend`. So a url set alongside
+    # use_streaming=False would silently run inference in-process — the one
+    # combination where the config says "remote" and the behaviour is not.
+    # No production caller passes use_streaming=False today (only two legacy
+    # tests do), which is exactly why this should be a guard rather than a
+    # comment: it has to still hold if someone revives that path.
+    if inference_url is not None and not use_streaming:
+        raise ValueError(
+            "inference_config.url is set but use_streaming=False: the legacy "
+            "hard-cut path takes a str-returning Transcriber and would run "
+            "in-process, silently ignoring the configured inference service."
+        )
+
     def factory(start_seq: int) -> AudioIngestPipeline:
         from ..ingest.opus_decoder import OpusStreamDecoder
         from ..ingest.streaming_transcriber import streaming_from_tokens

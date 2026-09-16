@@ -23,7 +23,11 @@ import time
 import pytest
 
 from openrecall_server.gateway.core import GatewayError
-from openrecall_server.gateway.inference_worker import InferenceWorker
+from openrecall_server.gateway.inference_worker import (
+    _FAILURE_LOG_EVERY,
+    _TRACEBACK_MIN_GAP_S,
+    InferenceWorker,
+)
 
 
 # --- (a) loop not blocked during inference -----------------------------------
@@ -500,8 +504,21 @@ async def test_recovery_logs_exactly_one_line(caplog):
 
 @pytest.mark.asyncio
 async def test_a_second_outage_logs_its_own_traceback(caplog):
-    """A confirmed recovery resets the collapse, so a NEW outage is not hidden
-    by the old one — the failure mode of a naive 'log once ever' guard."""
+    """Within the rate-limit window, a second outage is collapsed too — and
+    that is the deliberate trade-off, not an oversight.
+
+    This test previously asserted the opposite (a traceback per distinct
+    outage). That was right in isolation and wrong in aggregate: the worker
+    cannot distinguish "the backend recovered" from "nobody asked it for 50
+    frames", so any rule that reopens the traceback on a fresh episode also
+    reopens it after every mid-outage silence — which is the disk-filling bug.
+    Elapsed time is the only signal silence cannot fake, so it is the sole
+    gate.
+
+    The outage is still visible: the summary line ("N frames skipped since the
+    traceback above") keeps reporting, and once
+    ``_TRACEBACK_MIN_GAP_S`` has passed a later outage does get its own
+    traceback — see test_a_later_outage_is_not_silenced_forever."""
     import logging
 
     caplog.set_level(logging.INFO)
@@ -535,6 +552,171 @@ async def test_a_second_outage_logs_its_own_traceback(caplog):
         r for r in caplog.records
         if "asr worker" in r.message and r.exc_info is not None
     ]
-    assert len(tracebacks) == 2, (
-        f"expected a traceback per distinct outage, got {len(tracebacks)}"
+    assert len(tracebacks) == 1, (
+        f"two outages inside the {_TRACEBACK_MIN_GAP_S}s window produced "
+        f"{len(tracebacks)} tracebacks; the rate limit is not binding, which "
+        f"means a mid-outage silence can reopen it too"
     )
+    # Still degraded afterwards, so the second outage is not "forgotten" —
+    # only its traceback is suppressed.
+    assert worker._degraded is True
+
+
+class _FakeClock:
+    """A clock the test drives, so traceback rate limiting needs no sleeping
+    and no wall-clock assertion. The one known flaky test in this repo is a
+    50 ms timing assertion in this very file; do not add another."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.mark.asyncio
+async def test_a_quiet_stretch_mid_outage_does_not_reopen_the_traceback(caplog):
+    """A silence longer than the recovery floor must not restart the episode.
+
+    The worker cannot see whether the backend was *invoked* — only that
+    handle_message returned. Control frames, PCM-buffering frames, VAD-silent
+    hops and inter-utterance gaps all look like successes. So a quiet stretch
+    during an outage satisfies _RECOVERY_CLEAN_FRAMES, closes the episode, and
+    hands the next failure a brand-new traceback — while the service has been
+    down the whole time. On an always-on wearable a 10 s silence is the common
+    case, not an exotic one.
+    """
+    import logging
+
+    caplog.set_level(logging.INFO)
+    clock = _FakeClock()
+    handled: list[int] = []
+    # 100 speech frames (1-in-5 failing), 60 silent frames (all "clean" — more
+    # than _RECOVERY_CLEAN_FRAMES), then 100 more speech frames. The service is
+    # down for every one of them.
+    script = ([False] * 4 + [True]) * 20 + [False] * 60 + ([False] * 4 + [True]) * 20
+
+    def scripted(core, msg):
+        i = len(handled)
+        handled.append(1)
+        clock.advance(1.0)          # ~1 s per frame; 260 s total, under the gap
+        if script[i]:
+            raise ValueError("inference service is down")
+        return ["ok"]
+
+    loop = asyncio.get_running_loop()
+    worker = InferenceWorker(
+        scripted, core=None, loop=loop, sink=lambda _: None,
+        max_queue=len(script) + 1, clock=clock,
+    )
+    worker.start()
+    try:
+        for _ in script:
+            worker.enqueue(b"x")
+        _drain(worker, handled, len(script))
+    finally:
+        await worker.stop()
+
+    records = [r for r in caplog.records if "asr worker" in r.message]
+    tracebacks = [r for r in records if r.exc_info is not None]
+    assert len(tracebacks) == 1, (
+        f"{len(tracebacks)} tracebacks for ONE outage containing a silent "
+        f"stretch: {[r.message for r in tracebacks]}"
+    )
+    # And nothing may claim the backend came back while it was still down.
+    assert not any("treating the backend as recovered" in r.message
+                   and r.levelno >= logging.WARNING
+                   for r in records[:-1]), (
+        "a mid-outage silence was reported as a recovery")
+
+
+@pytest.mark.asyncio
+async def test_a_later_outage_is_not_silenced_forever(caplog):
+    """The rate limit bounds the log; it must not hide a genuinely new outage.
+
+    Without the time-based clause a second outage inherits the first episode
+    and never gets its own traceback — so four separate outages could share
+    one, and the "N frames skipped since the traceback above" count would span
+    all of them and mislead whoever reads it.
+    """
+    import logging
+
+    caplog.set_level(logging.INFO)
+    clock = _FakeClock()
+    handled: list[int] = []
+
+    def always_fails(core, msg):
+        handled.append(1)
+        raise ValueError("inference service is down")
+
+    loop = asyncio.get_running_loop()
+    worker = InferenceWorker(
+        always_fails, core=None, loop=loop, sink=lambda _: None,
+        max_queue=50, clock=clock,
+    )
+    worker.start()
+    try:
+        for _ in range(5):
+            worker.enqueue(b"x")
+        _drain(worker, handled, 5)
+        first = len([r for r in caplog.records if r.exc_info is not None])
+
+        # Long enough after the first traceback that a new one is warranted.
+        clock.advance(_TRACEBACK_MIN_GAP_S + 1.0)
+        for _ in range(5):
+            worker.enqueue(b"x")
+        _drain(worker, handled, 10)
+    finally:
+        await worker.stop()
+
+    tracebacks = [r for r in caplog.records if r.exc_info is not None]
+    assert first == 1, f"first outage produced {first} tracebacks"
+    assert len(tracebacks) == 2, (
+        f"a distinct outage past the {_TRACEBACK_MIN_GAP_S}s gap produced "
+        f"{len(tracebacks)} tracebacks total; it must get its own")
+
+
+@pytest.mark.asyncio
+async def test_the_skipped_count_restarts_with_each_traceback(caplog):
+    """The summary says "since the traceback above", so the count has to start
+    when that traceback is printed. Otherwise it silently spans several
+    unrelated outages and an operator correlating it with a time window gets a
+    wrong answer."""
+    import logging
+
+    caplog.set_level(logging.INFO)
+    clock = _FakeClock()
+    handled: list[int] = []
+
+    def always_fails(core, msg):
+        handled.append(1)
+        raise ValueError("down")
+
+    loop = asyncio.get_running_loop()
+    worker = InferenceWorker(
+        always_fails, core=None, loop=loop, sink=lambda _: None,
+        max_queue=_FAILURE_LOG_EVERY * 3, clock=clock,
+    )
+    worker.start()
+    try:
+        for _ in range(_FAILURE_LOG_EVERY):      # first traceback + first summary
+            worker.enqueue(b"x")
+        _drain(worker, handled, _FAILURE_LOG_EVERY)
+        clock.advance(_TRACEBACK_MIN_GAP_S + 1.0)   # forces a second traceback
+        for _ in range(_FAILURE_LOG_EVERY):
+            worker.enqueue(b"x")
+        _drain(worker, handled, _FAILURE_LOG_EVERY * 2)
+    finally:
+        await worker.stop()
+
+    summaries = [r for r in caplog.records if "frames skipped since" in r.message]
+    assert summaries, "no summary line was emitted"
+    # Every summary counts from its own traceback, so none may report a total
+    # spanning both episodes.
+    for r in summaries:
+        assert r.args[0] <= _FAILURE_LOG_EVERY, (
+            f"summary reported {r.args[0]} frames, which spans more than the "
+            f"episode its traceback opened")

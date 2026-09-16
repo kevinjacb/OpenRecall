@@ -36,8 +36,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import queue as _queue
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -50,9 +52,11 @@ HandleFn = Callable[[Any, "str | bytes"], list[str]]
 
 #: While the worker is degraded, emit one summary line every N failures (the
 #: first failure of an episode always gets a full traceback). Counted, not
-#: timed: the hop cadence is the clock that matters here, and a wall-clock
-#: rate limiter is neither testable without a flaky timing assertion nor
-#: meaningful when the frame rate itself is what varies.
+#: timed, because the count is the information: "1200 failures" says roughly
+#: how much audio went untranscribed, which a time interval does not.
+#: (``_TRACEBACK_MIN_GAP_S`` below is the timed half — the two answer
+#: different questions, and an injected clock makes it testable without a
+#: timing assertion.)
 _FAILURE_LOG_EVERY = 100
 
 #: Successful frames required to declare the backend recovered.
@@ -70,7 +74,29 @@ _FAILURE_LOG_EVERY = 100
 #: The floor is therefore "comfortably more frames than the hop spans": 50
 #: frames is ~10 s at that cadence, long enough that the backend is genuinely
 #: answering again rather than momentarily skipped.
+#:
+#: This is a bound on the damage, NOT a correct signal, and the difference
+#: matters. The worker cannot see whether the backend was invoked — it only
+#: sees ``handle_message`` return. Control frames, PCM-buffering frames,
+#: VAD-silent hops (``streaming_transcriber.py:355``) and the gaps between
+#: utterances (``utterance_transcriber.py:164``) all count as "clean". So a
+#: quiet stretch longer than ~10 s during an outage still closes the episode,
+#: declares a recovery that never happened, and hands the next failure a fresh
+#: traceback. On an always-on wearable a 10 s silence is the common case, and
+#: in Parakeet's utterance mode any inter-utterance gap does it.
 _RECOVERY_CLEAN_FRAMES = 50
+
+#: Hard ceiling on traceback frequency, independent of the frame counters.
+#:
+#: The counters above can be fooled by silence in both directions: a quiet
+#: stretch fakes a recovery, and a short gap between two real outages hides the
+#: second one inside the first episode (so its count is attributed to a
+#: traceback that may be hours old). The frame count alone therefore cannot
+#: bound the log. This does, in wall-clock terms: whatever the counters
+#: believe, at most one traceback per interval. It is a rate limit rather than
+#: a decision, and the clock is injected, so testing it needs no timing
+#: assertion.
+_TRACEBACK_MIN_GAP_S = 300.0
 
 
 class InferenceWorker:
@@ -95,6 +121,7 @@ class InferenceWorker:
         loop: Any,  # asyncio.AbstractEventLoop
         sink: Callable[[Any], None],
         max_queue: int = 32,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._handle = handle_fn
         self._core = core
@@ -110,6 +137,8 @@ class InferenceWorker:
         self._degraded = False
         self._episode_failures = 0
         self._clean_run = 0
+        self._clock = clock
+        self._last_traceback_at = -math.inf
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._run, name="asr-worker", daemon=True,
@@ -187,12 +216,27 @@ class InferenceWorker:
         """
         self._clean_run = 0
         self._episode_failures += 1
-        if not self._degraded:
-            self._degraded = True
+        now = self._clock()
+        self._degraded = True
+        # Elapsed time is the SOLE gate, deliberately. Gating on "is this a new
+        # episode" instead cannot bound anything, because the episode flag is
+        # exactly what a mid-outage silence falsely clears — so the first
+        # failure after that silence would look new and print a fresh
+        # traceback, which is the bug. Time cannot be fooled by silence in
+        # either direction: a continuing outage stays quiet, and a genuinely
+        # later one is never suppressed for more than the interval.
+        # `_last_traceback_at` starts at -inf so the first failure always logs.
+        if (now - self._last_traceback_at) >= _TRACEBACK_MIN_GAP_S:
+            self._last_traceback_at = now
+            # Reset here, not only on recovery: the count below is "since the
+            # traceback above", so it has to start when that traceback is
+            # printed or it silently spans several unrelated outages.
+            self._episode_failures = 1
             logger.exception(
                 "asr worker: handle_message failed; skipping frame "
-                "(further failures collapse to a count every %d)",
-                _FAILURE_LOG_EVERY,
+                "(further failures collapse to a count every %d, and to at "
+                "most one traceback per %.0fs)",
+                _FAILURE_LOG_EVERY, _TRACEBACK_MIN_GAP_S,
             )
         elif self._episode_failures % _FAILURE_LOG_EVERY == 0:
             logger.error(
@@ -211,10 +255,15 @@ class InferenceWorker:
         self._clean_run += 1
         if self._clean_run < _RECOVERY_CLEAN_FRAMES:
             return
+        # Worded as what was actually measured. The worker cannot observe that
+        # the backend answered — only that N frames passed without raising —
+        # and claiming "recovered" outright is how a mid-outage silence got
+        # reported as a recovery that never happened.
         logger.warning(
-            "asr worker: recovered after %d failed frames "
-            "(their transcripts are lost; the audio is not)",
-            self._episode_failures,
+            "asr worker: %d frames with no failure after %d failed frames — "
+            "treating the backend as recovered (their transcripts are lost; "
+            "the audio is not)",
+            _RECOVERY_CLEAN_FRAMES, self._episode_failures,
         )
         self._degraded = False
         self._episode_failures = 0

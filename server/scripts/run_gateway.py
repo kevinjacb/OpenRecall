@@ -105,6 +105,24 @@ from openrecall_server.storage_paths import (
 )
 
 
+def _probe_inference(cfg) -> dict | None:
+    """GET /info from the inference service, or None if it cannot be reached.
+
+    Best-effort and short-deadline: this runs on the startup path, and a slow
+    or dead service must delay the boot by ~2s, not block it. Everything the
+    caller does with the result is advisory.
+    """
+    import json
+    import urllib.request
+
+    try:
+        url = cfg.url.rstrip("/") + "/info"
+        with urllib.request.urlopen(url, timeout=2.0) as resp:
+            return json.loads(resp.read())
+    except Exception:
+        return None
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--host", default="0.0.0.0")
@@ -558,8 +576,39 @@ def main() -> None:
     # only way to tell an operator's remote gateway from a silently-in-process
     # one is to watch for GPU load on the other box.
     if agent_config.inference.url:
+        # Probe /info rather than asserting reachability. The banner used to
+        # claim REMOTE whether or not anything was listening, and the speaker
+        # warmup that follows is now a network call wrapped in a best-effort
+        # except — so a gateway pointed at a dead service came up looking
+        # healthy and failed on every frame.
+        remote = _probe_inference(agent_config.inference)
+        detail = (f"remote asr={remote.get('asr_backend', '?')}, "
+                  f"ready={remote.get('ready', '?')}" if remote
+                  else "UNREACHABLE — transcription will fail on every frame")
         print(f"inference: REMOTE at {agent_config.inference.url} "
-              f"(timeout {agent_config.inference.timeout_s}s)")
+              f"(timeout {agent_config.inference.timeout_s}s, {detail})")
+
+        # The two processes pick their ASR engine from their own environments,
+        # and nothing reconciles them. The gateway still derives *scheduling*
+        # locally — window/hop above, and hop-vs-utterance mode — while the
+        # engine is whatever the service chose. A mismatch is silent and
+        # produces bad transcripts rather than an error:
+        #   gateway=parakeet, service=whisper -> a 240ms hop against
+        #     large-v3-turbo, which this file's own --hop-ms help calls out as
+        #     overloading the ASR worker into dropping real audio packets.
+        #   gateway=whisper, service=parakeet -> hop mode re-transcribing
+        #     overlapping 5s windows with Parakeet, whose timestamps shift
+        #     between overlapping calls — the word-doubling that utterance
+        #     mode exists to prevent.
+        remote_asr = (remote or {}).get("asr_backend", "")
+        if remote_asr and not remote_asr.lower().startswith(agent_config.asr.backend):
+            logging.error(
+                "ASR BACKEND MISMATCH: this gateway schedules for %r "
+                "(window=%sms hop=%sms) but the inference service runs %s. "
+                "Set OPENRECALL_ASR_BACKEND identically in both processes; "
+                "otherwise expect dropped audio packets or duplicated words.",
+                agent_config.asr.backend, args.window_ms, args.hop_ms, remote_asr,
+            )
     else:
         print("inference: in-process "
               "(set OPENRECALL_INFERENCE_URL to use the inference service)")
