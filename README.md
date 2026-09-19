@@ -133,14 +133,17 @@ The bearer token and Ed25519 signing key are auto-generated on first run into
 
 ## Testing
 
+Each tier has a no-hardware suite. Full step-by-step guide (prerequisites,
+single-test runs, troubleshooting): **[docs/TESTING.md](docs/TESTING.md)**.
+
 ```bash
-# Server (no hardware):  pytest with pythonpath=src, asyncio_mode=auto
-cd server && pytest
+# Server (no hardware): pytest, asyncio_mode=auto, testpaths=tests
+cd server && .venv/bin/pytest
 
 # Firmware host contract tests (no hardware): byte-matches the server's §C.6 encoder
 cd firmware/openrecall_sensor/test && make
 
-# Android relay protocol brain (JVM):
+# Android relay protocol brain (JVM; set JAVA_HOME to Android Studio's JBR first)
 cd android/openrecall-relay && ./gradlew test
 ```
 
