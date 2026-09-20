@@ -377,6 +377,7 @@ class FasterWhisperStreamingBackend:
         condition_on_previous_text: bool = False,
         beam_size: int = 5,
         language: str | None = None,
+        task: str = "transcribe",
         hallucination_blocklist_enabled: bool = True,
         hallucination_max_words: int = 4,
         hallucination_phrases: tuple[str, ...] | None = None,
@@ -397,6 +398,7 @@ class FasterWhisperStreamingBackend:
         self._condition_on_previous_text = condition_on_previous_text
         self._beam_size = beam_size
         self._language = language
+        self._task = task
         self._hallucination_blocklist_enabled = hallucination_blocklist_enabled
         self._hallucination_max_words = hallucination_max_words
         self._hallucination_phrases = hallucination_phrases
@@ -469,6 +471,8 @@ class FasterWhisperStreamingBackend:
                 word_timestamps=True,  # required: Tokens need word boundaries
                 beam_size=self._beam_size,
                 language=self._language,
+                # "translate" always targets English, whatever was spoken.
+                task=self._task,
                 # NOTE the spelling: faster-whisper calls this
                 # `log_prob_threshold`, where mlx-whisper calls it
                 # `logprob_threshold`. Passing the mlx spelling raises

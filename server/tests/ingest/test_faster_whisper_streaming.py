@@ -806,3 +806,25 @@ def test_preload_is_skipped_on_an_explicit_cpu_device(monkeypatch):
 
     fw.FasterWhisperStreamingBackend(device="cuda").transcribe(b"\x00" * 3200, 16000)
     assert calls == [1], "preload did not run on cuda"
+
+
+# --- language + task (non-English wearers) ------------------------------------
+
+def test_the_task_reaches_the_model():
+    """Whisper's "translate" task emits English whatever was spoken, which is
+    how a non-English wearer keeps one language downstream — extraction,
+    embeddings, retrieval and the agent all reason in English. The backend
+    previously never passed `task` at all, so translation was unreachable."""
+    backend, model = make_backend(task="translate", language="ml")
+    backend.transcribe(pcm(3200), 16000)
+    _audio, kwargs = model.calls[0]
+    assert kwargs["task"] == "translate"
+    assert kwargs["language"] == "ml"
+
+
+def test_transcribe_is_the_default_task():
+    backend, model = make_backend()
+    backend.transcribe(pcm(3200), 16000)
+    _audio, kwargs = model.calls[0]
+    assert kwargs["task"] == "transcribe"
+    assert kwargs["language"] is None, "unset means detect"

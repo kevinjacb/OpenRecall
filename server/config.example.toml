@@ -45,6 +45,26 @@
 #   precision. Use "int8" on CPU (~2-4x faster, small quality cost) and
 #   "float16" on CUDA ("int8_float16" roughly halves VRAM again).
 # compute_type = "default"
+# OPENRECALL_FASTER_WHISPER_LANGUAGE — source language code ("ml", "en", "hi",
+#   … 99 of them). EMPTY (the default) detects it.
+#   Detection runs per decode call, so in hop mode it re-runs on every rolling
+#   window and can flip mid-sentence. For code-switched speech set
+#   [asr] mode = "utterance" as well, so the decision is made once per
+#   utterance instead of several times per second.
+# language = ""
+# OPENRECALL_FASTER_WHISPER_TASK — "transcribe" (default) keeps the spoken
+#   language; "translate" emits ENGLISH whatever was spoken. Whisper's
+#   translation target is always English — it is not a general translator.
+#
+#   "translate" is the setting for a non-English wearer: memory extraction,
+#   embeddings, retrieval and the agent all reason in English, so translating
+#   at the ASR boundary keeps one language downstream instead of asking the
+#   LLM to cope with mixed scripts.
+#
+#   NOTE: use a full model for this. "large-v3-turbo" is distilled for
+#   transcription and is documented as weak at translation; "large-v3" is the
+#   one to measure against.
+# task = "transcribe"
 
 [parakeet]
 # OPENRECALL_PARAKEET_MODEL — parakeet-mlx model id (parakeet backend only).

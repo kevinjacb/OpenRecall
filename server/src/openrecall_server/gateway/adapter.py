@@ -217,6 +217,8 @@ def build_pipeline_factory(
         faster_whisper_model = None
         faster_whisper_device = None
         faster_whisper_compute_type = None
+        faster_whisper_language = None
+        faster_whisper_task = "transcribe"
         asr_mode = "hop"
     else:
         asr_backend = asr_config.backend
@@ -224,6 +226,10 @@ def build_pipeline_factory(
         faster_whisper_model = asr_config.faster_whisper_model
         faster_whisper_device = asr_config.faster_whisper_device
         faster_whisper_compute_type = asr_config.faster_whisper_compute_type
+        # "" means "detect the language"; normalize it to None, which is what
+        # faster-whisper's own API uses for that.
+        faster_whisper_language = asr_config.faster_whisper_language or None
+        faster_whisper_task = asr_config.faster_whisper_task
         asr_mode = asr_config.resolved_mode()
 
     # Where that backend runs. Resolved here for the same reason as above: one
@@ -349,6 +355,8 @@ def build_pipeline_factory(
                         model=_fw_name,
                         device=_fw_device,
                         compute_type=_fw_compute,
+                        language=faster_whisper_language,
+                        task=faster_whisper_task,
                         no_speech_threshold=no_speech_threshold,
                         logprob_threshold=logprob_threshold,
                         compression_ratio_threshold=compression_ratio_threshold,

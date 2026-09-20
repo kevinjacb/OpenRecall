@@ -62,9 +62,15 @@ ENV_ASR_MODE = "OPENRECALL_ASR_MODE"
 ENV_FASTER_WHISPER_MODEL = "OPENRECALL_FASTER_WHISPER_MODEL"
 ENV_FASTER_WHISPER_DEVICE = "OPENRECALL_FASTER_WHISPER_DEVICE"
 ENV_FASTER_WHISPER_COMPUTE_TYPE = "OPENRECALL_FASTER_WHISPER_COMPUTE_TYPE"
+ENV_FASTER_WHISPER_LANGUAGE = "OPENRECALL_FASTER_WHISPER_LANGUAGE"
+ENV_FASTER_WHISPER_TASK = "OPENRECALL_FASTER_WHISPER_TASK"
 _ASR_BACKENDS = ("whisper", "parakeet", "faster_whisper")
 # CTranslate2's device names. "auto" = CUDA when a GPU is visible, else CPU.
 _FASTER_WHISPER_DEVICES = ("auto", "cpu", "cuda")
+#: Whisper's two decode tasks. "translate" always targets ENGLISH — it is not a
+#: general translator — which is exactly what a system whose memory extraction,
+#: retrieval and agent all reason in English wants from non-English speech.
+_FASTER_WHISPER_TASKS = ("transcribe", "translate")
 
 # Transcription scheduling mode. "utterance": buffer speech and transcribe
 # each utterance once when the wearer pauses — no overlapping re-transcription
@@ -291,6 +297,16 @@ class AsrConfig(BaseModel):
     faster_whisper_model: str = "large-v3-turbo"
     faster_whisper_device: str = "auto"
     faster_whisper_compute_type: str = "default"
+    #: Source language code ("ml", "en", …). Empty = detect it.
+    #:
+    #: Detection is per *decode call*, so in hop mode it re-runs on every
+    #: rolling window and can flip mid-sentence. Utterance mode decides once
+    #: per utterance, which is far steadier for code-switched speech — set
+    #: `[asr] mode = "utterance"` if the wearer mixes languages.
+    faster_whisper_language: str = ""
+    #: "transcribe" (default) keeps the spoken language; "translate" emits
+    #: English whatever was spoken.
+    faster_whisper_task: str = "transcribe"
     # Transcription scheduling: "auto" resolves per backend (utterance for
     # parakeet, hop for whisper) — see _ASR_MODES and resolved_mode().
     mode: str = "auto"
@@ -326,6 +342,11 @@ class AsrConfig(BaseModel):
                 f"{ENV_FASTER_WHISPER_COMPUTE_TYPE}="
                 f"{self.faster_whisper_compute_type!r} must be a non-empty "
                 f"CTranslate2 compute type (e.g. 'int8', 'float16', 'default')"
+            )
+        if self.faster_whisper_task not in _FASTER_WHISPER_TASKS:
+            raise ValueError(
+                f"{ENV_FASTER_WHISPER_TASK}={self.faster_whisper_task!r} must "
+                f"be one of {list(_FASTER_WHISPER_TASKS)}"
             )
         return self
 
@@ -612,6 +633,17 @@ def load_agent_config(env: Mapping[str, str]) -> AgentConfig:
         raw_compute = env[ENV_FASTER_WHISPER_COMPUTE_TYPE].strip().lower()
         if raw_compute:
             asr_kwargs["faster_whisper_compute_type"] = raw_compute
+    if ENV_FASTER_WHISPER_LANGUAGE in env:
+        # An EMPTY value is meaningful here and must survive: it means "detect
+        # the language", which is the right setting for code-switched speech.
+        # So unlike the vars above, this one is not gated on being non-empty.
+        asr_kwargs["faster_whisper_language"] = (
+            env[ENV_FASTER_WHISPER_LANGUAGE].strip().lower()
+        )
+    if ENV_FASTER_WHISPER_TASK in env:
+        raw_task = env[ENV_FASTER_WHISPER_TASK].strip().lower()
+        if raw_task:
+            asr_kwargs["faster_whisper_task"] = raw_task
     command_kwargs: dict = {}
     if ENV_COMMAND_ENABLED in env:
         command_kwargs["enabled"] = _parse_bool(
