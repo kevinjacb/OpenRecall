@@ -57,6 +57,19 @@ fasterwhisper = [
     "faster-whisper>=1.1",
     "numpy>=2",
 ]
+# CUDA 12 runtime libraries for CTranslate2 on an NVIDIA box.
+#
+# CTranslate2 wheels are built against ONE CUDA major version: the 4.x line
+# loads libcublas.so.12 and cuDNN 9. A host with a CUDA 13 toolkit provides
+# libcublas.so.13 and the load fails. These wheels install the CUDA 12 runtime
+# beside the system toolkit — no downgrade needed, the driver is backward
+# compatible — and then LD_LIBRARY_PATH has to point at them (deploy/README.md).
+#
+# Linux-only: there are no macOS wheels, and CUDA on a Mac does not exist.
+cuda = [
+    "nvidia-cublas-cu12; sys_platform == 'linux'",
+    "nvidia-cudnn-cu12; sys_platform == 'linux'",
+]
 # Provider-agnostic LLM client (extraction). Works against any OpenAI-compatible
 # endpoint — local (Ollama, mlx_lm.server) or cloud (MiniMax/OpenAI/…).
 llm = [

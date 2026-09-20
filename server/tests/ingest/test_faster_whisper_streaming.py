@@ -548,3 +548,90 @@ def test_real_model_transcribes_the_fixture():
     assert all(t.end_ms > t.start_ms for t in tokens)
     assert [t.start_ms for t in tokens] == sorted(t.start_ms for t in tokens)
     assert max(t.end_ms for t in tokens) <= 10_000
+
+
+# --- CUDA library diagnostics -------------------------------------------------
+# CTranslate2 wheels are built against one CUDA major version; a CUDA 13 host
+# hits "Library libcublas.so.12 is not found or cannot be loaded", which names
+# a file and not the cause. Hit for real on an RTX box, 2026-09-20.
+
+def test_a_missing_cuda_library_explains_the_major_version_mismatch():
+    from openrecall_server.ingest.faster_whisper_streaming import _cuda_library_hint
+
+    out = str(_cuda_library_hint(
+        RuntimeError("Library libcublas.so.12 is not found or cannot be loaded"),
+        "cuda"))
+    assert "libcublas.so.12" in out, "the original error must survive"
+    assert "nvidia-cublas-cu12" in out and "LD_LIBRARY_PATH" in out, (
+        "the hint must carry the actual fix, not just a diagnosis")
+    assert "do NOT downgrade" in out, (
+        "downgrading a working CUDA 13 toolkit is the wrong instinct this "
+        "message exists to head off")
+
+
+def test_a_cudnn_error_is_recognised_too():
+    from openrecall_server.ingest.faster_whisper_streaming import _cuda_library_hint
+
+    out = str(_cuda_library_hint(
+        RuntimeError("Library libcudnn_ops.so.9 is not found"), "cuda"))
+    assert "nvidia-cudnn-cu12" in out
+
+
+def test_an_unrelated_cuda_failure_is_passed_through_untouched():
+    """A wrong guess buries the real error under a confident, irrelevant
+    suggestion — worse than saying nothing."""
+    from openrecall_server.ingest.faster_whisper_streaming import _cuda_library_hint
+
+    original = RuntimeError("CUDA failed with error out of memory")
+    assert _cuda_library_hint(original, "cuda") is original
+
+
+def test_the_hint_never_fires_on_cpu():
+    """On CPU a libcublas message cannot mean a CUDA-major mismatch, so the
+    advice would be nonsense."""
+    from openrecall_server.ingest.faster_whisper_streaming import _cuda_library_hint
+
+    original = RuntimeError("Library libcublas.so.12 is not found")
+    assert _cuda_library_hint(original, "cpu") is original
+
+
+def test_the_cuda_extra_pins_the_libraries_the_hint_tells_you_to_install():
+    """The message and the extra must not drift: if someone renames a package
+    in pyproject, the advice silently becomes wrong."""
+    import tomllib
+
+    with open("pyproject.toml", "rb") as fh:
+        extras = tomllib.load(fh)["project"]["optional-dependencies"]
+    cuda = " ".join(extras["cuda"])
+    for pkg in ("nvidia-cublas-cu12", "nvidia-cudnn-cu12"):
+        assert pkg in cuda, f"{pkg} is named in the hint but not in the cuda extra"
+    assert "sys_platform == 'linux'" in cuda, (
+        "these wheels are Linux-only; without a marker, installing the extra "
+        "on a Mac fails")
+
+
+def test_the_model_load_path_actually_applies_the_hint(monkeypatch):
+    """The wiring, not the helper.
+
+    Testing _cuda_library_hint alone proves nothing about the code path an
+    operator hits: removing the try/except around WhisperModel(...) leaves
+    every direct-call test green while the real failure reverts to the bare
+    "libcublas.so.12 is not found". That is the same shape as the blocklist
+    gap an earlier review caught here — a helper verified in isolation and
+    never checked at its call site.
+    """
+    import faster_whisper
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", boom)
+    backend = FasterWhisperStreamingBackend(device="cuda")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.transcribe(b"\x00" * 3200, 16000)
+
+    message = str(excinfo.value)
+    assert "nvidia-cublas-cu12" in message, (
+        "the load path raised the bare CTranslate2 error; the hint is not wired in")
+    assert "libcublas.so.12" in message, "the original cause must survive"

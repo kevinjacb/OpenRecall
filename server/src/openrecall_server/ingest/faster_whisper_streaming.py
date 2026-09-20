@@ -216,6 +216,42 @@ def _segments_to_tokens(
     return tokens
 
 
+def _cuda_library_hint(exc: Exception, device: str) -> Exception:
+    """Turn CTranslate2's bare loader error into the actual cause.
+
+    CTranslate2 wheels are built against ONE CUDA major version — the 4.x line
+    wants ``libcublas.so.12`` and cuDNN 9. A host with a CUDA 13 toolkit
+    provides ``libcublas.so.13``, so the load fails with a message that names a
+    missing file and not the reason, which sends people reinstalling drivers or
+    downgrading a working toolkit.
+
+    Neither is necessary: the CUDA 12 runtime libraries install from pip and sit
+    happily beside a newer toolkit, because the driver is backward compatible.
+    They only have to be on the loader path.
+
+    Returns the exception to raise. Anything not obviously a CUDA library
+    problem is passed through untouched — a wrong guess here would bury the
+    real error under a confident, irrelevant suggestion.
+    """
+    text = str(exc)
+    looks_like_cuda_libs = "libcu" in text or "cudnn" in text.lower()
+    if device == "cpu" or not looks_like_cuda_libs:
+        return exc
+    return RuntimeError(
+        f"{text}\n\n"
+        "CTranslate2 is built against CUDA 12 (libcublas.so.12, cuDNN 9). A "
+        "CUDA 13 toolkit ships libcublas.so.13, so this is a major-version "
+        "mismatch, not a broken driver or a bad install — do NOT downgrade the "
+        "toolkit. Install the CUDA 12 runtime libraries beside it and put them "
+        "on the loader path:\n\n"
+        "    pip install nvidia-cublas-cu12 nvidia-cudnn-cu12\n"
+        "    export LD_LIBRARY_PATH=$(python -c \"import os, nvidia.cublas.lib, "
+        "nvidia.cudnn.lib; print(os.path.dirname(nvidia.cublas.lib.__file__) + "
+        "':' + os.path.dirname(nvidia.cudnn.lib.__file__))\")\n\n"
+        "Then restart the inference service. See deploy/README.md."
+    )
+
+
 class FasterWhisperStreamingBackend:
     """Token-returning streaming backend backed by faster-whisper (CTranslate2).
 
@@ -308,12 +344,15 @@ class FasterWhisperStreamingBackend:
                 "loading faster-whisper model %s (device=%s compute_type=%s, first use)",
                 self._model_name, self._device, self._compute_type,
             )
-            self._model = WhisperModel(
-                self._model_name,
-                device=self._device,
-                compute_type=self._compute_type,
-                cpu_threads=self._cpu_threads,
-            )
+            try:
+                self._model = WhisperModel(
+                    self._model_name,
+                    device=self._device,
+                    compute_type=self._compute_type,
+                    cpu_threads=self._cpu_threads,
+                )
+            except Exception as exc:
+                raise _cuda_library_hint(exc, self._device) from exc
             logger.info("faster-whisper model %s ready", self._model_name)
         return self._model
 

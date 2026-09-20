@@ -61,7 +61,16 @@ Containerising inference as well is a later convenience, not a prerequisite.
 ```bash
 cd server
 python3 -m venv .venv && . .venv/bin/activate
-pip install -e '.[fasterwhisper,speaker,opus]'
+pip install -e '.[fasterwhisper,speaker,opus,cuda]'
+
+# CTranslate2 is built against CUDA 12 and loads libcublas.so.12 + cuDNN 9.
+# A CUDA 13 toolkit ships libcublas.so.13, so it must be told where the CUDA 12
+# runtime is. The `cuda` extra installs those libraries beside your toolkit —
+# no downgrade, the driver is backward compatible — and this puts them on the
+# loader path. Without it: "Library libcublas.so.12 is not found".
+export LD_LIBRARY_PATH=$(python -c "import os, nvidia.cublas.lib, nvidia.cudnn.lib; \
+  print(os.path.dirname(nvidia.cublas.lib.__file__) + ':' + \
+        os.path.dirname(nvidia.cudnn.lib.__file__))")
 
 OPENRECALL_ASR_BACKEND=faster_whisper \
 OPENRECALL_FASTER_WHISPER_DEVICE=cuda \
@@ -219,6 +228,7 @@ are otherwise silent or confusing:
 | `FATAL: /data is not writable by uid N` | Volume ownership. Rebuild with your UID. |
 | `FATAL: OPENRECALL_INFERENCE_URL is not set` | This image has no local ASR. |
 | `FATAL: required model name(s) unset` | `OPENRECALL_EMBED_MODEL` / `OPENRECALL_LLM_MODEL`. |
+| `Library libcublas.so.12 is not found` | CUDA-major mismatch: CTranslate2 wants CUDA 12, your toolkit is 13. Install `.[cuda]` and set `LD_LIBRARY_PATH` as in the nvidia section. **Do not downgrade the toolkit.** |
 | `WARNING: ...BASE_URL is ...localhost...` | Points at the container, not the host. |
 
 Two more worth knowing:
