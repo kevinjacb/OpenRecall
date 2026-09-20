@@ -284,6 +284,7 @@ are otherwise silent or confusing:
 | `Library libcublas.so.12 is not found` | CUDA-major mismatch: CTranslate2 wants CUDA 12, your toolkit is 13. Install `.[cuda]` and set `LD_LIBRARY_PATH` as in the nvidia section. **Do not downgrade the toolkit.** Note the model logs `ready` *before* this — CTranslate2 loads cuBLAS lazily at first compute, so a clean load proves nothing. |
 | `No module named 'pkg_resources'` | webrtcvad (via Resemblyzer) imports it at module scope and Python 3.12+ venvs ship no setuptools. Reinstall the extra — `pip install -e '.[speaker]'` now pulls it in. |
 | `WARNING: ...BASE_URL is ...localhost...` | Points at the container, not the host. |
+| `cannot reach the LLM at ...` / `[Errno 111] Connection refused` | Either nothing is listening, or — the subtle one — the server is up but bound to loopback. **Ollama binds 127.0.0.1 by default**, which a container cannot reach even when `host.docker.internal` resolves. Start it with `OLLAMA_HOST=0.0.0.0:11434`, the same reason the inference sidecar needs `--host 0.0.0.0`. Capture and transcription are unaffected; only extraction and titles stop. |
 | `426` + `websocket_sent_to_http_api`, or the relay reporting "Expected HTTP 101 response" | The tunnel is sending the WebSocket to the HTTP API. Only port 8766 is routed; add the `path: ^/$` rule below so the root path reaches the gateway. |
 
 Two more worth knowing:

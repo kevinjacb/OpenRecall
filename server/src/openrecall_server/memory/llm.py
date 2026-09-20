@@ -11,6 +11,7 @@ lazily imports ``httpx`` (the ``llm`` extra).
 
 from __future__ import annotations
 
+import os
 from typing import Mapping
 
 DEFAULT_BASE_URL = "http://localhost:11434/v1"  # Ollama's OpenAI-compatible endpoint
@@ -67,11 +68,59 @@ class OpenAICompatibleChatModel:
     def complete(self, system: str, user: str) -> str:
         import httpx
 
-        resp = httpx.post(
-            self._endpoint(),
-            headers=self._headers(),
-            json=self._payload(system, user),
-            timeout=self.timeout,
-        )
+        try:
+            resp = httpx.post(
+                self._endpoint(),
+                headers=self._headers(),
+                json=self._payload(system, user),
+                timeout=self.timeout,
+            )
+        except httpx.ConnectError as exc:
+            raise _unreachable_hint(self.base_url, exc) from exc
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
+
+
+def _unreachable_hint(base_url: str, exc: Exception) -> Exception:
+    """Explain a refused connection to the LLM endpoint.
+
+    This surfaces as a bare "[Errno 111] Connection refused" under a 40-line
+    httpx traceback, which says where the call died and nothing about why.
+    There are only two real causes and the advice differs, so name both.
+
+    The subtle one is a server that IS running: Ollama binds 127.0.0.1 by
+    default, which is unreachable from inside a container even when
+    host.docker.internal resolves correctly. It is the same trap as the
+    inference sidecar's --host 0.0.0.0, and it looks identical to "not
+    running" from here.
+    """
+    import httpx
+
+    in_container = os.path.exists("/.dockerenv")
+    lines = [
+        f"cannot reach the LLM at {base_url} ({exc})",
+        "",
+        "Either nothing is listening there, or it is listening only on "
+        "loopback. Check in this order:",
+        f"  1. the service is up:   curl {base_url}/models",
+    ]
+    if in_container:
+        lines += [
+            "  2. it accepts connections from OUTSIDE the host's loopback.",
+            "     Ollama binds 127.0.0.1 by default, which a container cannot",
+            "     reach even when host.docker.internal resolves. Start it with",
+            "     OLLAMA_HOST=0.0.0.0:11434 — the same reason the inference",
+            "     sidecar needs --host 0.0.0.0.",
+            "  3. this process points at the host, not at itself:",
+            "     OPENRECALL_LLM_BASE_URL=http://host.docker.internal:11434/v1",
+        ]
+    else:
+        lines += [
+            "  2. OPENRECALL_LLM_BASE_URL points where the service actually is.",
+        ]
+    lines += [
+        "",
+        "Until then memory extraction and segment titles produce nothing; "
+        "capture, transcription and audio are unaffected.",
+    ]
+    return httpx.ConnectError("\n".join(lines))
