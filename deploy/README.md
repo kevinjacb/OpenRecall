@@ -284,6 +284,7 @@ are otherwise silent or confusing:
 | `Library libcublas.so.12 is not found` | CUDA-major mismatch: CTranslate2 wants CUDA 12, your toolkit is 13. Install `.[cuda]` and set `LD_LIBRARY_PATH` as in the nvidia section. **Do not downgrade the toolkit.** Note the model logs `ready` *before* this — CTranslate2 loads cuBLAS lazily at first compute, so a clean load proves nothing. |
 | `No module named 'pkg_resources'` | webrtcvad (via Resemblyzer) imports it at module scope and Python 3.12+ venvs ship no setuptools. Reinstall the extra — `pip install -e '.[speaker]'` now pulls it in. |
 | `WARNING: ...BASE_URL is ...localhost...` | Points at the container, not the host. |
+| `426` + `websocket_sent_to_http_api`, or the relay reporting "Expected HTTP 101 response" | The tunnel is sending the WebSocket to the HTTP API. Only port 8766 is routed; add the `path: ^/$` rule below so the root path reaches the gateway. |
 
 Two more worth knowing:
 
@@ -333,6 +334,14 @@ ingress:
 
 Verified with `cloudflared tunnel ingress rule`: `/` → 8765, and `/health`,
 `/sessions`, `/segments/{id}/audio`, `/mcp` → 8766.
+
+**Routing only 8766 does not work**, and it fails the same way whichever port
+you advertise. Left at the default the relay dials `wss://<host>:8765`, which
+Cloudflare does not serve. With `--advertised-gateway-port 0` it dials
+`wss://<host>` on 443, reaches the HTTP API, and gets a **426** naming the
+problem (without the rule below it would be a bare 404, which clients report as
+"Expected HTTP 101 response" — a message that points nowhere useful). Both
+listeners have to be reachable through the one hostname.
 
 ### The port the server advertises
 
