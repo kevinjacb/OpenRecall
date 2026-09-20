@@ -63,14 +63,10 @@ cd server
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[fasterwhisper,speaker,opus,cuda]'
 
-# CTranslate2 is built against CUDA 12 and loads libcublas.so.12 + cuDNN 9.
-# A CUDA 13 toolkit ships libcublas.so.13, so it must be told where the CUDA 12
-# runtime is. The `cuda` extra installs those libraries beside your toolkit —
-# no downgrade, the driver is backward compatible — and this puts them on the
-# loader path. Without it: "Library libcublas.so.12 is not found".
-export LD_LIBRARY_PATH=$(python -c "import os, nvidia.cublas.lib, nvidia.cudnn.lib; \
-  print(os.path.dirname(nvidia.cublas.lib.__file__) + ':' + \
-        os.path.dirname(nvidia.cudnn.lib.__file__))")
+# CTranslate2 is built against CUDA 12 and loads libcublas.so.12 + cuDNN 9;
+# a CUDA 13 toolkit ships libcublas.so.13. The `cuda` extra installs the CUDA 12
+# runtime beside your toolkit — no downgrade, the driver is backward compatible
+# — and the backend dlopens it at startup, so NO LD_LIBRARY_PATH is needed.
 
 OPENRECALL_ASR_BACKEND=faster_whisper \
 OPENRECALL_FASTER_WHISPER_DEVICE=cuda \
@@ -81,8 +77,19 @@ OPENRECALL_FASTER_WHISPER_MODEL=large-v3-turbo \
 
 Three things that bite here:
 
-- **`LD_LIBRARY_PATH` is read at process start**, so export it in the *same*
-  shell that launches the sidecar, and restart the sidecar after changing it.
+- **You should not need `LD_LIBRARY_PATH`.** The backend loads the pip-installed
+  CUDA libraries itself before the model, so they are resident by the time
+  CTranslate2 asks for them. If you do set it, note it is read at *process
+  start* — same shell, and restart after changing it.
+- **Do not copy the recipe from faster-whisper's docs.** The `nvidia-*-cu12`
+  wheels are PEP 420 namespace packages, so
+  `os.path.dirname(nvidia.cublas.lib.__file__)` raises `TypeError: ... not
+  NoneType` — `__file__` is `None`. Use `__path__`:
+  ```bash
+  export LD_LIBRARY_PATH=$(python -c "import os, nvidia; \
+    print(':'.join(sorted({r for b in nvidia.__path__ \
+      for r, _, fs in os.walk(b) if any('.so' in f for f in fs)})))")
+  ```
 - **`--host 0.0.0.0` is required** — the default `127.0.0.1` is not reachable
   from inside the core container.
 - **A clean model load proves nothing.** CTranslate2 loads cuBLAS lazily at the

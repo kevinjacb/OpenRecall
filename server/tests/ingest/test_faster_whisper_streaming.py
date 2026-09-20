@@ -688,3 +688,121 @@ def test_webrtcvad_consumers_declare_setuptools():
         assert any(d.split(";")[0].strip().startswith("setuptools")
                    for d in extras[name]), (
             f"the {name} extra reaches webrtcvad but does not declare setuptools")
+
+
+# --- NVIDIA runtime discovery / preload ---------------------------------------
+
+def _fake_nvidia_tree(tmp_path):
+    """A PEP 420 namespace package, exactly like the real nvidia-*-cu12 wheels:
+    no __init__.py anywhere, so every __file__ in the tree is None."""
+    for sub in ("cublas", "cudnn"):
+        d = tmp_path / "nvidia" / sub / "lib"
+        d.mkdir(parents=True)
+        (d / f"lib{sub}.so.12").write_bytes(b"not a real shared object")
+    return tmp_path
+
+
+def test_nvidia_lib_dirs_works_on_namespace_packages(tmp_path, monkeypatch):
+    """The bug this exists for.
+
+    nvidia.cublas.lib.__file__ is None for a namespace package, so the
+    os.path.dirname(...__file__) recipe in faster-whisper's own docs — which I
+    shipped verbatim — raises TypeError instead of printing a path. Hit on a
+    real box, 2026-09-20.
+    """
+    import sys
+
+    from openrecall_server.ingest import faster_whisper_streaming as fw
+
+    monkeypatch.syspath_prepend(str(_fake_nvidia_tree(tmp_path)))
+    for mod in [m for m in sys.modules if m == "nvidia" or m.startswith("nvidia.")]:
+        monkeypatch.delitem(sys.modules, mod, raising=False)
+
+    import nvidia
+    assert nvidia.__file__ is None, "fixture is not a namespace package"
+
+    dirs = fw._nvidia_lib_dirs()
+    assert len(dirs) == 2, dirs
+    assert all(d.endswith("/lib") for d in dirs)
+
+
+def test_nvidia_lib_dirs_is_empty_when_nothing_is_installed(monkeypatch):
+    """A CPU box has no nvidia package; discovery must be silent, not an error."""
+    import builtins
+    import sys
+
+    from openrecall_server.ingest import faster_whisper_streaming as fw
+
+    for mod in [m for m in sys.modules if m == "nvidia" or m.startswith("nvidia.")]:
+        monkeypatch.delitem(sys.modules, mod, raising=False)
+    real_import = builtins.__import__
+
+    def no_nvidia(name, *args, **kwargs):
+        if name == "nvidia":
+            raise ImportError("No module named 'nvidia'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_nvidia)
+    assert fw._nvidia_lib_dirs() == []
+
+
+def test_preload_never_raises_on_libraries_it_cannot_load(tmp_path, monkeypatch):
+    """Best effort by design: a file that is not a loadable shared object (wrong
+    arch, truncated, or a stub) must not take the service down — the model load
+    still fails afterwards with the explanatory hint."""
+    import sys
+
+    from openrecall_server.ingest import faster_whisper_streaming as fw
+
+    monkeypatch.syspath_prepend(str(_fake_nvidia_tree(tmp_path)))
+    for mod in [m for m in sys.modules if m == "nvidia" or m.startswith("nvidia.")]:
+        monkeypatch.delitem(sys.modules, mod, raising=False)
+
+    assert fw._preload_cuda_libraries() == []   # nothing loadable, no exception
+
+
+def test_the_hint_does_not_ship_the_broken_dirname_recipe():
+    """Guard against reintroducing it: os.path.dirname(x.__file__) is exactly
+    what fails on the namespace-package layout."""
+    from openrecall_server.ingest.faster_whisper_streaming import _cuda_library_hint
+
+    msg = str(_cuda_library_hint(RuntimeError("libcublas.so.12 missing"), "cuda"))
+    assert "os.path.dirname(nvidia" not in msg, (
+        "the hint suggests the __file__ recipe, which raises TypeError on the "
+        "real wheels")
+    assert "__path__" in msg
+
+
+def test_the_hints_shell_snippet_is_runnable_python():
+    """The advice has to execute. The version shipped before this crashed with
+    TypeError the moment anyone pasted it."""
+    import ast
+    import re
+
+    from openrecall_server.ingest.faster_whisper_streaming import _cuda_library_hint
+
+    msg = str(_cuda_library_hint(RuntimeError("libcublas.so.12 missing"), "cuda"))
+    snippet = re.search(r'python -c "(.+?)"', msg, re.S)
+    assert snippet, "no python -c snippet found in the hint"
+    ast.parse(snippet.group(1))       # raises SyntaxError if malformed
+
+
+def test_preload_is_skipped_on_an_explicit_cpu_device(monkeypatch):
+    """Nothing to gain, and walking site-packages on every CPU box is waste."""
+    from openrecall_server.ingest import faster_whisper_streaming as fw
+
+    calls = []
+    monkeypatch.setattr(fw, "_preload_cuda_libraries", lambda: calls.append(1) or [])
+
+    class Model:
+        def transcribe(self, *a, **k):
+            return iter(()), None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel", lambda *a, **k: Model(), raising=False)
+
+    fw.FasterWhisperStreamingBackend(device="cpu").transcribe(b"\x00" * 3200, 16000)
+    assert calls == [], "preload ran on an explicit cpu device"
+
+    fw.FasterWhisperStreamingBackend(device="cuda").transcribe(b"\x00" * 3200, 16000)
+    assert calls == [1], "preload did not run on cuda"

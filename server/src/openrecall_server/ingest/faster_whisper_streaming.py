@@ -216,6 +216,82 @@ def _segments_to_tokens(
     return tokens
 
 
+def _nvidia_lib_dirs() -> list[str]:
+    """Directories of pip-installed NVIDIA runtime libraries, if any.
+
+    The ``nvidia-*-cu12`` wheels install into a PEP 420 **namespace** package,
+    so ``nvidia.__file__`` and ``nvidia.cublas.lib.__file__`` are all ``None``
+    — the ``os.path.dirname(...__file__)`` recipe in faster-whisper's own docs
+    predates that layout and raises TypeError. ``__path__`` is the portable
+    way in, and walking it also picks up libraries we did not think to name.
+    """
+    import os
+
+    try:
+        import nvidia
+    except ImportError:
+        return []
+    roots = list(getattr(nvidia, "__path__", []) or [])
+    found = {
+        dirpath
+        for root in roots
+        for dirpath, _dirs, files in os.walk(root)
+        if any(".so" in name for name in files)
+    }
+    return sorted(found)
+
+
+def _preload_cuda_libraries() -> list[str]:
+    """dlopen the pip-installed CUDA runtime so CTranslate2 can find it.
+
+    CTranslate2 resolves ``libcublas.so.12`` through the dynamic loader, which
+    only consults ``LD_LIBRARY_PATH`` as it was at **process start**. That makes
+    the usual advice fragile: export it in the wrong shell, or restart the
+    service without it, and the failure returns.
+
+    Loading the libraries here with ``RTLD_GLOBAL`` sidesteps that. dlopen keys
+    on SONAME, so once ``libcublas.so.12`` is resident a later
+    ``dlopen("libcublas.so.12")`` from CTranslate2 resolves to it regardless of
+    the search path. This is the same trick PyTorch uses for its bundled CUDA.
+
+    Best effort by design: returns what it loaded and never raises. If nothing
+    is installed there is nothing to do, and a genuinely broken setup still
+    fails at the model load with :func:`_cuda_library_hint` explaining it.
+
+    Two passes, because these libraries depend on each other (libcublas needs
+    libcublasLt) and the directory order will not always match dependency
+    order; a first-pass failure usually succeeds once its dependency is in.
+    """
+    import ctypes
+    import os
+
+    candidates = [
+        os.path.join(d, f)
+        for d in _nvidia_lib_dirs()
+        for f in sorted(os.listdir(d))
+        if ".so" in f
+    ]
+    loaded: list[str] = []
+    pending = candidates
+    for _attempt in range(2):
+        retry: list[str] = []
+        for path in pending:
+            try:
+                ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+                loaded.append(path)
+            except OSError:
+                retry.append(path)
+        if not retry:
+            break
+        pending = retry
+    if loaded:
+        logger.info(
+            "preloaded %d NVIDIA runtime libraries from the installed wheels "
+            "(no LD_LIBRARY_PATH needed)", len(loaded),
+        )
+    return loaded
+
+
 def _cuda_library_hint(exc: Exception, device: str) -> Exception:
     """Turn CTranslate2's bare loader error into the actual cause.
 
@@ -244,11 +320,17 @@ def _cuda_library_hint(exc: Exception, device: str) -> Exception:
         "mismatch, not a broken driver or a bad install — do NOT downgrade the "
         "toolkit. Install the CUDA 12 runtime libraries beside it and put them "
         "on the loader path:\n\n"
-        "    pip install nvidia-cublas-cu12 nvidia-cudnn-cu12\n"
-        "    export LD_LIBRARY_PATH=$(python -c \"import os, nvidia.cublas.lib, "
-        "nvidia.cudnn.lib; print(os.path.dirname(nvidia.cublas.lib.__file__) + "
-        "':' + os.path.dirname(nvidia.cudnn.lib.__file__))\")\n\n"
-        "Then restart the inference service. See deploy/README.md."
+        "    pip install nvidia-cublas-cu12 nvidia-cudnn-cu12\n\n"
+        "Reinstalling is normally enough: this backend loads those libraries "
+        "itself at startup, so no LD_LIBRARY_PATH is required. If it still "
+        "fails, set the path explicitly and restart:\n\n"
+        "    export LD_LIBRARY_PATH=$(python -c \"import os, nvidia; "
+        "print(':'.join(sorted({r for b in nvidia.__path__ for r, _, fs in "
+        "os.walk(b) if any('.so' in f for f in fs)})))\")\n\n"
+        "(Note: the nvidia wheels are PEP 420 namespace packages, so the "
+        "os.path.dirname(...__file__) recipe in faster-whisper's docs raises "
+        "TypeError — __file__ is None. Use __path__, as above.)\n\n"
+        "See deploy/README.md."
     )
 
 
@@ -339,6 +421,13 @@ class FasterWhisperStreamingBackend:
         """
         if self._model is None:
             from faster_whisper import WhisperModel
+
+            # Before the model exists, so the libraries are resident by the
+            # time CTranslate2 dlopens them. Skipped on an explicit "cpu",
+            # where there is nothing to gain; "auto" still tries, because auto
+            # means "CUDA if a GPU is visible".
+            if self._device != "cpu":
+                _preload_cuda_libraries()
 
             logger.info(
                 "loading faster-whisper model %s (device=%s compute_type=%s, first use)",
