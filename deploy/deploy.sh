@@ -79,9 +79,12 @@ case "$PROFILE" in
         OLLAMA_HOST="http://ollama:11434/v1"
         echo "  inference        : CUDA container"
         echo
-        echo "NOT YET IMPLEMENTED. The nvidia profile needs a CUDA inference image, and"
-        echo "the portable ASR backend it depends on is still being built (see the"
-        echo "containerized-deployment design, P3). Detection works; the profile does not."
+        echo "NOT YET IMPLEMENTED. The ASR backend is ready (faster-whisper takes"
+        echo "OPENRECALL_FASTER_WHISPER_DEVICE=cuda), but three things are missing:"
+        echo "a CUDA base image for deploy/Dockerfile.inference, GPU device"
+        echo "reservation + an Ollama service in compose, and a VRAM budget measured"
+        echo "on the actual card. See the containerized-deployment design, P3."
+        echo "Detection works; the profile does not."
         exit 1
         ;;
     cpu)
