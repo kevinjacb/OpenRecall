@@ -79,9 +79,40 @@ OPENRECALL_FASTER_WHISPER_MODEL=large-v3-turbo \
   python -u scripts/run_inference.py --host 0.0.0.0 --port 8767
 ```
 
-Confirm the log line reads `device=cuda`, and that `/info` answers
-`"ready": true`. `--host 0.0.0.0` is required — the default `127.0.0.1` is not
-reachable from inside the core container.
+Three things that bite here:
+
+- **`LD_LIBRARY_PATH` is read at process start**, so export it in the *same*
+  shell that launches the sidecar, and restart the sidecar after changing it.
+- **`--host 0.0.0.0` is required** — the default `127.0.0.1` is not reachable
+  from inside the core container.
+- **A clean model load proves nothing.** CTranslate2 loads cuBLAS lazily at the
+  first compute, so a CUDA mismatch logs `model large-v3-turbo ready` and only
+  then fails inside the warmup transcribe.
+
+Verify before moving on:
+
+```bash
+curl -s localhost:8767/info
+# {"embed_dim":256,"asr_backend":"FasterWhisperStreamingBackend","ready":true,
+#  "components":{"asr":true,"embed":true}, ...}
+```
+
+`ready` must be `true` and **both** components `true`. `ready:false` with
+`embed:false` means the embedder failed while ASR is fine — check the log.
+`/info` answers 503 when it is not ready, so it is a real health check.
+
+If you prefer a file to exported variables, the same settings live in
+`server/config.toml` (copy `config.example.toml`):
+
+```toml
+[asr]
+backend = "faster_whisper"
+
+[faster_whisper]
+model = "large-v3-turbo"
+device = "cuda"
+compute_type = "float16"
+```
 
 On a 12 GB card `large-v3-turbo` at float16 is roughly 1.5–2 GB, leaving room
 for Ollama. If VRAM is tight, `compute_type=int8_float16` roughly halves it.

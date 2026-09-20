@@ -27,6 +27,7 @@ framing (§E); the device speaks only §C.6 (audio) + §D (commands).
 | `android/openrecall-relay/` | The middle tier — Kotlin app: BLE central → WebSocket bridge with session bookkeeping (§E). |
 | `firmware/openrecall_sensor/` | The wearable — ESP-IDF firmware for the XIAO ESP32S3 Sense (NimBLE, DMA I2S, Opus, Ed25519 command verify). |
 | `firmware/spike1_opus_encode/`, `firmware/spike2_sd_throughput/` | Throwaway measurement sketches that baked the real firmware's parameters. |
+| `deploy/` | Containerised deployment — core image, CPU inference image, compose, and `deploy.sh` (detects your hardware and starts the right profile). |
 | `docs/bring-up/` | Real-device bring-up runbook (tier-by-tier validation). |
 | `.env.example` | Server config reference (copy to `.env`). |
 
@@ -34,17 +35,29 @@ framing (§E); the device speaks only §C.6 (audio) + §D (commands).
 
 ### 1. Server (Mac/Linux, no hardware needed)
 
+Pick the ASR backend for your machine — **`mlx` is Apple-Silicon-only,
+`fasterwhisper` runs anywhere** (CPU and CUDA from the same code):
+
 ```bash
 cd server
-python -m venv .venv && source .venv/bin/activate
-pip install -e '.[mlx,opus,dev]'     # mlx + opus are Apple-Silicon-only; brew install opus
-# Optional heavy extras: pip install -e '.[speaker,llm]'
+python3 -m venv .venv && source .venv/bin/activate
+
+# Apple Silicon (MLX, the default backend):
+pip install -e '.[mlx,opus,dev]'              # also: brew install opus
+
+# Linux / anything else (faster-whisper):
+pip install -e '.[fasterwhisper,opus,dev]'    # also: apt install libopus0
+export OPENRECALL_ASR_BACKEND=faster_whisper
 
 # Clean slate (optional, removes old sim data):
 rm -f data/*.db data/server_token data/server_ed25519.key
 
 python scripts/run_gateway.py --port 8765 --http-port 8766
 ```
+
+That runs everything in one process. To run it **in containers**, or to put ASR
+on a GPU in a separate process, see **[deploy/README.md](deploy/README.md)** —
+one command per profile (Apple, CPU, NVIDIA/CUDA).
 
 On startup the gateway prints:
 - `gateway listening on ws://0.0.0.0:8765` — the WS endpoint the relay connects to.
@@ -128,8 +141,49 @@ variable is optional; the server falls back to safe defaults. Models are
 - `OPENRECALL_EMBED_MODEL` / `OPENRECALL_EMBED_BASE_URL` — vector-search embedder.
 - `OPENRECALL_VLM_MODEL` / `OPENRECALL_VLM_BASE_URL` — image atoms (only if you ingest images).
 
+Transcription:
+
+- `OPENRECALL_ASR_BACKEND` — `whisper` (MLX, default) · `parakeet` (MLX,
+  lower latency) · `faster_whisper` (CPU **and** CUDA; the only non-Apple option).
+- `OPENRECALL_FASTER_WHISPER_MODEL` / `_DEVICE` / `_COMPUTE_TYPE` — e.g.
+  `large-v3-turbo` / `cuda` / `float16`. On CPU use `small.en`: `large-v3-turbo`
+  measures 0.49x realtime there and falls permanently behind live audio.
+- `OPENRECALL_INFERENCE_URL` — unset (default) runs ASR and speaker embedding
+  in-process. Set it and they run in a separate process
+  (`scripts/run_inference.py`), which is how the GPU and container profiles work.
+
+`server/config.example.toml` documents every variable; copy it to
+`server/config.toml` for a persistent alternative to exporting them.
+
 The bearer token and Ed25519 signing key are auto-generated on first run into
-`server/data/`; override paths with `OPENRECALL_TOKEN_FILE` / `OPENRECALL_KEY_FILE` if migrating.
+`server/data/`. Override the paths with the **`--token-file` / `--key-file`
+flags** — there are no env vars for these on the native path (the container
+entrypoint accepts `OPENRECALL_TOKEN_FILE` / `OPENRECALL_KEY_FILE` and maps them
+onto those flags).
+
+`--db` must be named `events.db`: the seven sibling databases are derived from
+it by substring replacement, so any other name would collapse all eight stores
+onto one file. The gateway refuses to start rather than allow it.
+
+## Deployment
+
+For an always-on machine, run it in containers. `./deploy/deploy.sh` detects the
+hardware, picks a profile and starts it; `--detect` shows the decision without
+changing anything.
+
+| Profile | Where inference runs | Status |
+|---|---|---|
+| `cpu` | container (faster-whisper) | one command, nothing native |
+| `nvidia` | **native** on the host, CUDA | works; the GPU itself is unverified |
+| `apple` | **native** on the host, MLX | working |
+| `cloud` | not started | endpoints only |
+
+Inference runs natively on the two accelerated profiles on purpose: a container
+on macOS cannot reach Metal, and on Linux the host is already where the GPU
+driver is — so neither needs a CUDA image or the nvidia-container-toolkit.
+
+Full instructions, including migrating your data to the box, **backups**, and
+the CUDA troubleshooting table: **[deploy/README.md](deploy/README.md)**.
 
 ## Testing
 

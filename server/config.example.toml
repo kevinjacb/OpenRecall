@@ -14,8 +14,12 @@
 
 # ---- ASR backend (which transcription engine) ----
 [asr]
-# OPENRECALL_ASR_BACKEND — "whisper" (default; mlx-whisper) or "parakeet"
-#   (NVIDIA Parakeet-TDT; transducer, no Whisper near-silence phantoms).
+# OPENRECALL_ASR_BACKEND — "whisper" (default; mlx-whisper), "parakeet"
+#   (NVIDIA Parakeet-TDT; transducer, no Whisper near-silence phantoms), or
+#   "faster_whisper" (CTranslate2).
+#   whisper and parakeet are MLX, i.e. Apple-Silicon-only. faster_whisper is
+#   the only backend that runs on plain CPU and on CUDA — same code, one
+#   device argument apart — so it is what every non-Apple deployment uses.
 # backend = "whisper"
 # OPENRECALL_ASR_MODE — "auto" (default), "utterance", or "hop".
 #   "auto" resolves per backend: utterance for parakeet, hop for whisper.
@@ -23,6 +27,24 @@
 #   pre-utterance-mode path. Set backend = "parakeet" (or mode = "utterance")
 #   to get one ASR call per detected utterance.
 # mode = "auto"
+
+[faster_whisper]
+# Only read when backend = "faster_whisper". Install: pip install -e
+# '.[fasterwhisper]'  (plus '.[cuda]' on an NVIDIA box — see deploy/README.md).
+# OPENRECALL_FASTER_WHISPER_MODEL — a size alias ("large-v3-turbo", "small.en",
+#   "distil-large-v3.5") or a CTranslate2 model dir / HF repo id.
+#   MEASURED on CPU int8: large-v3-turbo runs at 0.49x realtime and falls
+#   permanently behind live audio, at which point the ASR worker's bounded
+#   queue starts dropping real packets. small.en measures 3.51x. On a GPU the
+#   large model is the right default.
+# model = "large-v3-turbo"
+# OPENRECALL_FASTER_WHISPER_DEVICE — "auto" (default; CUDA if a GPU is
+#   visible, else CPU), "cpu", or "cuda".
+# device = "auto"
+# OPENRECALL_FASTER_WHISPER_COMPUTE_TYPE — "default" keeps the model's saved
+#   precision. Use "int8" on CPU (~2-4x faster, small quality cost) and
+#   "float16" on CUDA ("int8_float16" roughly halves VRAM again).
+# compute_type = "default"
 
 [parakeet]
 # OPENRECALL_PARAKEET_MODEL — parakeet-mlx model id (parakeet backend only).
