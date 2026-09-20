@@ -264,7 +264,35 @@ class AudioIngestPipeline:
         if self._audio is None or not self._persist_audio or self._audio_session is None:
             return
         if self._audio_anchor_ms is None:
-            self._audio_anchor_ms = packet.rel_ts_ms
+            # RESUME CORRECTNESS. The anchor makes the first packet of this
+            # pipeline land at slot 0 — correct for a fresh session, and silent
+            # data loss for a resumed one. A pipeline is built per WebSocket
+            # connection, so a reconnect restarts the slots at 0 while the log
+            # cursor is already at N; write_at then rejects every frame as
+            # history ("an append-only log cannot rewrite history") and returns
+            # 0, which nothing checks. Audio stopped recording after the first
+            # connection of a session while transcription carried on normally,
+            # because the ASR path has no such cursor.
+            #
+            # Seeding from the log's own end appends instead: the first packet
+            # lands at the cursor, the timeline stays monotonic, and a fresh
+            # session (slot_count 0) behaves exactly as before.
+            existing_slots = 0
+            try:
+                existing_slots = self._audio.stat(self._audio_session).slot_count
+            except Exception:
+                # Best-effort, like every other call into the store here: a
+                # stat failure must not take the audio path down.
+                logger.warning(
+                    "audio_resume_stat_failed session=%s", self._audio_session,
+                    exc_info=True,
+                )
+            self._audio_anchor_ms = packet.rel_ts_ms - existing_slots * FRAME_MS
+            if existing_slots:
+                logger.info(
+                    "audio_resume session=%s appending at slot=%d",
+                    self._audio_session, existing_slots,
+                )
         if self._rel_ts_sink is not None and self._audio_session is not None:
             try:
                 self._rel_ts_sink(self._audio_session, packet.rel_ts_ms)

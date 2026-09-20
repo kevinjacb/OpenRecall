@@ -255,3 +255,79 @@ def test_peak_reads_signed_samples():
 
 def test_peak_of_empty_pcm_is_zero():
     assert _peak_of(b"") == 0
+
+
+# ---- resume: a reconnect must append, not restart at slot 0 ------------------
+# A pipeline is built per WebSocket connection. Anchoring slots at the first
+# packet of *this* pipeline means a resumed session restarts at slot 0, where
+# write_at rejects every frame as history and returns 0 — which nothing checks.
+# Observed on a real device 2026-09-20: transcription kept working while audio
+# playback was empty, because the ASR path has no such cursor.
+
+def _connection(audio, start_seq, session="s1"):
+    p = AudioIngestPipeline(
+        reassembler=SessionReassembler(start_seq=start_seq),
+        decoder=FakeDecoder(),
+        transcriber=FakeTranscriber(),
+        hop_ms=20,
+        window_ms=100,
+        sample_rate=16000,
+        audio_store=audio,
+    )
+    p.set_audio_target(session)
+    return p
+
+
+def test_a_reconnect_appends_instead_of_being_dropped_as_history(tmp_path):
+    audio = AudioStore(tmp_path / "audio")
+
+    first = _connection(audio, 0)
+    for i in range(10):
+        first.ingest(_packet(i, rel_ts_ms=i * FRAME_MS))
+    assert audio.stat("s1").slot_count == 10
+
+    # Same session, new connection. The device did not reboot, so its rel_ts
+    # continues — but the new pipeline's anchor would put these at slot 0.
+    second = _connection(audio, 10)
+    for i in range(10, 20):
+        second.ingest(_packet(i, rel_ts_ms=i * FRAME_MS))
+
+    assert audio.stat("s1").slot_count == 20, (
+        "the second connection's audio was dropped as history — this is the "
+        "silent failure where transcripts keep working and playback is empty")
+
+
+def test_a_device_reboot_mid_session_still_appends(tmp_path):
+    """The worst case: rel_ts restarts near zero while the session resumes, so
+    every new frame looks far behind the cursor."""
+    audio = AudioStore(tmp_path / "audio")
+
+    first = _connection(audio, 0)
+    for i in range(50):
+        first.ingest(_packet(i, rel_ts_ms=i * FRAME_MS))
+
+    rebooted = _connection(audio, 50)
+    for i in range(10):
+        rebooted.ingest(_packet(50 + i, rel_ts_ms=i * FRAME_MS))  # rel_ts from 0
+
+    assert audio.stat("s1").slot_count == 60
+    assert len(list(audio.read_range("s1", 0, 10_000_000))) == 60, (
+        "frames must be readable back, not merely counted")
+
+
+def test_a_fresh_session_is_unchanged(tmp_path):
+    """The fix must not shift a first connection: slot_count 0 means anchor at
+    the first packet exactly as before."""
+    audio = AudioStore(tmp_path / "audio")
+    p = _connection(audio, 0, session="brand-new")
+    # A non-zero starting rel_ts (device already up a while) must still land
+    # the first frame at slot 0.
+    for i in range(5):
+        p.ingest(_packet(i, rel_ts_ms=500_000 + i * FRAME_MS))
+
+    assert audio.stat("brand-new").slot_count == 5
+    assert len(list(audio.read_range("brand-new", 0, 10_000_000))) == 5
+    # The anchor for a fresh session must still be the first packet's own
+    # rel_ts — i.e. the seeding offset is zero when the log is empty — so a
+    # first connection is byte-for-byte what it was before this fix.
+    assert audio.stat("brand-new").byte_count > 0
