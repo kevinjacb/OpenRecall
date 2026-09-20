@@ -278,17 +278,77 @@ Two more worth knowing:
 - **Container logs contain both bearer tokens**, printed at boot. Treat them as
   sensitive wherever logs are shipped.
 
-## Remote access
+## Remote access — Cloudflare Tunnel
 
-Cloudflare Tunnel gives outbound-only reach with no open ports. Two caveats,
-recorded deliberately:
+### What has to be exposed
+
+| Port | What | Expose? |
+|---|---|---|
+| 8765 | WebSocket gateway — §E control + §C.6 audio | yes |
+| 8766 | HTTP control API — `/health`, `/sessions`, `/segments`, `/speakers`, … | yes |
+| 8767 | Inference service | **never** — it has no authentication and receives raw audio |
+
+**One hostname, not two.** The relay derives its WebSocket URL from the HTTP
+URL it was provisioned with — same host, `wss` if `https`
+(`android/.../net/WsUrl.kt`). It cannot be pointed at a second hostname.
+
+### The routing rule
+
+The relay drops path and query when building that URL, so its WebSocket always
+lands on the **root** path, while every HTTP API call has a real path. That one
+fact is what lets a single hostname carry both:
+
+```yaml
+# ~/.cloudflared/config.yml
+tunnel: <tunnel-id>
+credentials-file: /root/.cloudflared/<tunnel-id>.json
+
+ingress:
+  # Root -> the WebSocket gateway. The relay connects to "/" with no path.
+  - hostname: sense.example.com
+    path: ^/$
+    service: ws://localhost:8765
+
+  # Everything else -> the HTTP control API.
+  - hostname: sense.example.com
+    service: http://localhost:8766
+
+  - service: http_status:404
+```
+
+Verified with `cloudflared tunnel ingress rule`: `/` → 8765, and `/health`,
+`/sessions`, `/segments/{id}/audio`, `/mcp` → 8766.
+
+### The port the server advertises
+
+`/health` reports `gatewayPort`, and the relay builds
+`wss://<host>:<gatewayPort>`. Left at the default that is **8765** — a port
+Cloudflare does not serve, so the phone would fail to connect. Start the
+gateway with:
+
+```bash
+python scripts/run_gateway.py --advertised-gateway-port 0    # omit the field
+```
+
+The relay then falls back to the port already in its HTTPS URL (443).
+`--advertised-gateway-port 443` is equivalent and more explicit. This does not
+change what the gateway binds — only what it advertises.
+
+### Authentication
+
+**Every HTTP route requires the bearer token, including `/health`** — there is
+no public endpoint, so a tunnel health check must send the header. Two
+consequences worth stating plainly:
 
 1. **TLS terminates at Cloudflare's edge**, so transcripts and audio traverse
    their infrastructure in the clear. For a device that records bystanders this
    is a distinct trust decision from "no open ports".
-2. **Put Cloudflare Access in front of it.** Otherwise one bearer token — which,
-   per above, is sitting in the container logs — is all that separates the
-   public internet from everything the wearer has said.
+2. **Put Cloudflare Access in front of it.** Otherwise one bearer token — which
+   is printed to stdout at boot, so it is in `docker logs` — is all that
+   separates the public internet from everything the wearer has said.
 
 Cloudflare closes idle WebSockets at ~100 s; the server pings every 20 s, so the
 tunnel survives silence.
+
+*Risk:* continuous audio over a tunnel may brush Cloudflare's free-plan terms
+on non-HTML content. Not legal advice; worth checking before relying on it.

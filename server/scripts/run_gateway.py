@@ -152,6 +152,15 @@ def main() -> None:
     ap.add_argument("--http-port", type=int, default=8766,
                     help="HTTP control API port (operator/phone-facing)")
     ap.add_argument(
+        "--advertised-gateway-port", type=int, default=None,
+        help="the WS port /health advertises, when it differs from the port "
+             "the gateway binds. The phone builds its WebSocket URL as "
+             "wss://<http-host>:<this>, so behind a reverse proxy or a "
+             "Cloudflare Tunnel — where the public edge is 443 and 8765 is not "
+             "served — the bind port is the wrong answer. Pass 443 there, or 0 "
+             "to omit the field entirely, which makes the phone fall back to "
+             "the port already in its HTTP URL. Default: the bind port.")
+    ap.add_argument(
         "--config", default="config.toml",
         help="TOML config file for OPENRECALL_* runtime knobs (asr backend, "
              "denoise, whisper params, command detector, llm/vlm, etc.) — a "
@@ -691,7 +700,12 @@ def main() -> None:
         # gateway port on /health so the phone's relay can derive its WS URL
         # (it provisions against this HTTP URL and would otherwise reuse the
         # HTTP port for the WS upgrade — "Expected HTTP 101 response").
-        gateway_port=args.port,
+        # None -> the bind port. 0 -> omit from /health, so the phone reuses
+        # the port from its HTTP URL (443 behind a tunnel).
+        gateway_port=(
+            args.port if args.advertised_gateway_port is None
+            else (args.advertised_gateway_port or None)
+        ),
         planner=planner,
         retriever=retriever,
         atom_store=atom_store,
