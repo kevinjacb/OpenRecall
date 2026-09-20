@@ -635,3 +635,56 @@ def test_the_model_load_path_actually_applies_the_hint(monkeypatch):
     assert "nvidia-cublas-cu12" in message, (
         "the load path raised the bare CTranslate2 error; the hint is not wired in")
     assert "libcublas.so.12" in message, "the original cause must survive"
+
+
+def test_the_hint_also_covers_the_first_inference_not_just_the_load(monkeypatch):
+    """CTranslate2 loads cuBLAS/cuDNN LAZILY, on first compute.
+
+    On a CUDA-major mismatch the model therefore logs "ready" and dies inside
+    model.encode() on the first transcribe, sailing straight past a guard that
+    only wraps the constructor. Observed on a real RTX box, 2026-09-20: the
+    log read "faster-whisper model large-v3-turbo ready" one line above the
+    libcublas traceback.
+    """
+    class LazilyFailingModel:
+        def transcribe(self, *args, **kwargs):
+            raise RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
+
+    backend = FasterWhisperStreamingBackend(
+        loaded_model=LazilyFailingModel(), device="cuda")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.transcribe(b"\x00" * 3200, 16000)
+
+    message = str(excinfo.value)
+    assert "nvidia-cublas-cu12" in message, (
+        "the inference path raised the bare CTranslate2 error; the model loads "
+        "fine and only fails at first compute, so guarding the constructor "
+        "alone misses the case operators actually hit")
+    assert "libcublas.so.12" in message
+
+
+def test_a_real_inference_error_is_not_dressed_up_as_a_cuda_problem():
+    """Guarding the whole inference call must not relabel ordinary failures."""
+    class Boom:
+        def transcribe(self, *args, **kwargs):
+            raise ValueError("bad audio shape")
+
+    backend = FasterWhisperStreamingBackend(loaded_model=Boom(), device="cuda")
+    with pytest.raises(ValueError, match="bad audio shape"):
+        backend.transcribe(b"\x00" * 3200, 16000)
+
+
+def test_webrtcvad_consumers_declare_setuptools():
+    """webrtcvad does `import pkg_resources` at module scope and Python 3.12+
+    venvs ship no setuptools, so a fresh install of either extra dies at
+    runtime. Hit on a real box (2026-09-20) after being fixed only in the
+    Docker image — a machine that happens to have setuptools hides it."""
+    import tomllib
+
+    with open("pyproject.toml", "rb") as fh:
+        extras = tomllib.load(fh)["project"]["optional-dependencies"]
+    for name in ("speaker", "vad"):
+        assert any(d.split(";")[0].strip().startswith("setuptools")
+                   for d in extras[name]), (
+            f"the {name} extra reaches webrtcvad but does not declare setuptools")

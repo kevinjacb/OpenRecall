@@ -30,6 +30,12 @@ opus = [
 speaker = [
     "resemblyzer>=0.1",
     "numpy>=2",
+    # webrtcvad does `import pkg_resources` at module scope, and Python
+    # 3.12+ dropped setuptools from new venvs — so a fresh install fails at
+    # runtime with ModuleNotFoundError: No module named 'pkg_resources'.
+    # Declared here rather than documented: it is a real dependency of this
+    # extra, and a machine that happens to have setuptools hides it.
+    "setuptools",
 ]
 # Opt-in pre-Whisper spectral VAD gate (webrtcvad). Lazy-imported inside
 # StreamingTranscriber so the unit suite and a default install run without
@@ -37,6 +43,12 @@ speaker = [
 # call on pure-noise hops so it can't hallucinate on silence.
 vad = [
     "webrtcvad>=2.0",
+    # webrtcvad does `import pkg_resources` at module scope, and Python
+    # 3.12+ dropped setuptools from new venvs — so a fresh install fails at
+    # runtime with ModuleNotFoundError: No module named 'pkg_resources'.
+    # Declared here rather than documented: it is a real dependency of this
+    # extra, and a machine that happens to have setuptools hides it.
+    "setuptools",
 ]
 # Alternative streaming ASR backend: NVIDIA Parakeet-TDT via parakeet-mlx.
 # Its transducer decoder emits a blank symbol on silence, so it does not

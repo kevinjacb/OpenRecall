@@ -398,11 +398,21 @@ class FasterWhisperStreamingBackend:
             # what makes the inference lock below actually cover the compute.
             return list(segments)
 
-        if self._inference_lock is not None:
-            with self._inference_lock:
+        # The CUDA hint belongs here as well as at construction, and this is
+        # the site that actually catches it: CTranslate2 loads cuBLAS/cuDNN
+        # LAZILY, on the first compute, not when WhisperModel is built. On a
+        # CUDA-major mismatch the model therefore logs "ready" and then dies
+        # inside model.encode() on the first transcribe — which is what a real
+        # RTX box did (2026-09-20), sailing straight past the guard around the
+        # constructor.
+        try:
+            if self._inference_lock is not None:
+                with self._inference_lock:
+                    segments = _run()
+            else:
                 segments = _run()
-        else:
-            segments = _run()
+        except Exception as exc:
+            raise _cuda_library_hint(exc, self._device) from exc
 
         tokens = _segments_to_tokens(
             segments,

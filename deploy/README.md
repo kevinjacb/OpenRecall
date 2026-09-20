@@ -228,7 +228,8 @@ are otherwise silent or confusing:
 | `FATAL: /data is not writable by uid N` | Volume ownership. Rebuild with your UID. |
 | `FATAL: OPENRECALL_INFERENCE_URL is not set` | This image has no local ASR. |
 | `FATAL: required model name(s) unset` | `OPENRECALL_EMBED_MODEL` / `OPENRECALL_LLM_MODEL`. |
-| `Library libcublas.so.12 is not found` | CUDA-major mismatch: CTranslate2 wants CUDA 12, your toolkit is 13. Install `.[cuda]` and set `LD_LIBRARY_PATH` as in the nvidia section. **Do not downgrade the toolkit.** |
+| `Library libcublas.so.12 is not found` | CUDA-major mismatch: CTranslate2 wants CUDA 12, your toolkit is 13. Install `.[cuda]` and set `LD_LIBRARY_PATH` as in the nvidia section. **Do not downgrade the toolkit.** Note the model logs `ready` *before* this — CTranslate2 loads cuBLAS lazily at first compute, so a clean load proves nothing. |
+| `No module named 'pkg_resources'` | webrtcvad (via Resemblyzer) imports it at module scope and Python 3.12+ venvs ship no setuptools. Reinstall the extra — `pip install -e '.[speaker]'` now pulls it in. |
 | `WARNING: ...BASE_URL is ...localhost...` | Points at the container, not the host. |
 
 Two more worth knowing:
