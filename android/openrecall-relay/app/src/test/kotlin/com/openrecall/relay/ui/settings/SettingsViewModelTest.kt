@@ -8,6 +8,7 @@ import com.openrecall.relay.domain.model.CaptureSettings
 import com.openrecall.relay.domain.model.DeviceStatus
 import com.openrecall.relay.domain.model.RelaySettings
 import com.openrecall.relay.domain.model.RetentionSettings
+import com.openrecall.relay.relay.RelayStarter
 import com.openrecall.relay.store.Config
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -76,6 +77,11 @@ class SettingsViewModelTest {
         override suspend fun deviceStatus(): Outcome<DeviceStatus> = status
     }
 
+    private class FakeRelayStarter : RelayStarter {
+        var starts = 0
+        override fun start() { starts++ }
+    }
+
     private fun subscribe(scope: CoroutineScope, vm: SettingsViewModel) {
         scope.launch { vm.state.toList(mutableListOf()) }
     }
@@ -83,7 +89,8 @@ class SettingsViewModelTest {
     private fun viewModel(
         config: ConfigurationRepository,
         relay: RelaySettingsRepository = FakeRelaySettingsRepository(),
-    ) = SettingsViewModel(config, relay)
+        starter: RelayStarter? = null,
+    ) = SettingsViewModel(config, relay, starter)
 
     @Test fun initialStateIsThePersistedConfig() = runTest(dispatcher) {
         val config = Config(
@@ -228,5 +235,61 @@ class SettingsViewModelTest {
         val vm = viewModel(FakeConfigurationRepository(Config()), relay)
         testScheduler.advanceUntilIdle()
         assertNull(vm.device.value)
+    }
+
+    // --- Gateway port override ------------------------------------------
+    // Provisioning reads the port from the server's /health, which is right on
+    // a LAN and wrong behind a proxy or tunnel (the server advertises the port
+    // it binds, the edge serves 443). Re-running setup rediscovers the same
+    // wrong value, so the override is the only way out from the phone.
+
+    @Test fun settingTheGatewayPortPersistsIt() = runTest(dispatcher) {
+        val repo = FakeConfigurationRepository(
+            Config(serverUrl = "https://s.example.com", token = "t", provisioned = true),
+        )
+        val vm = viewModel(repo)
+        subscribe(backgroundScope, vm)
+        testScheduler.advanceUntilIdle()
+
+        vm.setGatewayPort(443)
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(443, repo.lastSaved?.gatewayPort)
+        // The rest of the config must survive the edit.
+        assertEquals("https://s.example.com", repo.lastSaved?.serverUrl)
+        assertEquals("t", repo.lastSaved?.token)
+    }
+
+    @Test fun clearingTheGatewayPortPersistsNull() = runTest(dispatcher) {
+        val repo = FakeConfigurationRepository(
+            Config(serverUrl = "https://s.example.com", token = "t",
+                   provisioned = true, gatewayPort = 8765),
+        )
+        val vm = viewModel(repo)
+        subscribe(backgroundScope, vm)
+        testScheduler.advanceUntilIdle()
+
+        vm.setGatewayPort(null)
+        testScheduler.advanceUntilIdle()
+
+        assertNotNull(repo.lastSaved)
+        assertNull(repo.lastSaved?.gatewayPort)
+    }
+
+    @Test fun changingTheGatewayPortRestartsTheRelay() = runTest(dispatcher) {
+        // The service reads the port once, in onStartCommand. A saved value
+        // that nobody restarts for is a setting that appears to apply and does
+        // not — the worst outcome for a field whose purpose is fixing a
+        // connection that is already failing.
+        val repo = FakeConfigurationRepository(Config(provisioned = true))
+        val starter = FakeRelayStarter()
+        val vm = viewModel(repo, starter = starter)
+        subscribe(backgroundScope, vm)
+        testScheduler.advanceUntilIdle()
+
+        vm.setGatewayPort(443)
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(1, starter.starts)
     }
 }

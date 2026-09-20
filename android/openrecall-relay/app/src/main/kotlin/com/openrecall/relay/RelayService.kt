@@ -11,6 +11,7 @@ import android.util.Log
 import com.openrecall.relay.ble.SensorLink
 import com.openrecall.relay.data.RepositoryModule
 import com.openrecall.relay.net.ServerSocket
+import com.openrecall.relay.net.resolveGatewayPort
 import com.openrecall.relay.net.wsGatewayUrl
 import com.openrecall.relay.relay.Backoff
 import com.openrecall.relay.relay.DeviceState
@@ -118,14 +119,17 @@ class RelayService : Service() {
         if (gatewayPortExtra != null) gatewayPort = gatewayPortExtra
         // START_STICKY redelivery: intent extras are null — restore from the persisted
         // config (mirroring the token fallback). Only adopt a non-empty persisted value so we
-        // never overwrite a valid default with an empty one. gatewayPort has no emulator
-        // default, so a missing extra + a null persisted value leaves it null (legacy
-        // same-port scheme-swap fallback).
+        // never overwrite a valid default with an empty one.
         if (urlExtra == null || tokenExtra == null || gatewayPortExtra == null) {
             val cfg = runBlocking { ServerConfig(filesDir).read() }
             if (urlExtra == null) cfg.serverUrl.ifEmpty { null }?.let { serverUrl = it }
             if (tokenExtra == null) cfg.token.ifEmpty { null }?.let { token = it }
-            if (gatewayPortExtra == null) cfg.gatewayPort?.let { gatewayPort = it }
+            // Adopted UNCONDITIONALLY, unlike the two above — including null.
+            // The rule and the reason live in `resolveGatewayPort`, which is
+            // unit-tested; this service has no test harness.
+            if (gatewayPortExtra == null) {
+                gatewayPort = resolveGatewayPort(gatewayPortExtra, cfg.gatewayPort)
+            }
         }
         startForeground(1, buildNotification())
 

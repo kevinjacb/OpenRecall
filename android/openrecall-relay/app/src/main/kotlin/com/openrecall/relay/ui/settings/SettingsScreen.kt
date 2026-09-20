@@ -8,10 +8,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -22,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -34,10 +37,10 @@ import com.openrecall.relay.domain.model.DeviceStatus
 import com.openrecall.relay.store.Config
 import com.openrecall.relay.ui.copyToClipboard
 import com.openrecall.relay.ui.design.DangerButton
-import com.openrecall.relay.ui.design.SecondaryButton
 import com.openrecall.relay.ui.design.RecallGroupLabel
 import com.openrecall.relay.ui.design.RecallIcons
 import com.openrecall.relay.ui.design.RecallScreenHeader
+import com.openrecall.relay.ui.design.SecondaryButton
 import com.openrecall.relay.ui.design.SettingsActionRow
 import com.openrecall.relay.ui.design.SettingsGroup
 import com.openrecall.relay.ui.design.SettingsToggleRow
@@ -64,6 +67,7 @@ fun SettingsRoute(
                 SettingsViewModel(
                     RepositoryModule.repos.configuration,
                     RepositoryModule.repos.relaySettings,
+                    RepositoryModule.repos.relayStarter,
                 )
             }
         },
@@ -79,6 +83,7 @@ fun SettingsRoute(
         onRetryCapture = vm::refresh,
         onReconfigure = onReconfigure,
         onForgetDevice = vm::forgetDevice,
+        onGatewayPortChanged = vm::setGatewayPort,
         onOpenDevice = onOpenDevice,
         onOpenCommands = onOpenCommands,
         modifier = modifier,
@@ -101,6 +106,7 @@ fun SettingsScreen(
     onRetryCapture: () -> Unit,
     onReconfigure: () -> Unit,
     onForgetDevice: () -> Unit,
+    onGatewayPortChanged: (Int?) -> Unit,
     onOpenDevice: () -> Unit,
     onOpenCommands: () -> Unit,
     modifier: Modifier = Modifier,
@@ -108,6 +114,7 @@ fun SettingsScreen(
     val colors = RecallTheme.colors
     val context = LocalContext.current
     var confirmForget by remember { mutableStateOf(false) }
+    var editGatewayPort by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -187,6 +194,7 @@ fun SettingsScreen(
             SettingsValueRow(
                 label = "Gateway port",
                 value = config.gatewayPort?.toString() ?: "Default",
+                onClick = { editGatewayPort = true },
                 last = true,
             )
         }
@@ -232,6 +240,17 @@ fun SettingsScreen(
             color = colors.greyFaint,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(top = 16.dp).align(androidx.compose.ui.Alignment.CenterHorizontally),
+        )
+    }
+
+    if (editGatewayPort) {
+        GatewayPortDialog(
+            current = config.gatewayPort,
+            onDismiss = { editGatewayPort = false },
+            onApply = {
+                editGatewayPort = false
+                onGatewayPortChanged(it)
+            },
         )
     }
 
@@ -415,4 +434,75 @@ private fun maskedToken(token: String): String = when {
     token.isBlank() -> "—"
     token.length <= 6 -> "•".repeat(token.length)
     else -> "${token.take(3)}${"•".repeat(6)}${token.takeLast(3)}"
+}
+
+
+/**
+ * Edit the WebSocket gateway port, or clear it back to the URL's port.
+ *
+ * Provisioning reads this from the server's `/health`, which is correct on a
+ * LAN and wrong behind a reverse proxy or a Cloudflare Tunnel: the server
+ * advertises the port it binds (8765) while the public edge serves 443.
+ * Re-running setup just rediscovers the same wrong value, so this is the only
+ * way out without editing the server.
+ *
+ * Blank clears the override, which is a real setting rather than an absence —
+ * it means "reuse the port already in the HTTP URL".
+ */
+@Composable
+private fun GatewayPortDialog(
+    current: Int?,
+    onDismiss: () -> Unit,
+    onApply: (Int?) -> Unit,
+) {
+    val colors = RecallTheme.colors
+    var text by remember { mutableStateOf(current?.toString() ?: "") }
+    val trimmed = text.trim()
+    val parsed = trimmed.toIntOrNull()
+    // Blank is valid and means "clear". A non-blank value must be a real port.
+    val valid = trimmed.isEmpty() || (parsed != null && parsed in 1..65535)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colors.card,
+        titleContentColor = colors.ink,
+        textContentColor = colors.inkMuted,
+        title = { Text("Gateway port") },
+        text = {
+            Column {
+                Text(
+                    "The port the relay opens its WebSocket on. Leave blank to " +
+                        "reuse the port in the server URL — which is what you " +
+                        "want behind a reverse proxy or a Cloudflare Tunnel, " +
+                        "where the public port is 443.",
+                )
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { new -> text = new.filter { it.isDigit() } },
+                    singleLine = true,
+                    isError = !valid,
+                    placeholder = { Text("Default") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+                if (!valid) {
+                    Text(
+                        "Enter a port between 1 and 65535, or leave blank.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.danger,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = valid,
+                onClick = { onApply(if (trimmed.isEmpty()) null else parsed) },
+            ) { Text("Apply", color = if (valid) colors.ink else colors.grey) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = colors.slate) }
+        },
+    )
 }

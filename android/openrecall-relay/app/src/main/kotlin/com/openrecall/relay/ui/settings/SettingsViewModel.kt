@@ -6,6 +6,7 @@ import com.openrecall.relay.core.result.Outcome
 import com.openrecall.relay.core.ui.toDisplayMessage
 import com.openrecall.relay.data.ConfigurationRepository
 import com.openrecall.relay.data.RelaySettingsRepository
+import com.openrecall.relay.relay.RelayStarter
 import com.openrecall.relay.domain.model.CaptureSettings
 import com.openrecall.relay.domain.model.DeviceStatus
 import com.openrecall.relay.domain.model.RelaySettings
@@ -52,6 +53,7 @@ data class CaptureUiState(
 class SettingsViewModel(
     private val config: ConfigurationRepository,
     private val relaySettings: RelaySettingsRepository,
+    private val relayStarter: RelayStarter? = null,
 ) : ViewModel() {
 
     val state: StateFlow<Config> = config.observe()
@@ -133,5 +135,28 @@ class SettingsViewModel(
      */
     fun forgetDevice() {
         viewModelScope.launch { config.save(Config()) }
+    }
+
+    /**
+     * Override the WebSocket gateway port, or clear the override with null.
+     *
+     * Provisioning discovers this from the server's `/health`, which is right
+     * on a LAN and wrong behind a reverse proxy or a Cloudflare Tunnel: the
+     * server advertises the port it *binds* (8765), while the public edge
+     * serves 443. Null means "reuse the port already in the HTTP URL", which
+     * is what a tunnel needs. Hence an override the operator can set, rather
+     * than re-running provisioning and getting the same wrong answer.
+     *
+     * Restarting the relay is part of the operation, not a separate step. The
+     * service reads the port once in onStartCommand, so a saved value that
+     * nobody restarts for is a setting that appears to apply and does not —
+     * the worst outcome for a field whose whole purpose is fixing a
+     * connection that is already failing.
+     */
+    fun setGatewayPort(port: Int?) {
+        viewModelScope.launch {
+            config.save(state.value.copy(gatewayPort = port))
+            relayStarter?.start()
+        }
     }
 }
