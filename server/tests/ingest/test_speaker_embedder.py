@@ -112,3 +112,64 @@ def test_resemblyzer_embedder_dim_is_a_lazy_property():
     from openrecall_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
 
     assert isinstance(ResemblyzerSpeakerEmbedder.__dict__["dim"], property)
+
+# --- import diagnostics -------------------------------------------------------
+
+def test_a_missing_pkg_resources_explains_the_setuptools_gap():
+    """webrtcvad (via Resemblyzer) imports pkg_resources at module scope and
+    Python 3.12+ venvs ship no setuptools. Hit on a real box, 2026-09-20: ASR
+    was fine and only the embedder failed, which reads like a speaker bug
+    rather than a missing dependency."""
+    from openrecall_server.ingest.speaker_embedder import _resemblyzer_import_hint
+
+    exc = ModuleNotFoundError("No module named 'pkg_resources'")
+    exc.name = "pkg_resources"
+    out = str(_resemblyzer_import_hint(exc))
+    assert "setuptools" in out and "'.[speaker]'" in out
+    assert "pkg_resources" in out, "the original cause must survive"
+
+
+def test_a_missing_resemblyzer_names_the_extra_and_the_ways_out():
+    from openrecall_server.ingest.speaker_embedder import _resemblyzer_import_hint
+
+    exc = ModuleNotFoundError("No module named 'resemblyzer'")
+    exc.name = "resemblyzer"
+    out = str(_resemblyzer_import_hint(exc))
+    assert "'.[speaker]'" in out
+    assert "OPENRECALL_SPEAKER_ENABLED" in out, (
+        "turning speaker recognition off is a legitimate answer and should be "
+        "offered")
+
+
+def test_an_unrelated_missing_module_is_passed_through_untouched():
+    """Mislabelling someone else's ImportError as a setuptools problem is
+    worse than saying nothing."""
+    from openrecall_server.ingest.speaker_embedder import _resemblyzer_import_hint
+
+    exc = ModuleNotFoundError("No module named 'torch'")
+    exc.name = "torch"
+    assert _resemblyzer_import_hint(exc) is exc
+
+
+def test_the_embedder_load_path_applies_the_hint(monkeypatch):
+    """The wiring, not the helper — the gap that let an earlier version of this
+    same fix ship with the guard in the wrong place."""
+    import builtins
+
+    from openrecall_server.ingest.speaker_embedder import ResemblyzerSpeakerEmbedder
+
+    real_import = builtins.__import__
+
+    def no_pkg_resources(name, *args, **kwargs):
+        if name == "resemblyzer":
+            exc = ModuleNotFoundError("No module named 'pkg_resources'")
+            exc.name = "pkg_resources"
+            raise exc
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_pkg_resources)
+
+    with pytest.raises(ModuleNotFoundError) as excinfo:
+        ResemblyzerSpeakerEmbedder().warmup()
+    assert "setuptools" in str(excinfo.value), (
+        "the load path raised the bare ModuleNotFoundError; the hint is not wired in")

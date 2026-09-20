@@ -68,6 +68,44 @@ class FakeSpeakerEmbedder:
         return [v / norm for v in vec]
 
 
+def _resemblyzer_import_hint(exc: ModuleNotFoundError) -> ModuleNotFoundError:
+    """Explain the two ways importing Resemblyzer fails at runtime.
+
+    ``pkg_resources``: Resemblyzer imports webrtcvad, which does
+    ``import pkg_resources`` at module scope. Python 3.12+ venvs no longer ship
+    setuptools, so a fresh install dies here — with ASR working, which makes it
+    read like a speaker-recognition bug rather than a missing dependency. The
+    ``speaker`` extra declares setuptools, so this means the extra has not been
+    (re)installed since that was added.
+
+    ``resemblyzer`` itself missing is the ordinary "extra not installed" case.
+
+    Anything else passes through untouched rather than being mislabelled.
+    """
+    name = getattr(exc, "name", "") or ""
+    if name == "pkg_resources":
+        return ModuleNotFoundError(
+            f"{exc}\n\n"
+            "Resemblyzer imports webrtcvad, which needs pkg_resources — and "
+            "Python 3.12+ virtualenvs ship no setuptools. Reinstall the extra, "
+            "which now declares it:\n\n"
+            "    pip install -e '.[speaker]'\n\n"
+            "or, equivalently:  pip install setuptools\n\n"
+            "ASR is unaffected, which is why this shows up as an embedder-only "
+            "failure with /info reporting ready=false and components.embed=false."
+        )
+    if name == "resemblyzer":
+        return ModuleNotFoundError(
+            f"{exc}\n\n"
+            "The real speaker embedder is an optional extra:\n\n"
+            "    pip install -e '.[speaker]'\n\n"
+            "Or set OPENRECALL_SPEAKER_EMBED_MODEL=fake for the deterministic "
+            "test embedder, or OPENRECALL_SPEAKER_ENABLED=false to turn speaker "
+            "recognition off entirely."
+        )
+    return exc
+
+
 class ResemblyzerSpeakerEmbedder:
     """Real local speaker-embedding backend (Resemblyzer GE2E).
 
@@ -126,7 +164,10 @@ class ResemblyzerSpeakerEmbedder:
         with self._lock:
             if self._encoder is not None:
                 return
-            from resemblyzer import VoiceEncoder
+            try:
+                from resemblyzer import VoiceEncoder
+            except ModuleNotFoundError as exc:
+                raise _resemblyzer_import_hint(exc) from exc
             import numpy as np
 
             log.info("speaker_embedder_loading model=%s", self.model_name)
