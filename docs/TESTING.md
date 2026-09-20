@@ -19,7 +19,7 @@ or your clone). Each tier runs in its own subdirectory.
 ## 1. Server (Python)
 
 The brain: ingest, transcription, memory extraction/retrieval, command
-orchestration. ~1500 tests, async (`asyncio_mode = "auto"`), test root is
+orchestration. ~1800 tests, async (`asyncio_mode = "auto"`), test root is
 `server/tests/`.
 
 ### One-time setup
@@ -28,7 +28,7 @@ orchestration. ~1500 tests, async (`asyncio_mode = "auto"`), test root is
 cd server
 python3 -m venv .venv
 . .venv/bin/activate                 # or use .venv/bin/python directly
-pip install -e '.[dev]'              # pytest, ruff, etc.
+pip install -e '.[dev]'              # pytest + pytest-asyncio
 # Apple-Silicon-only extras (optional, only if you'll run the real engines):
 #   pip install -e '.[mlx,opus]'
 # Lazy-loaded extras — install ONLY when you want that feature (tests
@@ -51,15 +51,15 @@ cd server
 .venv/bin/python -m pytest           # equivalent if pytest isn't on PATH
 ```
 
-**Success looks like:** `1529 passed in N.NNs` (the count grows over time; the
+**Success looks like:** `1814 passed in N.NNs` (the count grows over time; the
 exact number isn't load-bearing — what matters is `0 failed`).
 
 ### Run a single test / file / keyword
 
 ```bash
 .venv/bin/pytest tests/test_config_file.py            # one file
-.venv/bin/pytest tests/ingest/test_denoise.py::test_noop_passthrough   # one test
-. .venv/bin/pytest -k denoise                         # by name substring
+.venv/bin/pytest tests/ingest/test_denoise.py::test_noop_is_passthrough_and_reset_is_noop   # one test
+.venv/bin/pytest -k denoise                          # by name substring
 .venv/bin/pytest tests/agent/                          # one directory
 .venv/bin/pytest --lf                                  # rerun only the last failures
 ```
