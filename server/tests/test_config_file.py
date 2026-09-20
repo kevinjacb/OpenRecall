@@ -182,3 +182,40 @@ def test_example_config_keys_all_map_to_real_env_vars():
 
     dead = sorted(set(declared) - real)
     assert not dead, f"config.example.toml keys map to nothing: {dead}"
+
+def test_every_env_var_the_source_reads_is_documented_in_the_example():
+    """The reverse of the check above, and the one that stops drift.
+
+    The existing test proves every key in config.example.toml maps to a real
+    env var. This proves the opposite: that a variable added to the code is
+    also documented. Without it the example silently falls behind, which is
+    how the repo ended up with a .env.example that documented none of the ASR,
+    inference or speaker settings while telling people to copy it.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+
+    read_by_source = set()
+    for path in (root / "src").rglob("*.py"):
+        read_by_source |= set(
+            re.findall(r'"(OPENRECALL_[A-Z0-9_]+)"', path.read_text()))
+
+    # config_file.py flattens [section] key -> OPENRECALL_{SECTION}_{KEY}
+    documented, section = set(), None
+    for line in (root / "config.example.toml").read_text().splitlines():
+        header = re.match(r"^\[([a-z_0-9]+)\]", line)
+        if header:
+            section = header.group(1)
+            continue
+        key = re.match(r"^#?\s*([a-z_0-9]+)\s*=", line)
+        if key and section:
+            documented.add(f"OPENRECALL_{section.upper()}_{key.group(1).upper()}")
+
+    undocumented = sorted(read_by_source - documented)
+    assert not undocumented, (
+        "these environment variables are read by the server but absent from "
+        f"config.example.toml: {undocumented}. It is the single reference for "
+        "configuration — add them there rather than in a second file."
+    )

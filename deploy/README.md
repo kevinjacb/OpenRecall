@@ -1,5 +1,20 @@
 # Deploying OpenRecall
 
+**Jump to:**
+
+- [Profiles](#profiles)
+- [Quick start — cpu profile](#quick-start--cpu-profile)
+- [Quick start — nvidia / CUDA box](#quick-start--nvidia--cuda-box)
+- [Quick start — apple profile](#quick-start--apple-profile)
+- [Configuration](#configuration)
+- [The data volume](#the-data-volume)
+- [Backups](#backups)
+- [Migrating from a Mac to the box](#migrating-from-a-mac-to-the-box)
+- [Troubleshooting](#troubleshooting)
+- [Remote access — Cloudflare Tunnel](#remote-access--cloudflare-tunnel)
+
+---
+
 The system splits into two planes:
 
 - **Service plane** — gateway, HTTP API, stores, memory extraction. Hardware

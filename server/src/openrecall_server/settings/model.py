@@ -16,11 +16,10 @@ the whole point of D2:
   frame log — the microphone keeps working and transcripts keep forming.
 * ``vision_enabled`` gates the vision pipeline.
 
-Note (spec §4.1): ``findings.md`` refers to "all three capture toggles"
-without naming them, and one of the design's three was the wake-word toggle,
-which is cut — there is no wake-word engine in the firmware and the wearable
-is designed without one. These three are the honest set; the third should be
-confirmed against the design file.
+Note: an earlier design referred to "all three capture toggles" without naming
+them, and its third was a wake-word toggle. That is cut — there is no
+wake-word engine in the firmware and the wearable is designed without one.
+The three above are the honest set.
 """
 from __future__ import annotations
 

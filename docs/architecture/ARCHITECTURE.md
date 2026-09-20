@@ -7,6 +7,26 @@
 > carries a `file:line` citation so a reader can jump straight to the code.
 > Paths are relative to the repo root (`/Users/kevin/Projects/Sense/`).
 
+> [!IMPORTANT]
+> **Scope and currency.** Written 2026-08-08 and accurate for the three tiers it
+> describes: the capture path, the wire protocols (§C.6, §D, §E), the ingest and
+> memory pipelines, and the command channel. Those are stable and this remains
+> the reference for them.
+>
+> It **predates** the deployment work and does not cover:
+>
+> - the **inference boundary** — ASR and speaker embedding can run in a separate
+>   process (`server/src/openrecall_server/inference/`), selected by
+>   `[inference] url`;
+> - the **portable ASR backend** — `faster_whisper` runs on CPU and CUDA, where
+>   this document assumes MLX and therefore Apple Silicon;
+> - **containers and deployment profiles**, and remote access via Cloudflare
+>   Tunnel.
+>
+> For those, see **[deploy/README.md](../../deploy/README.md)**. Where this
+> document and the code disagree, the code is right — the `file:line` citations
+> are the way to check.
+
 ---
 
 ## 0. The thirty-second version

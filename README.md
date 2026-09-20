@@ -1,8 +1,8 @@
 # OpenRecall
 
-A wearable AI memory device. A small ESP32S3 Sense board on the wearer streams
-audio over BLE to a phone, which relays it to a server that transcribes, extracts
-memories, and acts on them. Three tiers, each independently buildable and testable:
+A wearable AI memory device. An ESP32S3 board streams audio over BLE to a phone,
+which relays it to a server that transcribes it, extracts memories, and acts on
+them.
 
 ```
  WEARABLE (firmware)              PHONE (Android relay)            SERVER (Python)
@@ -10,200 +10,100 @@ memories, and acts on them. Three tiers, each independently buildable and testab
  §C.6 audio  ──BLE notify──▶  forward verbatim  ──WS binary──▶  ingest + transcribe
  §D command  ◀──BLE write───   forward command   ◀──WS───────   memory + agent
  ack (id)    ──BLE notify──▶  wrap as §E        ──WS cmd_ack─▶  signed §D commands
-                               (owns hello/bye,
-                                acks, transcripts)
 ```
 
-The wearable is **dumb by design**: it does capture → VAD → Opus → ring buffer →
-stream, and verifies+executes signed commands. No wake word, STT, embeddings, or
-LLM on the device — all of that lives on the server. The phone relay owns session
-framing (§E); the device speaks only §C.6 (audio) + §D (commands).
+The wearable is **dumb by design**: capture → VAD → Opus → ring buffer → stream,
+plus verifying and executing signed commands. No wake word, speech recognition,
+embeddings or LLM on the device — all of that is server-side. The phone owns
+session framing (§E); the device speaks only §C.6 (audio) and §D (commands).
 
-## Repository layout
+## Layout
 
 | Path | What |
 |---|---|
-| `server/` | The brain — Python (aiohttp) WebSocket gateway + HTTP control API: ingest, transcription, memory extraction/retrieval, device command orchestration. |
-| `android/openrecall-relay/` | The middle tier — Kotlin app: BLE central → WebSocket bridge with session bookkeeping (§E). |
-| `firmware/openrecall_sensor/` | The wearable — ESP-IDF firmware for the XIAO ESP32S3 Sense (NimBLE, DMA I2S, Opus, Ed25519 command verify). |
-| `firmware/spike1_opus_encode/`, `firmware/spike2_sd_throughput/` | Throwaway measurement sketches that baked the real firmware's parameters. |
-| `deploy/` | Containerised deployment — core image, CPU inference image, compose, and `deploy.sh` (detects your hardware and starts the right profile). |
-| `docs/bring-up/` | Real-device bring-up runbook (tier-by-tier validation). |
-| `.env.example` | Server config reference (copy to `.env`). |
+| `server/` | The brain — WebSocket gateway, HTTP API, transcription, memory, commands. |
+| `android/openrecall-relay/` | BLE central → WebSocket bridge. |
+| `firmware/openrecall_sensor/` | ESP-IDF firmware for the XIAO ESP32S3 Sense. |
+| `deploy/` | Container images, compose, and `deploy.sh`. |
 
-## Quick start
+## Run it
 
-### 1. Server (Mac/Linux, no hardware needed)
-
-Pick the ASR backend for your machine — **`mlx` is Apple-Silicon-only,
-`fasterwhisper` runs anywhere** (CPU and CUDA from the same code):
+**On a laptop**, one process, no hardware:
 
 ```bash
 cd server
 python3 -m venv .venv && source .venv/bin/activate
 
-# Apple Silicon (MLX, the default backend):
-pip install -e '.[mlx,opus,dev]'              # also: brew install opus
+pip install -e '.[mlx,opus,dev]'              # Apple Silicon  (brew install opus)
+pip install -e '.[fasterwhisper,opus,dev]'    # anything else  (apt install libopus0)
 
-# Linux / anything else (faster-whisper):
-pip install -e '.[fasterwhisper,opus,dev]'    # also: apt install libopus0
-export OPENRECALL_ASR_BACKEND=faster_whisper
-
-# Clean slate (optional, removes old sim data):
-rm -f data/*.db data/server_token data/server_ed25519.key
-
-python scripts/run_gateway.py --port 8765 --http-port 8766
+python scripts/run_gateway.py
 ```
 
-That runs everything in one process. To run it **in containers**, or to put ASR
-on a GPU in a separate process, see **[deploy/README.md](deploy/README.md)** —
-one command per profile (Apple, CPU, NVIDIA/CUDA).
+It prints the WebSocket URL, the HTTP API URL, the **bearer token** (copy to the
+phone) and the **command signing key** (provision on the device). Drive it
+without hardware using `python scripts/run_device_sim.py`.
 
-On startup the gateway prints:
-- `gateway listening on ws://0.0.0.0:8765` — the WS endpoint the relay connects to.
-- `http control API on http://0.0.0.0:8766` — operator/phone-facing control API.
-- `bearer token (copy to phone): …` — the relay authenticates with this.
-- `server command public key: <hex>` — **provision this on the device** (Tier 2).
-
-Speaker recognition is **off by default**; set `OPENRECALL_SPEAKER_ENABLED=true` to enable.
-Without a device you can still exercise the back-end with the simulator:
+**On an always-on machine**, in containers:
 
 ```bash
-python scripts/run_device_sim.py     # stands in for device + phone combined
+./deploy/deploy.sh        # detects your hardware, picks a profile, starts it
 ```
 
-Confirm `server/data/events.db` accumulates `capture_events` rows.
+→ **[deploy/README.md](deploy/README.md)** — profiles, GPU setup, backups,
+migration, remote access.
 
-### 2. Android relay (phone)
+## Configure it
+
+**[`server/config.example.toml`](server/config.example.toml) is the single
+reference.** Every setting is there with its environment variable and what it
+does. Copy it to `server/config.toml`, or export the variables — real
+environment variables win over the file.
+
+The four you are most likely to touch:
+
+| Setting | Why |
+|---|---|
+| `[llm] model` / `base_url` | Memory extraction. Any OpenAI-compatible endpoint. |
+| `[embed] model` / `base_url` | Vector search. |
+| `[asr] backend` | `whisper` · `parakeet` (both Apple-only) · `faster_whisper` (CPU **and** CUDA). |
+| `[inference] url` | Unset runs transcription in-process; set it to run it elsewhere, e.g. on a GPU box. |
+
+A test asserts every variable the code reads is documented there, so it cannot
+drift.
+
+## Build the other tiers
 
 ```bash
-cd android/openrecall-relay
-./gradlew test                    # JVM unit tests — the executable protocol spec
-./gradlew :app:assembleDebug      # build the APK (or open in Android Studio)
+cd android/openrecall-relay && ./gradlew :app:assembleDebug
 ```
-
-Point the relay at your gateway (host IP; `10.0.2.2` is host-loopback from the
-emulator) and grant `BLUETOOTH_SCAN` / `BLUETOOTH_CONNECT` at runtime (Android 12+):
-
-```kotlin
-startForegroundService(Intent(ctx, RelayService::class.java)
-    .putExtra("server_url", "ws://192.168.1.20:8765"))
-```
-
-See `android/openrecall-relay/README.md` for the architecture and current on-device gaps.
-
-### 3. Firmware (XIAO ESP32S3 Sense)
 
 ```bash
 cd firmware/openrecall_sensor
-./scripts/install_idf_5.1.6.sh     # one-shot: ESP-IDF v5.1.6 + S3 toolchain (side-by-side)
-. ~/esp/esp-idf-v5.1.6/export.sh  # in every new shell
-
-# Provision: paste the server's command public key hex into main/config.h
-#   SERVER_ED25519_PUBKEY   (the device verifies §D command signatures against it)
-
-idf.py build
-idf.py -p /dev/cu.usbmodem* flash monitor
+./scripts/install_idf_5.1.6.sh          # one-shot ESP-IDF v5.1.6 + S3 toolchain
+. ~/esp/esp-idf-v5.1.6/export.sh
+idf.py build && idf.py -p /dev/cu.usbmodem* flash monitor
 ```
 
-We pin to **ESP-IDF v5.1.6** (NimBLE 1.6). See `firmware/openrecall_sensor/README.md` for
-the full module roadmap, core layout, signal path, and on-hardware tuning guide.
+Provision the server's command public key into `main/config.h`
+(`SERVER_ED25519_PUBKEY`) before flashing, or the device rejects every command.
+Wiring, pin map and signal path: **[firmware README](firmware/openrecall_sensor/README.md)**.
 
-### Wiring essentials
-
-Two IENMP441 (INMP441-class) I2S MEMS microphones on a **shared I2S bus**; each mic's
-L/R channel-select pin ties it to the left or right slot. `PRIMARY_CHANNEL` in
-`config.h` picks which deinterleaved channel is the voice/primary mic — no rewiring
-to swap. Full details and the signal-path diagram are in the firmware README.
-
-| Function | Pin | Notes |
-|---|---|---|
-| I2S BCK (SCK) | GPIO 4 | shared bus |
-| I2S WS (LRCLK) | GPIO 5 | shared bus |
-| I2S SD (DATA) | GPIO 6 | shared bus, both mics |
-| Mic #1 L/R select | GND | → left channel (primary/voice) |
-| Mic #2 L/R select | VDD (3V3) | → right channel (reference/ambient) |
-| Mic VDD / GND | 3V3 / GND | both mics |
-
-> **Schematics:** full schematics will be added here. (Placeholder — to be filled in.)
-
-Pins avoid the microSD SPI bus (GPIO 7/8/9/21, reserved for future EOD-video
-capture), strapping pins (0/3/45/46), and flash/PSRAM (26–32).
-
-## Configuration
-
-Server config is environment-driven. Copy `.env.example` → `.env` and adjust. Every
-variable is optional; the server falls back to safe defaults. Models are
-**provider-agnostic** (OpenAI-compatible) — local (Ollama at `:11434` by default,
-`mlx_lm.server`, vLLM, LM Studio) or cloud; pick per family:
-
-- `OPENRECALL_LLM_MODEL` / `OPENRECALL_LLM_BASE_URL` — the agent's reasoning model.
-- `OPENRECALL_EMBED_MODEL` / `OPENRECALL_EMBED_BASE_URL` — vector-search embedder.
-- `OPENRECALL_VLM_MODEL` / `OPENRECALL_VLM_BASE_URL` — image atoms (only if you ingest images).
-
-Transcription:
-
-- `OPENRECALL_ASR_BACKEND` — `whisper` (MLX, default) · `parakeet` (MLX,
-  lower latency) · `faster_whisper` (CPU **and** CUDA; the only non-Apple option).
-- `OPENRECALL_FASTER_WHISPER_MODEL` / `_DEVICE` / `_COMPUTE_TYPE` — e.g.
-  `large-v3-turbo` / `cuda` / `float16`. On CPU use `small.en`: `large-v3-turbo`
-  measures 0.49x realtime there and falls permanently behind live audio.
-- `OPENRECALL_INFERENCE_URL` — unset (default) runs ASR and speaker embedding
-  in-process. Set it and they run in a separate process
-  (`scripts/run_inference.py`), which is how the GPU and container profiles work.
-
-`server/config.example.toml` documents every variable; copy it to
-`server/config.toml` for a persistent alternative to exporting them.
-
-The bearer token and Ed25519 signing key are auto-generated on first run into
-`server/data/`. Override the paths with the **`--token-file` / `--key-file`
-flags** — there are no env vars for these on the native path (the container
-entrypoint accepts `OPENRECALL_TOKEN_FILE` / `OPENRECALL_KEY_FILE` and maps them
-onto those flags).
-
-`--db` must be named `events.db`: the seven sibling databases are derived from
-it by substring replacement, so any other name would collapse all eight stores
-onto one file. The gateway refuses to start rather than allow it.
-
-## Deployment
-
-For an always-on machine, run it in containers. `./deploy/deploy.sh` detects the
-hardware, picks a profile and starts it; `--detect` shows the decision without
-changing anything.
-
-| Profile | Where inference runs | Status |
-|---|---|---|
-| `cpu` | container (faster-whisper) | one command, nothing native |
-| `nvidia` | **native** on the host, CUDA | works; the GPU itself is unverified |
-| `apple` | **native** on the host, MLX | working |
-| `cloud` | not started | endpoints only |
-
-Inference runs natively on the two accelerated profiles on purpose: a container
-on macOS cannot reach Metal, and on Linux the host is already where the GPU
-driver is — so neither needs a CUDA image or the nvidia-container-toolkit.
-
-Full instructions, including migrating your data to the box, **backups**, and
-the CUDA troubleshooting table: **[deploy/README.md](deploy/README.md)**.
-
-## Testing
-
-Each tier has a no-hardware suite. Full step-by-step guide (prerequisites,
-single-test runs, troubleshooting): **[docs/TESTING.md](docs/TESTING.md)**.
+## Test it
 
 ```bash
-# Server (no hardware): pytest, asyncio_mode=auto, testpaths=tests
-cd server && .venv/bin/pytest
-
-# Firmware host contract tests (no hardware): byte-matches the server's §C.6 encoder
-cd firmware/openrecall_sensor/test && make
-
-# Android relay protocol brain (JVM; set JAVA_HOME to Android Studio's JBR first)
-cd android/openrecall-relay && ./gradlew test
+cd server && .venv/bin/pytest                    # ~1800 tests, no hardware
+cd firmware/openrecall_sensor/test && make       # C host tests, no toolchain
+cd android/openrecall-relay && ./gradlew test    # JVM, needs JAVA_HOME
 ```
 
-## Status
+→ **[docs/TESTING.md](docs/TESTING.md)** — prerequisites, single tests,
+troubleshooting.
 
-This is an active personal project; the server is the most mature tier (green test
-suite, sim-exercised end-to-end). The firmware builds clean and the audio path runs,
-but on-device BLE bring-up is the active step — see `docs/bring-up/` for the tiered
-runbook (validate each tier before the next so a failure points at one layer).
+## More
+
+- **[docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)** — how the tiers fit together.
+- **[docs/bring-up/](docs/bring-up/)** — validating a real device, tier by tier.
+
+Active personal project. The server is the most mature tier; the firmware builds
+clean and the audio path runs on hardware.
