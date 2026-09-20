@@ -16,9 +16,9 @@ the accelerator is and the core talks to it over HTTP.
 
 | Profile | Core | Inference | Status |
 |---|---|---|---|
-| `apple` | container | **native host process** | working |
+| `apple` | container | **native host process** (MLX) | working |
 | `cpu` | container | container (faster-whisper) | working |
-| `nvidia` | container | CUDA container | **not built** — needs the GPU box |
+| `nvidia` | container | **native host process** (faster-whisper on CUDA) | works; the GPU itself is unverified |
 | `cloud` | container | not started | endpoints only |
 
 `./deploy/deploy.sh` detects which one applies. `--detect` prints the decision
@@ -47,6 +47,57 @@ M-series CPU at int8:
 At 0.49x the gateway never catches up, and its bounded ASR queue starts
 dropping real audio packets. Raise `OPENRECALL_ASR_MODEL` only after measuring
 on the hardware you are deploying to.
+
+## Quick start — nvidia / CUDA box
+
+Inference runs **natively on the host**, the same shape as the apple profile
+and for the same reason: the host is where the accelerator driver is. That is
+why this profile needs **no CUDA base image, no GPU device reservation and no
+nvidia-container-toolkit** — nothing GPU-touching runs inside a container.
+Containerising inference as well is a later convenience, not a prerequisite.
+
+### 1. Start the inference sidecar (native, on the host)
+
+```bash
+cd server
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e '.[fasterwhisper,speaker,opus]'
+
+OPENRECALL_ASR_BACKEND=faster_whisper \
+OPENRECALL_FASTER_WHISPER_DEVICE=cuda \
+OPENRECALL_FASTER_WHISPER_COMPUTE_TYPE=float16 \
+OPENRECALL_FASTER_WHISPER_MODEL=large-v3-turbo \
+  python -u scripts/run_inference.py --host 0.0.0.0 --port 8767
+```
+
+Confirm the log line reads `device=cuda`, and that `/info` answers
+`"ready": true`. `--host 0.0.0.0` is required — the default `127.0.0.1` is not
+reachable from inside the core container.
+
+On a 12 GB card `large-v3-turbo` at float16 is roughly 1.5–2 GB, leaving room
+for Ollama. If VRAM is tight, `compute_type=int8_float16` roughly halves it.
+**Measure before committing to a budget** — the numbers in the design doc were
+written for a different ASR engine.
+
+### 2. Start the core
+
+```bash
+./deploy/deploy.sh          # detects nvidia via nvidia-smi
+```
+
+### What is verified, and what is not
+
+The whole path — core container, native sidecar over
+`host.docker.internal`, transcripts returning — is exercised and working. The
+one thing **not** verified is CUDA itself: there is no NVIDIA GPU on the
+development machine, so every run used the identical code path with
+`device=cpu`. Expect the device argument to be the only difference; confirm it
+with the `device=cuda` log line and by watching `nvidia-smi` during a session.
+
+Worth re-checking on the GPU: CTranslate2 showed **no** MLX-style thread
+affinity on CPU (its docs explicitly support calls from multiple threads), but
+that was measured on CPU. A violation would not show up in tests — the fakes
+have no affinity.
 
 ## Quick start — apple profile
 

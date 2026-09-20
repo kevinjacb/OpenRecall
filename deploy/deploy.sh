@@ -75,17 +75,15 @@ case "$PROFILE" in
         echo "  inference        : NATIVE host process (Docker on macOS has no Metal access)"
         ;;
     nvidia)
-        INFERENCE_URL="http://inference:8767"
-        OLLAMA_HOST="http://ollama:11434/v1"
-        echo "  inference        : CUDA container"
-        echo
-        echo "NOT YET IMPLEMENTED. The ASR backend is ready (faster-whisper takes"
-        echo "OPENRECALL_FASTER_WHISPER_DEVICE=cuda), but three things are missing:"
-        echo "a CUDA base image for deploy/Dockerfile.inference, GPU device"
-        echo "reservation + an Ollama service in compose, and a VRAM budget measured"
-        echo "on the actual card. See the containerized-deployment design, P3."
-        echo "Detection works; the profile does not."
-        exit 1
+        # Inference runs NATIVELY on the host, exactly as on apple — the host
+        # is where the driver is. That is why this profile needs no CUDA base
+        # image, no GPU device reservation and no nvidia-container-toolkit:
+        # nothing GPU-touching runs inside a container. Containerising
+        # inference too is a later convenience, not a prerequisite.
+        INFERENCE_URL="http://host.docker.internal:8767"
+        OLLAMA_HOST="http://host.docker.internal:11434/v1"
+        echo "  inference        : NATIVE host process on the GPU"
+        echo "  gpu              : $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1 || echo 'nvidia-smi unavailable')"
         ;;
     cpu)
         INFERENCE_URL="http://inference:8767"
@@ -153,9 +151,28 @@ fi
 
 # --- Start -------------------------------------------------------------------
 echo
-if [ "$PROFILE" = "apple" ]; then
+if [ "$PROFILE" = "apple" ] || [ "$PROFILE" = "nvidia" ]; then
     # The honest limit: "one command" does not cover the native sidecar.
     if ! curl -fsS --max-time 2 http://127.0.0.1:8767/info >/dev/null 2>&1; then
+        if [ "$PROFILE" = "nvidia" ]; then
+            echo "The inference sidecar is not running. On this profile it runs NATIVELY"
+            echo "on the host, where the GPU driver is. Start it first, in another"
+            echo "terminal:"
+            echo
+            echo "    cd $REPO_ROOT/server"
+            echo "    pip install -e '.[fasterwhisper,speaker]'"
+            echo "    OPENRECALL_ASR_BACKEND=faster_whisper \\"
+            echo "    OPENRECALL_FASTER_WHISPER_DEVICE=cuda \\"
+            echo "    OPENRECALL_FASTER_WHISPER_COMPUTE_TYPE=float16 \\"
+            echo "    OPENRECALL_FASTER_WHISPER_MODEL=large-v3-turbo \\"
+            echo "      python -u scripts/run_inference.py --host 0.0.0.0 --port 8767"
+            echo
+            echo "Check the log says device=cuda, then re-run this script."
+            echo "(--host 0.0.0.0 matters: the default 127.0.0.1 is not reachable from"
+            echo " inside the container.)"
+            echo
+            exit 1
+        fi
         echo "The inference sidecar is not running. On this profile it runs NATIVELY,"
         echo "because a container on macOS cannot reach Metal. Start it first, in"
         echo "another terminal:"
@@ -172,17 +189,21 @@ if [ "$PROFILE" = "apple" ]; then
     echo "inference sidecar: reachable on :8767"
 fi
 
-# The cpu profile also brings up the inference container; apple does not,
-# because its sidecar is the native process checked above.
-COMPOSE_PROFILE_ARGS=()
+# The cpu profile also brings up the inference container; apple and nvidia do
+# not, because their sidecar is the native process checked above.
+#
+# Two explicit calls rather than an args array: macOS ships bash 3.2, where
+# expanding an EMPTY array under `set -u` ("${arr[@]}") is an unbound-variable
+# error. That broke the apple profile — the default on a Mac — while the cpu
+# path, whose array is non-empty, kept working and hid it.
 if [ "$PROFILE" = "cpu" ]; then
-    COMPOSE_PROFILE_ARGS=(--profile cpu)
     echo "starting the core and the CPU inference container…"
     echo "(first run downloads the ASR model into a named volume — allow a few minutes)"
+    $RUNTIME compose --env-file "$ENV_FILE" --profile cpu -f "$COMPOSE_FILE" up -d --build
 else
     echo "starting the core…"
+    $RUNTIME compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build
 fi
-$RUNTIME compose --env-file "$ENV_FILE" "${COMPOSE_PROFILE_ARGS[@]}" -f "$COMPOSE_FILE" up -d --build
 
 echo
 echo "up. Follow the log for the bearer token and signing key:"
